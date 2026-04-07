@@ -1,0 +1,6 @@
+[
+  {"id": "internal",   "name": "Внутреннее АПИ"},
+  {"id": "external",   "name": "Внешнее АПИ"},
+  {"id": "partner",    "name": "Партнёрское АПИ"},
+  {"id": "technical",  "name": "Техническое АПИ"}
+]

@@ -1,0 +1,5 @@
+[
+  {"id": "platformeco", "name": "platformeco"},
+  {"id": "old_k8s",     "name": "old_k8s"},
+  {"id": "nova",        "name": "nova"}
+]

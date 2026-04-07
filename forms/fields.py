@@ -1,0 +1,74 @@
+"""
+Декларативные определения полей формы.
+
+Добавить новый тип поля:
+  1. Добавить значение в FieldType
+  2. Добавить обработку в ui/widgets/field_factory.py
+"""
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Optional
+
+
+class FieldType(Enum):
+    TEXT        = "text"        # однострочный ввод
+    TEXTAREA    = "textarea"    # многострочный ввод
+    SELECT      = "select"      # выпадающий список из справочника
+    MULTISELECT = "multiselect" # список с чекбоксами (множественный выбор)
+    CHECKBOX    = "checkbox"    # одиночный чекбокс (bool)
+    NUMBER      = "number"      # числовой ввод
+
+
+@dataclass(frozen=True)
+class ReferenceConfig:
+    """
+    Конфигурация справочника для SELECT / MULTISELECT.
+
+    source:      "local"  — данные из config/references/<resource>
+                 "http"   — данные загружаются с сервера
+    resource:    для local — имя JSON файла (напр. "api_categories.json")
+                 для http  — ключ из маппинга URL в HttpReferenceHandler
+    value_key:   поле объекта, которое используется как значение (ID)
+    label_key:   поле объекта, которое отображается пользователю
+    search_keys: кортеж полей, по которым работает поиск в MULTISELECT.
+                 Если задан — все эти поля объединяются в отображаемую строку
+                 и участвуют в live-фильтрации. Например: ("name", "azp").
+    """
+    source:      str
+    resource:    str
+    value_key:   str            = "id"
+    label_key:   str            = "name"
+    search_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FieldCondition:
+    """
+    Условие видимости поля.
+    Поле отображается только когда поле-триггер имеет заданное значение.
+
+    field_key: ключ поля-триггера (должен быть объявлен раньше в fields)
+    value:     значение, при котором это поле становится видимым
+    """
+    field_key: str
+    value: Any
+
+
+@dataclass
+class FieldDefinition:
+    """
+    Полное описание одного поля формы.
+    Является единственным источником правды о поле —
+    используется и для отрисовки UI, и для валидации, и для payload.
+    """
+    key:        str
+    label:      str
+    field_type: FieldType
+
+    required:   bool                    = True
+    placeholder: str                    = ""
+    default:    Any                     = None
+    reference:  Optional[ReferenceConfig]  = None
+    condition:  Optional[FieldCondition]   = None  # если задано — поле условное
+    width:      int                     = 42
+    hint:       str                     = ""

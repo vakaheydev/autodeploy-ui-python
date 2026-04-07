@@ -1,0 +1,7 @@
+[
+  {"id": "rest",    "name": "REST"},
+  {"id": "soap",    "name": "SOAP"},
+  {"id": "grpc",    "name": "gRPC"},
+  {"id": "graphql", "name": "GraphQL"},
+  {"id": "async",   "name": "Async / Event"}
+]
