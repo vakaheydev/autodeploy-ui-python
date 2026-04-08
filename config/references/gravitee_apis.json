@@ -1,0 +1,7 @@
+[
+  {"id": "api-frontend",  "name": "frontend",   "context_path": "/frontend"},
+  {"id": "api-backend",   "name": "backend",    "context_path": "/backend"},
+  {"id": "api-gateway",   "name": "gateway",    "context_path": "/gateway"},
+  {"id": "api-auth",      "name": "auth",       "context_path": "/auth"},
+  {"id": "api-analytics", "name": "analytics",  "context_path": "/analytics"}
+]

@@ -101,6 +101,8 @@ env/
 env.bak/
 venv.bak/
 
+.claude/
+
 # Spyder project settings
 .spyderproject
 .spyproject

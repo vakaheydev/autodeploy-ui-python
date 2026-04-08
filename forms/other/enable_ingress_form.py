@@ -35,16 +35,16 @@ class EnableIngressForm(BaseForm):
     def fields(self) -> List[FieldDefinition]:
         return [
             FieldDefinition(
-                key="apps",
-                label="Приложения",
+                key="apis",
+                label="АПИ",
                 field_type=FieldType.MULTISELECT,
                 # TODO: заменить source на "http" когда будет готов эндпоинт
                 reference=ReferenceConfig(
                     source="local",
-                    resource="applications.json",
+                    resource="gravitee_apis.json",
                     value_key="id",
                     label_key="name",
-                    search_keys=("name", "azp"),
+                    search_keys=("name", "context_path", "id"),
                 ),
             ),
             FieldDefinition(
@@ -83,14 +83,14 @@ class EnableIngressForm(BaseForm):
         if form_data.get("ingress_type") == "platformeco":
             if not form_data.get("channel_type"):
                 errors.append('"Тип канала" обязателен для типа ингресса platformeco')
-        if not form_data.get("apps"):
-            errors.append('Необходимо выбрать хотя бы одно приложение')
+        if not form_data.get("apis"):
+            errors.append('Необходимо выбрать хотя бы одно АПИ')
         return errors
 
     def build_payload(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
         # TODO: привести к формату реального API
         payload: Dict[str, Any] = {
-            "apps":        form_data.get("apps", []),
+            "apis":        form_data.get("apis", []),
             "ingressType": form_data.get("ingress_type", ""),
         }
         if form_data.get("ingress_type") == "platformeco":

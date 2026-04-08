@@ -6,7 +6,9 @@ from tkinter import messagebox, ttk
 from typing import Dict
 
 import ui.theme as theme
-from config.environments import ENVIRONMENTS, TFS_TOKEN_KEY, gravitee_token_key
+from config.environments import (
+    ENVIRONMENTS, ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key,
+)
 from ui.screens.base_screen import BaseScreen
 
 
@@ -86,6 +88,66 @@ class SettingsScreen(BaseScreen):
             style="TCheckbutton",
             command=lambda e=tfs_entry, v=tfs_show: e.config(show="" if v.get() else "*"),
         ).pack(side=tk.LEFT, padx=8)
+
+        theme.separator(self, pady=10)
+
+        # --- ITSM ---
+        itsm_card = theme.card(self, pady=0)
+        tk.Label(
+            itsm_card, text="ITSM",
+            font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(anchor=tk.W, padx=14, pady=(10, 6))
+
+        itsm_grid = tk.Frame(itsm_card, bg=theme.C["surface"])
+        itsm_grid.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        # Логин
+        itsm_login_var = tk.StringVar(value=saved.get(ITSM_LOGIN_KEY, ""))
+        self._token_vars[ITSM_LOGIN_KEY] = itsm_login_var
+
+        tk.Label(
+            itsm_grid, text="Логин",
+            font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_label"],
+            width=18, anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=3)
+
+        login_entry = tk.Entry(
+            itsm_grid, textvariable=itsm_login_var,
+            bg=theme.C["input_bg"], fg=theme.C["text"],
+            relief="solid", bd=1,
+            font=theme.F["body"],
+            insertbackground=theme.C["text"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        )
+        login_entry.grid(row=0, column=1, sticky="ew", pady=3, padx=(6, 0))
+        # Пустой столбец для выравнивания с паролем
+        tk.Label(itsm_grid, bg=theme.C["surface"], width=10).grid(row=0, column=2)
+
+        # Пароль
+        itsm_pass_var = tk.StringVar(value=saved.get(ITSM_PASSWORD_KEY, ""))
+        self._token_vars[ITSM_PASSWORD_KEY] = itsm_pass_var
+
+        tk.Label(
+            itsm_grid, text="Пароль",
+            font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_label"],
+            width=18, anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=3)
+
+        pass_entry = self._make_entry(itsm_grid, itsm_pass_var)
+        pass_entry.grid(row=1, column=1, sticky="ew", pady=3, padx=(6, 0))
+
+        pass_show = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            itsm_grid,
+            text="показать",
+            variable=pass_show,
+            style="TCheckbutton",
+            command=lambda e=pass_entry, v=pass_show: e.config(show="" if v.get() else "*"),
+        ).grid(row=1, column=2, padx=8)
+
+        itsm_grid.columnconfigure(1, weight=1)
 
         # --- Сохранить ---
         theme.separator(self, pady=10)

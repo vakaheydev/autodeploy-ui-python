@@ -1,5 +1,39 @@
 # Руководство разработчика — AutoDeploy UI
 
+## Содержание
+
+- [1. Добавить новую форму / изменить существующую](#1-добавить-новую-форму--изменить-существующую)
+  - [Создать новую форму](#создать-новую-форму)
+  - [Добавить новую категорию](#добавить-новую-категорию)
+  - [Типы полей](#типы-полей)
+  - [Условное поле](#условное-поле-показатьскрыть-при-выборе-другого)
+  - [Изменить существующую форму](#изменить-существующую-форму)
+- [2. Изменить обработку сабмита и конструирование JSON](#2-изменить-обработку-сабмита-и-конструирование-json)
+  - [Как работает сабмит](#как-работает-сабмит)
+  - [Изменить URL (куда летит запрос)](#изменить-url-куда-летит-запрос)
+  - [Изменить структуру JSON](#изменить-структуру-json-payload)
+  - [Изменить HTTP метод](#изменить-http-метод)
+  - [Добавить заголовки к запросу](#добавить-дополнительные-заголовки-к-запросу)
+  - [Изменить логику после отправки](#изменить-логику-после-успешной-отправки)
+- [3. Переключение справочников: HTTP ↔ локальный](#3-переключение-справочников-http--локальный)
+  - [Где хранятся локальные справочники](#где-хранятся-локальные-справочники)
+  - [Переключить с локального на HTTP](#переключить-справочник-с-локального-на-http)
+  - [Переключить с HTTP на локальный](#переключить-справочник-с-http-на-локальный)
+  - [Добавить поиск по нескольким полям](#добавить-поиск-по-нескольким-полям)
+  - [Изменить справочник у существующего поля](#изменить-справочник-у-существующего-поля)
+- [4. Авторизация HTTP-справочников](#4-авторизация-http-справочников)
+  - [Как работает авторизация](#как-работает-авторизация)
+  - [Подключить токен к ресурсу](#подключить-токен-к-ресурсу)
+  - [Добавить новый тип токена](#добавить-новый-тип-токена)
+- [5. Кеширование HTTP-справочников](#5-кеширование-http-справочников)
+  - [Настроить TTL для ресурса](#настроить-ttl-для-ресурса)
+  - [Добавить кеширование для нового ресурса](#добавить-кеширование-для-нового-http-справочника)
+  - [Отключить кеширование](#отключить-кеширование-для-ресурса)
+  - [Принудительно сбросить кеш](#принудительно-сбросить-кеш-из-кода)
+- [Структура проекта](#структура-проекта-справка)
+
+
+
 ---
 
 ## 1. Добавить новую форму / изменить существующую
@@ -164,6 +198,10 @@ def validate(self, form_data):
 
 ### Как работает сабмит
 
+> Чтобы изменить **куда** летит запрос — редактировать `get_submit_endpoint()` в файле формы.
+> Чтобы изменить **что** отправляется — редактировать `build_payload()`.
+> Оба метода описаны ниже.
+
 ```
 FormScreen._on_submit()
     └─ _collect_form_data()          # собирает данные только видимых полей
@@ -173,6 +211,28 @@ FormScreen._on_submit()
             └─ EnvManager.get()      # берёт токен для выбранного окружения
             └─ HttpClient.post/put() # HTTP запрос
 ```
+
+---
+
+### Изменить URL (куда летит запрос)
+
+URL задаётся в `get_submit_endpoint()` внутри файла формы. Метод получает `environment` (ключ окружения) и возвращает нужный URL.
+
+```python
+_SUBMIT_URLS: Dict[str, str] = {
+    "test_int":    "https://api.test-int.example.com/management/v2/apis",
+    "test_ext":    "https://api.test-ext.example.com/management/v2/apis",
+    "regress_int": "https://api.regress-int.example.com/management/v2/apis",
+    "regress_ext": "https://api.regress-ext.example.com/management/v2/apis",
+    "prod_int":    "https://api.prod-int.example.com/management/v2/apis",
+    "prod_ext":    "https://api.prod-ext.example.com/management/v2/apis",
+}
+
+def get_submit_endpoint(self, environment: str) -> str:
+    return _SUBMIT_URLS.get(environment, "")
+```
+
+Если метод вернёт пустую строку — `SubmitService` покажет ошибку, запрос отправлен не будет.
 
 ---
 
@@ -317,22 +377,242 @@ URL и постпроцессоры в `http_reference_handler.py` можно н
 
 ---
 
-### Добавить поиск по нескольким полям в MULTISELECT
+### Добавить поиск по нескольким полям
+
+Поиск поддерживается в обоих типах полей выбора — **SELECT** и **MULTISELECT**.
+Задаётся через `search_keys` в `ReferenceConfig`:
 
 ```python
 ReferenceConfig(
-    source="local",            # или "http" — не важно
-    resource="applications.json",
+    source="http",
+    resource="gravitee_apis",
     value_key="id",
     label_key="name",
-    search_keys=("name", "azp"),   # поля для поиска и отображения
+    search_keys=("name", "id", "context_path"),  # поля для поиска
 )
 ```
 
-При заданном `search_keys`:
-- Отображаемая строка: `"frontend  —  frontend-svc-001"`
+**SELECT** (`search_keys` задан):
+- Виджет: строка поиска + прокручиваемый список (6 строк)
+- Поиск фильтрует по всем указанным полям одновременно
+- Выделение сохраняется при фильтрации
+
+**MULTISELECT** (`search_keys` задан):
+- Отображаемая строка объединяет все поля: `"frontend  —  frontend-svc-001"`
 - Живой поиск фильтрует по любому из указанных полей
 - Отмеченные элементы остаются отмеченными при фильтрации
+
+**Без `search_keys`** (оба типа):
+- Поиск всё равно отображается, но работает только по `label_key`
+
+---
+
+### Изменить справочник у существующего поля
+
+Все параметры справочника задаются в `reference=ReferenceConfig(...)` прямо в `FieldDefinition` внутри формы. Менять нужно только файл формы.
+
+| Параметр      | Описание                                                          |
+|---------------|-------------------------------------------------------------------|
+| `source`      | `"local"` — JSON из `config/references/`, `"http"` — загрузка с сервера |
+| `resource`    | для `local`: имя файла (`"applications.json"`); для `http`: ключ из `_URL_MAP` |
+| `value_key`   | поле объекта, которое уходит в payload (обычно `"id"`)           |
+| `label_key`   | поле объекта, отображаемое пользователю (обычно `"name"`)        |
+| `search_keys` | поля для поиска и отображения в строке (необязательно)           |
+
+**Пример — сменить источник с локального на HTTP:**
+
+```python
+# Было:
+reference=ReferenceConfig(
+    source="local",
+    resource="applications.json",
+    value_key="id",
+    label_key="name",
+    search_keys=("name", "azp", "id"),
+)
+
+# Стало:
+reference=ReferenceConfig(
+    source="http",
+    resource="applications",      # ключ из _URL_MAP
+    value_key="id",
+    label_key="name",
+    search_keys=("name", "azp", "id"),
+)
+```
+
+**Пример — сменить справочник на другой:**
+
+```python
+# Было: ссылался на приложения
+reference=ReferenceConfig(
+    source="http",
+    resource="applications",
+    value_key="id",
+    label_key="name",
+)
+
+# Стало: ссылается на список АПИ из Gravitee
+reference=ReferenceConfig(
+    source="http",
+    resource="gravitee_apis",
+    value_key="id",
+    label_key="name",
+    search_keys=("name", "id", "context_path"),
+)
+```
+
+Если нужного ресурса нет в `_URL_MAP` — добавить его по инструкции выше («Переключить справочник с локального на HTTP»).
+
+---
+
+## 4. Авторизация HTTP-справочников
+
+### Как работает авторизация
+
+Перед каждым HTTP-запросом `HttpReferenceHandler` смотрит тип токена для ресурса в `_AUTH_MAP` (файл `handlers/http_reference_handler.py`), берёт нужный токен из `.env` через `EnvManager` и устанавливает его на `HttpClient`.
+
+Доступные типы авторизации:
+
+| Тип        | Схема                | Ключи в `.env`                        | Когда использовать              |
+|------------|----------------------|---------------------------------------|---------------------------------|
+| `gravitee` | `Bearer <token>`     | `GRAVITEE_TOKEN_<ENV_KEY>`            | Справочники Gravitee API        |
+| `tfs`      | `Bearer <token>`     | `TFS_TOKEN`                           | Справочники TFS/Azure DevOps    |
+| `itsm`     | `Basic <b64>`        | `ITSM_LOGIN`, `ITSM_PASSWORD`         | Справочники ITSM                |
+| *(нет)*    | без заголовка        | —                                     | Публичные эндпоинты             |
+
+---
+
+### Подключить токен к ресурсу
+
+Открыть `handlers/http_reference_handler.py` и добавить строку в `_AUTH_MAP`:
+
+```python
+_AUTH_MAP: Dict[str, str] = {
+    "gravitee_apis": "gravitee",   # уже есть
+    "tfs_builds":    "tfs",        # ← новая строка
+}
+```
+
+Ключ — `resource` из `ReferenceConfig` (тот же, что в `_URL_MAP`).
+Значение — тип токена из таблицы выше.
+
+Больше ничего менять не нужно — токен подставится автоматически при загрузке справочника.
+
+---
+
+### Добавить новый тип токена
+
+Если нужна авторизация с другим токеном (не Gravitee и не TFS):
+
+**Шаг 1.** Добавить ключ в `config/environments.py`:
+
+```python
+MY_SERVICE_TOKEN_KEY = "MY_SERVICE_TOKEN"
+
+# Или per-env вариант:
+def my_service_token_key(env_key: str) -> str:
+    return f"MY_SERVICE_TOKEN_{env_key.upper()}"
+```
+
+**Шаг 2.** Добавить ветку в `_set_auth()` в `handlers/http_reference_handler.py`:
+
+```python
+def _set_auth(self, resource: str, environment: str) -> None:
+    auth_type = _AUTH_MAP.get(resource)
+    if auth_type == "gravitee":
+        token = self._env_manager.get(gravitee_token_key(environment))
+    elif auth_type == "tfs":
+        token = self._env_manager.get(TFS_TOKEN_KEY)
+    elif auth_type == "my_service":                          # ← новая ветка
+        token = self._env_manager.get(MY_SERVICE_TOKEN_KEY)
+    else:
+        token = ""
+    self._client.set_token(token)
+```
+
+**Шаг 3.** Добавить в `_AUTH_MAP`:
+
+```python
+_AUTH_MAP: Dict[str, str] = {
+    "gravitee_apis":  "gravitee",
+    "my_resource":    "my_service",   # ← новая строка
+}
+```
+
+**Шаг 4.** Прописать креды в `.env`:
+
+```
+# Bearer-токен
+MY_SERVICE_TOKEN=your-token-here
+
+# Basic Auth (логин + пароль)
+MY_SERVICE_LOGIN=user
+MY_SERVICE_PASSWORD=secret
+```
+
+---
+
+## 5. Кеширование HTTP-справочников
+
+Загруженные данные хранятся в памяти до истечения TTL. При повторном открытии формы сетевой запрос не делается — отдаётся кеш. После истечения TTL следующий запрос обновляет кеш.
+
+Локальные справочники (`source="local"`) не кешируются — они читаются с диска мгновенно.
+
+---
+
+### Настроить TTL для ресурса
+
+Открыть `config/reference_cache_config.py` и добавить строку:
+
+```python
+CACHE_TTL: Dict[str, int] = {
+    "gravitee_apis": 300,   # 5 минут
+    "applications":  120,   # 2 минуты — добавить новый ресурс здесь
+}
+```
+
+Ключ — `resource` из `ReferenceConfig` (тот же, что в `_URL_MAP`).
+Значение — TTL в секундах. Ресурсы без записи не кешируются.
+
+---
+
+### Добавить кеширование для нового HTTP-справочника
+
+1. Добавить URL в `_URL_MAP` в `handlers/http_reference_handler.py` (как обычно)
+2. Добавить TTL в `config/reference_cache_config.py`:
+
+```python
+CACHE_TTL: Dict[str, int] = {
+    "gravitee_apis":  300,
+    "my_new_resource": 60,   # ← новая строка
+}
+```
+
+Больше ничего менять не нужно.
+
+---
+
+### Отключить кеширование для ресурса
+
+Удалить строку ресурса из `CACHE_TTL`. При каждом открытии формы будет делаться свежий HTTP-запрос.
+
+---
+
+### Принудительно сбросить кеш из кода
+
+`ReferenceCache` доступен как `app.reference_cache`:
+
+```python
+# Сбросить весь кеш
+app.reference_cache.invalidate()
+
+# Сбросить один ресурс во всех окружениях
+app.reference_cache.invalidate("gravitee_apis")
+
+# Сбросить один ресурс в конкретном окружении
+app.reference_cache.invalidate("gravitee_apis", "prod_int")
+```
 
 ---
 
@@ -341,12 +621,14 @@ ReferenceConfig(
 ```
 autodeploy-ui-python/
 ├── config/
-│   ├── categories.py           # названия категорий и их порядок
-│   ├── environments.py         # список окружений и ключи .env токенов
-│   └── references/             # локальные JSON-справочники
+│   ├── categories.py              # названия категорий и их порядок
+│   ├── environments.py            # список окружений и ключи .env токенов
+│   ├── reference_cache_config.py  # ← TTL кеша для каждого HTTP-справочника
+│   └── references/                # локальные JSON-справочники
 ├── core/
 │   ├── env_manager.py          # чтение/запись .env (токены)
 │   ├── http_client.py          # HTTP клиент (GET/POST/PUT/DELETE)
+│   ├── reference_cache.py      # кеш HTTP-справочников в памяти
 │   └── reference_resolver.py  # выбирает нужный обработчик справочника
 ├── forms/
 │   ├── base_form.py            # абстрактный класс формы

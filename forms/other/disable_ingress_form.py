@@ -44,7 +44,7 @@ class DisableIngressForm(BaseForm):
                     resource="applications.json",
                     value_key="id",
                     label_key="name",
-                    search_keys=("name", "azp"),
+                    search_keys=("name", "azp", "id"),
                 ),
             ),
             FieldDefinition(

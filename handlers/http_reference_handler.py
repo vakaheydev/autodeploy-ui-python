@@ -1,44 +1,64 @@
 """
-HttpReferenceHandler — загрузка справочников с HTTP сервера.
+HttpReferenceHandler — загрузка справочников с HTTP сервера с кешированием.
 
-TODO: заполнить _URL_MAP реальными эндпоинтами справочников.
-TODO: при необходимости добавить кэширование и фоновую загрузку (threading).
+TTL кеша задаётся в config/reference_cache_config.py.
+Ресурсы без записи в конфиге не кешируются.
 """
 from typing import Any, Callable, Dict, List, Optional
 
+from config.environments import ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key
+from config.reference_cache_config import CACHE_TTL
+from core.env_manager import EnvManager
 from core.http_client import HttpClient
+from core.reference_cache import ReferenceCache
 from forms.fields import ReferenceConfig
 from handlers.base_reference_handler import BaseReferenceHandler
 
 
+# Тип авторизации для каждого ресурса.
+# "gravitee" → Bearer GRAVITEE_TOKEN_<ENV_KEY> из .env
+# "tfs"      → Bearer TFS_TOKEN из .env
+# "itsm"     → Basic ITSM_LOGIN:ITSM_PASSWORD из .env
+# Ресурсы без записи запрашиваются без авторизации.
+_AUTH_MAP: Dict[str, str] = {
+    "gravitee_apis": "gravitee",
+}
+
 # TODO: заменить заглушки реальными URL для каждого окружения
 # Структура: resource_key → {env_key: url}
 _URL_MAP: Dict[str, Dict[str, str]] = {
-    # Пример:
-    # "gravitee_apis": {
-    #     "test_int":    "https://api.test-int.example.com/management/v2/apis",
-    #     "prod_int":    "https://api.prod-int.example.com/management/v2/apis",
-    # },
+    "gravitee_apis": {
+        "test_int":    "https://api.test-int.example.com/management/v2/apis",
+        "test_ext":    "https://api.test-ext.example.com/management/v2/apis",
+        "regress_int": "https://api.regress-int.example.com/management/v2/apis",
+        "regress_ext": "https://api.regress-ext.example.com/management/v2/apis",
+        "prod_int":    "https://api.prod-int.example.com/management/v2/apis",
+        "prod_ext":    "https://api.prod-ext.example.com/management/v2/apis",
+    },
 }
 
 # Необязательные постпроцессоры для конкретных ресурсов.
 # Позволяют трансформировать/фильтровать ответ сервера.
 # Сигнатура: (raw_response: Any) -> List[Dict]
 _RESPONSE_PROCESSORS: Dict[str, Callable[[Any], List[Dict]]] = {
-    # "gravitee_apis": lambda resp: resp.get("data", []),
+    "gravitee_apis": lambda resp: resp.get("data", []),
 }
 
 
 class HttpReferenceHandler(BaseReferenceHandler):
     """
-    Загружает справочные данные через HTTP.
+    Загружает справочные данные через HTTP с кешированием в памяти.
 
-    Принимает HttpClient снаружи (Dependency Injection),
-    что позволяет использовать актуальный токен окружения.
+    Авторизация: тип токена берётся из _AUTH_MAP по ключу resource.
+    TTL кеша берётся из CACHE_TTL по ключу resource.
     """
 
-    def __init__(self, http_client: HttpClient) -> None:
+    def __init__(
+        self, http_client: HttpClient, cache: ReferenceCache, env_manager: EnvManager
+    ) -> None:
         self._client = http_client
+        self._cache = cache
+        self._env_manager = env_manager
 
     def supports(self, config: ReferenceConfig) -> bool:
         return config.source == "http"
@@ -46,10 +66,20 @@ class HttpReferenceHandler(BaseReferenceHandler):
     def load(
         self, config: ReferenceConfig, environment: str = ""
     ) -> List[Dict[str, Any]]:
-        url = self._resolve_url(config.resource, environment)
+        resource = config.resource
+        ttl = CACHE_TTL.get(resource)
+
+        if ttl is not None:
+            cached = self._cache.get(resource, environment, ttl)
+            if cached is not None:
+                return cached
+
+        self._set_auth(resource, environment)
+
+        url = self._resolve_url(resource, environment)
         if not url:
             print(
-                f"[HttpReferenceHandler] URL не задан для resource='{config.resource}'"
+                f"[HttpReferenceHandler] URL не задан для resource='{resource}'"
                 f" / environment='{environment}'. Возвращаю пустой список."
             )
             return []
@@ -60,12 +90,32 @@ class HttpReferenceHandler(BaseReferenceHandler):
             print(f"[HttpReferenceHandler] Ошибка загрузки {url}: {exc}")
             return []
 
-        items = self._process_response(config.resource, raw)
+        items = self._process_response(resource, raw)
+
+        if ttl is not None:
+            self._cache.set(resource, environment, items)
+
         return items
 
     # ------------------------------------------------------------------
     # Внутренние методы
     # ------------------------------------------------------------------
+
+    def _set_auth(self, resource: str, environment: str) -> None:
+        """Устанавливает авторизацию на HttpClient согласно _AUTH_MAP."""
+        auth_type = _AUTH_MAP.get(resource)
+        if auth_type == "gravitee":
+            token = self._env_manager.get(gravitee_token_key(environment))
+            self._client.set_token(token)
+        elif auth_type == "tfs":
+            token = self._env_manager.get(TFS_TOKEN_KEY)
+            self._client.set_token(token)
+        elif auth_type == "itsm":
+            login    = self._env_manager.get(ITSM_LOGIN_KEY)
+            password = self._env_manager.get(ITSM_PASSWORD_KEY)
+            self._client.set_basic_auth(login, password)
+        else:
+            self._client.set_token("")
 
     def _resolve_url(self, resource: str, environment: str) -> str:
         """Возвращает URL для ресурса в заданном окружении."""

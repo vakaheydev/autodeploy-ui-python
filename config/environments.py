@@ -32,3 +32,6 @@ def gravitee_token_key(env_key: str) -> str:
 
 
 TFS_TOKEN_KEY = "TFS_TOKEN"
+
+ITSM_LOGIN_KEY  = "ITSM_LOGIN"
+ITSM_PASSWORD_KEY = "ITSM_PASSWORD"

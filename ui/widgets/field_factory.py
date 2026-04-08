@@ -3,7 +3,7 @@ FieldFactory — создаёт стилизованные виджеты по F
 """
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ui.theme as theme
 from forms.fields import FieldDefinition, FieldType
@@ -62,15 +62,157 @@ class _ToggleRow:
         self._btn.pack_forget()
 
 
-class FieldWidget:
-    """Обёртка над виджетом с унифицированным .get()."""
+class _SearchableSelectWidget:
+    """
+    Виджет одиночного выбора с поиском.
+    Отображает строку поиска и прокручиваемый список — аналог MULTISELECT,
+    но с одиночным выбором.
+    """
 
-    def __init__(self, widget: tk.Widget, get_fn: Callable[[], Any]) -> None:
+    _HINT = "Начните вводить для поиска..."
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        labels: List[str],
+        values: List[str],
+        search_strings: List[str],
+    ) -> None:
+        self._labels = labels
+        self._values = values
+        self._search_strings = search_strings
+        self._selected_idx: Optional[int] = None
+        self._visible_indices: List[int] = list(range(len(labels)))
+        self._change_callbacks: List[Callable[[], None]] = []
+
+        # Внешний контейнер
+        self.frame = tk.Frame(
+            parent,
+            bg=theme.C["input_bg"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        )
+
+        # Строка поиска
+        search_bar = tk.Frame(self.frame, bg=theme.C["input_bg"])
+        search_bar.pack(fill=tk.X, padx=8, pady=(6, 0))
+
+        tk.Label(
+            search_bar, text="🔍",
+            font=theme.F["body"], bg=theme.C["input_bg"], fg=theme.C["text_muted"],
+        ).pack(side=tk.LEFT)
+
+        self._search_var = tk.StringVar()
+        self._search_entry = tk.Entry(
+            search_bar, textvariable=self._search_var,
+            bg=theme.C["input_bg"], fg=theme.C["text_muted"],
+            insertbackground=theme.C["text"],
+            relief="flat", bd=0,
+            font=theme.F["body"],
+            highlightthickness=0,
+        )
+        self._search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self._search_var.set(self._HINT)
+
+        self._search_entry.bind("<FocusIn>",  self._on_focus_in)
+        self._search_entry.bind("<FocusOut>", self._on_focus_out)
+
+        # Разделитель
+        tk.Frame(self.frame, bg=theme.C["border"], height=1).pack(fill=tk.X, pady=(6, 0))
+
+        # Listbox
+        lb_frame = tk.Frame(self.frame, bg=theme.C["input_bg"])
+        lb_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        scrollbar = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+        self._listbox = tk.Listbox(
+            lb_frame,
+            yscrollcommand=scrollbar.set,
+            bg=theme.C["input_bg"],
+            fg=theme.C["text"],
+            selectbackground=theme.C["primary"],
+            selectforeground="white",
+            relief="flat", bd=0,
+            font=theme.F["body"],
+            activestyle="none",
+            height=6,
+        )
+        scrollbar.config(command=self._listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for lbl in labels:
+            self._listbox.insert(tk.END, lbl)
+
+        self._listbox.bind("<<ListboxSelect>>", self._on_select)
+        self._search_var.trace_add("write", self._apply_filter)
+
+    def _on_focus_in(self, _) -> None:
+        if self._search_var.get() == self._HINT:
+            self._search_var.set("")
+            self._search_entry.config(fg=theme.C["text"])
+
+    def _on_focus_out(self, _) -> None:
+        if not self._search_var.get():
+            self._search_var.set(self._HINT)
+            self._search_entry.config(fg=theme.C["text_muted"])
+
+    def _apply_filter(self, *_) -> None:
+        query = self._search_var.get()
+        if query == self._HINT:
+            query = ""
+        query = query.strip().lower()
+
+        self._listbox.delete(0, tk.END)
+        self._visible_indices = []
+        for i, (lbl, sstr) in enumerate(zip(self._labels, self._search_strings)):
+            if not query or query in sstr:
+                self._listbox.insert(tk.END, lbl)
+                self._visible_indices.append(i)
+
+        # Восстановить выделение если выбранный элемент ещё виден
+        if self._selected_idx is not None and self._selected_idx in self._visible_indices:
+            pos = self._visible_indices.index(self._selected_idx)
+            self._listbox.selection_set(pos)
+
+    def _on_select(self, _) -> None:
+        sel = self._listbox.curselection()
+        if sel:
+            self._selected_idx = self._visible_indices[sel[0]]
+            for cb in self._change_callbacks:
+                cb()
+
+    def on_change(self, callback: Callable[[], None]) -> None:
+        """Регистрирует коллбэк, вызываемый при выборе элемента."""
+        self._change_callbacks.append(callback)
+
+    def get(self) -> str:
+        if self._selected_idx is not None:
+            return self._values[self._selected_idx]
+        return ""
+
+
+class FieldWidget:
+    """Обёртка над виджетом с унифицированным .get() и опциональным bind_change()."""
+
+    def __init__(
+        self,
+        widget: tk.Widget,
+        get_fn: Callable[[], Any],
+        bind_change_fn: Optional[Callable[[Callable[[], None]], None]] = None,
+    ) -> None:
         self.widget = widget
         self._get_fn = get_fn
+        self._bind_change_fn = bind_change_fn
 
     def get(self) -> Any:
         return self._get_fn()
+
+    def bind_change(self, callback: Callable[[], None]) -> None:
+        """Подписывается на изменение значения. Работает для SELECT с поиском."""
+        if self._bind_change_fn is not None:
+            self._bind_change_fn(callback)
 
 
 # Общие параметры для tk.Entry / tk.Text
@@ -138,14 +280,18 @@ class FieldFactory:
         labels = [str(item.get(ref.label_key, "")) for item in items]
         values = [str(item.get(ref.value_key, "")) for item in items]
 
-        var = tk.StringVar()
-        combo = ttk.Combobox(parent, textvariable=var, values=labels, state="readonly")
+        if ref.search_keys:
+            search_strings = [
+                " ".join(
+                    str(item.get(k, "")) for k in ref.search_keys if item.get(k) is not None
+                ).lower()
+                for item in items
+            ]
+        else:
+            search_strings = [lbl.lower() for lbl in labels]
 
-        def get_value() -> str:
-            sel = var.get()
-            return values[labels.index(sel)] if sel in labels else ""
-
-        return FieldWidget(combo, get_value)
+        w = _SearchableSelectWidget(parent, labels, values, search_strings)
+        return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change)
 
     def _create_multiselect(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]
@@ -186,50 +332,51 @@ class FieldFactory:
             highlightcolor=theme.C["border_focus"],
         )
 
-        # --- Строка поиска (только если search_keys задан) ---
-        has_search = bool(ref and ref.search_keys)
-        if has_search:
-            search_bar = tk.Frame(frame, bg=theme.C["input_bg"])
-            search_bar.pack(fill=tk.X, padx=8, pady=(6, 0))
+        # --- Строка поиска ---
+        search_bar = tk.Frame(frame, bg=theme.C["input_bg"])
+        search_bar.pack(fill=tk.X, padx=8, pady=(6, 0))
 
-            tk.Label(
-                search_bar, text="🔍",
-                font=theme.F["body"], bg=theme.C["input_bg"], fg=theme.C["text_muted"],
-            ).pack(side=tk.LEFT)
+        tk.Label(
+            search_bar, text="🔍",
+            font=theme.F["body"], bg=theme.C["input_bg"], fg=theme.C["text_muted"],
+        ).pack(side=tk.LEFT)
 
-            search_var = tk.StringVar()
+        search_var = tk.StringVar()
+        if ref and ref.search_keys:
             hint = f"Поиск по {', '.join(ref.search_keys)}..."
-            search_entry = tk.Entry(
-                search_bar, textvariable=search_var,
-                bg=theme.C["input_bg"], fg=theme.C["text"],
-                insertbackground=theme.C["text"],
-                relief="flat", bd=0,
-                font=theme.F["body"],
-                highlightthickness=0,
-            )
-            search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        else:
+            hint = "Поиск..."
+        search_entry = tk.Entry(
+            search_bar, textvariable=search_var,
+            bg=theme.C["input_bg"], fg=theme.C["text"],
+            insertbackground=theme.C["text"],
+            relief="flat", bd=0,
+            font=theme.F["body"],
+            highlightthickness=0,
+        )
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
-            # Плейсхолдер для строки поиска
-            search_var.set(hint)
-            search_entry.config(fg=theme.C["text_muted"])
+        # Плейсхолдер для строки поиска
+        search_var.set(hint)
+        search_entry.config(fg=theme.C["text_muted"])
 
-            def _on_search_focus_in(_):
-                if search_var.get() == hint:
-                    search_var.set("")
-                    search_entry.config(fg=theme.C["text"])
+        def _on_search_focus_in(_):
+            if search_var.get() == hint:
+                search_var.set("")
+                search_entry.config(fg=theme.C["text"])
 
-            def _on_search_focus_out(_):
-                if not search_var.get():
-                    search_var.set(hint)
-                    search_entry.config(fg=theme.C["text_muted"])
+        def _on_search_focus_out(_):
+            if not search_var.get():
+                search_var.set(hint)
+                search_entry.config(fg=theme.C["text_muted"])
 
-            search_entry.bind("<FocusIn>",  _on_search_focus_in)
-            search_entry.bind("<FocusOut>", _on_search_focus_out)
+        search_entry.bind("<FocusIn>",  _on_search_focus_in)
+        search_entry.bind("<FocusOut>", _on_search_focus_out)
 
-            # Разделитель под строкой поиска
-            tk.Frame(frame, bg=theme.C["border"], height=1).pack(
-                fill=tk.X, padx=0, pady=(6, 0)
-            )
+        # Разделитель под строкой поиска
+        tk.Frame(frame, bg=theme.C["border"], height=1).pack(
+            fill=tk.X, padx=0, pady=(6, 0)
+        )
 
         # --- Список чекбоксов ---
         cb_container = tk.Frame(frame, bg=theme.C["input_bg"])
@@ -253,20 +400,19 @@ class FieldFactory:
             ).pack(padx=10, pady=8)
 
         # --- Фильтрация ---
-        if has_search:
-            def _apply_filter(*_):
-                query = search_var.get()
-                if query == hint:
-                    query = ""
-                query = query.strip().lower()
+        def _apply_filter(*_):
+            query = search_var.get()
+            if query == hint:
+                query = ""
+            query = query.strip().lower()
 
-                for toggle, _v, _s in rows:
-                    toggle.pack_forget()
-                for toggle, _v, sstr in rows:
-                    if not query or query in sstr:
-                        toggle.pack()
+            for toggle, _v, _s in rows:
+                toggle.pack_forget()
+            for toggle, _v, sstr in rows:
+                if not query or query in sstr:
+                    toggle.pack()
 
-            search_var.trace_add("write", _apply_filter)
+        search_var.trace_add("write", _apply_filter)
 
         # Нижний отступ
         tk.Frame(frame, bg=theme.C["input_bg"], height=4).pack()

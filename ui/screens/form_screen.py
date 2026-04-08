@@ -187,6 +187,8 @@ class FormScreen(BaseScreen):
             if isinstance(widget, ttk.Combobox):
                 widget.bind("<<ComboboxSelected>>",
                             lambda _e: self._refresh_conditional_fields())
+            else:
+                fw.bind_change(self._refresh_conditional_fields)
 
     def _refresh_conditional_fields(self) -> None:
         """Пересчитывает видимость условных полей при изменении триггера."""

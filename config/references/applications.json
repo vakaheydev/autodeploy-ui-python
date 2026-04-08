@@ -3,5 +3,5 @@
   {"id": "app-backend",   "name": "backend",    "azp": "backend-svc-002"},
   {"id": "app-gateway",   "name": "gateway",    "azp": "gateway-svc-003"},
   {"id": "app-auth",      "name": "auth",       "azp": "auth-svc-004"},
-  {"id": "app-analytics", "name": "analytics",  "azp": "analytics-svc-005"}
+  {"id": "app-analytics", "name": "analytics",  "azp": "1234"}
 ]

@@ -9,6 +9,7 @@ from typing import List, Type
 from config.environments import ENVIRONMENTS
 from core.env_manager import EnvManager
 from core.http_client import HttpClient
+from core.reference_cache import ReferenceCache
 from core.reference_resolver import ReferenceResolver
 from forms.loader import register_all_forms
 from handlers.http_reference_handler import HttpReferenceHandler
@@ -43,11 +44,12 @@ class Application:
         # --- Сервисы ---
         self.env_manager = EnvManager()
         self.http_client = HttpClient(timeout=30)
+        self.reference_cache = ReferenceCache()
 
         self.reference_resolver = ReferenceResolver(
             handlers=[
                 LocalReferenceHandler(),
-                HttpReferenceHandler(self.http_client),
+                HttpReferenceHandler(self.http_client, self.reference_cache, self.env_manager),
             ]
         )
         self.submit_service = SubmitService(self.http_client, self.env_manager)

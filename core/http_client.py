@@ -2,6 +2,7 @@
 HttpClient — тонкая обёртка над urllib для HTTP запросов.
 Не требует сторонних библиотек.
 """
+import base64
 import json
 import urllib.error
 import urllib.parse
@@ -29,14 +30,22 @@ class HttpClient:
     def __init__(self, token: str = "", timeout: int = 30) -> None:
         self._token = token
         self._timeout = timeout
+        self._auth_header: Optional[str] = None  # переопределяет _token если задан
 
     # ------------------------------------------------------------------
-    # Управление токеном
+    # Управление авторизацией
     # ------------------------------------------------------------------
 
     def set_token(self, token: str) -> None:
-        """Обновляет Authorization токен (вызывается при смене окружения)."""
+        """Bearer-авторизация. Вызывается при смене окружения."""
         self._token = token
+        self._auth_header = None
+
+    def set_basic_auth(self, login: str, password: str) -> None:
+        """Basic-авторизация (login:password → base64). Вызывается при смене окружения."""
+        encoded = base64.b64encode(f"{login}:{password}".encode()).decode("ascii")
+        self._auth_header = f"Basic {encoded}"
+        self._token = ""
 
     # ------------------------------------------------------------------
     # HTTP методы
@@ -79,7 +88,16 @@ class HttpClient:
         data: Optional[bytes] = None,
     ) -> urllib.request.Request:
         req = urllib.request.Request(url, data=data, method=method)
-        if self._token:
+        if self._auth_header:
+            req.add_header("Authorization", self._auth_header)
+        elif self._token:
+            try:
+                self._token.encode("ascii")
+            except UnicodeEncodeError:
+                raise ValueError(
+                    "Токен авторизации содержит недопустимые символы. "
+                    "Проверьте значение токена в настройках окружения."
+                )
             req.add_header("Authorization", f"Bearer {self._token}")
         req.add_header("Accept", "application/json")
         return req
