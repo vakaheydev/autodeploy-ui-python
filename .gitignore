@@ -93,6 +93,9 @@ celerybeat.pid
 
 *.pyc
 
+# HTTP reference cache
+cached/
+
 # Environments
 .env
 .env.local
