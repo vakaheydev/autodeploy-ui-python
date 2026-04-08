@@ -4,6 +4,7 @@ FormScreen — экран заполнения и отправки формы.
 появляются/скрываются в зависимости от значения другого поля.
 """
 import json
+import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from typing import Any, Dict, List
@@ -23,6 +24,8 @@ class FormScreen(BaseScreen):
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
         self._field_containers: Dict[str, tk.Frame] = {}
+        # Внутренние surface-фреймы — для пересоздания виджетов при reload
+        self._field_inner_frames: Dict[str, tk.Frame] = {}
         # Порядок ключей для правильной вставки при показе
         self._field_order: List[str] = []
         self._factory = FieldFactory()
@@ -116,16 +119,40 @@ class FormScreen(BaseScreen):
             inner.pack(fill=tk.BOTH, padx=1, pady=1)
 
             self._field_containers[field_def.key] = outer
+            self._field_inner_frames[field_def.key] = inner
 
-            # Метка
+            # Строка с меткой (и кнопкой обновления для HTTP-справочников)
+            label_row = tk.Frame(inner, bg=theme.C["surface"])
+            label_row.pack(fill=tk.X, padx=12, pady=(8, 3))
+
             req = "  *" if field_def.required else ""
             tk.Label(
-                inner,
+                label_row,
                 text=f"{field_def.label}{req}",
                 font=theme.F["small"],
                 bg=theme.C["surface"],
                 fg=theme.C["text_label"] if field_def.required else theme.C["text_muted"],
-            ).pack(anchor=tk.W, padx=12, pady=(8, 3))
+            ).pack(side=tk.LEFT)
+
+            if (field_def.reference is not None
+                    and field_def.reference.source == "http"):
+                refresh_btn = tk.Button(
+                    label_row,
+                    text="↻",
+                    font=theme.F["body"],
+                    bg=theme.C["surface"],
+                    fg=theme.C["primary"],
+                    activebackground=theme.C["surface"],
+                    activeforeground=theme.C["primary"],
+                    relief="flat", bd=0,
+                    cursor="hand2",
+                )
+                refresh_btn.config(
+                    command=lambda fd=field_def, b=refresh_btn: (
+                        self._reload_reference_field(fd, b)
+                    )
+                )
+                refresh_btn.pack(side=tk.RIGHT)
 
             # Виджет ввода
             ref_items = self._load_reference(field_def)
@@ -186,7 +213,7 @@ class FormScreen(BaseScreen):
             widget = fw.widget
             if isinstance(widget, ttk.Combobox):
                 widget.bind("<<ComboboxSelected>>",
-                            lambda _e: self._refresh_conditional_fields())
+                            lambda *_: self._refresh_conditional_fields())
             else:
                 fw.bind_change(self._refresh_conditional_fields)
 
@@ -243,6 +270,94 @@ class FormScreen(BaseScreen):
         except Exception as exc:
             print(f"[FormScreen] Ошибка загрузки справочника '{field_def.key}': {exc}")
             return []
+
+    def _reload_reference_field(self, field_def: FieldDefinition, btn: tk.Button) -> None:
+        """Инвалидирует кеш и перезагружает справочник в отдельном потоке."""
+        assert field_def.reference is not None
+        resource = field_def.reference.resource
+        env = self.app.current_environment.get()
+
+        btn.config(state=tk.DISABLED, fg=theme.C["text_muted"])
+
+        # Окно «В процессе»
+        loading = tk.Toplevel(self)
+        loading.title("Обновление справочника")
+        loading.resizable(False, False)
+        loading.grab_set()
+        loading.transient(self.winfo_toplevel())
+
+        tk.Label(
+            loading,
+            text=f"Обновляется справочник\n«{field_def.label}»…",
+            font=theme.F["body"],
+            padx=28, pady=20,
+        ).pack()
+        loading.update()
+
+        def _worker():
+            try:
+                self.app.reference_cache.invalidate(resource, env)
+                ref = field_def.reference
+                assert ref is not None
+                new_items = self.app.reference_resolver.resolve(ref, env)
+                error = None
+            except Exception as exc:
+                new_items = []
+                error = str(exc)
+            self.after(0, lambda: self._finish_reload(field_def, btn, new_items, loading, error))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _finish_reload(
+        self,
+        field_def: FieldDefinition,
+        btn: tk.Button,
+        new_items: List[Dict[str, Any]],
+        loading: tk.Toplevel,
+        error: str | None,
+    ) -> None:
+        """Вызывается в главном потоке: пересоздаёт виджет, закрывает окна."""
+        loading.destroy()
+
+        if error:
+            btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+            messagebox.showerror(
+                "Ошибка обновления",
+                f"Не удалось обновить справочник «{field_def.label}»:\n{error}",
+            )
+            return
+
+        # Пересоздаём виджет с новыми данными
+        key = field_def.key
+        old_fw = self._field_widgets.get(key)
+        if old_fw is not None:
+            old_fw.widget.destroy()
+
+        inner = self._field_inner_frames[key]
+        fw = self._factory.create(inner, field_def, new_items)
+        fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self._field_widgets[key] = fw
+
+        # Восстанавливаем подписку на изменения если поле является триггером
+        trigger_dependent = [
+            f for f in self._form.fields
+            if f.condition and f.condition.field_key == key
+        ]
+        if trigger_dependent:
+            widget = fw.widget
+            if isinstance(widget, ttk.Combobox):
+                widget.bind("<<ComboboxSelected>>",
+                            lambda *_: self._refresh_conditional_fields())
+            else:
+                fw.bind_change(self._refresh_conditional_fields)
+
+        btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+
+        messagebox.showinfo(
+            "Обновление завершено",
+            f"Справочник «{field_def.label}» успешно обновлён.\n"
+            f"Загружено элементов: {len(new_items)}.",
+        )
 
     # ------------------------------------------------------------------
     # Данные формы
