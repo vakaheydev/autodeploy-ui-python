@@ -125,10 +125,67 @@ class CategoryScreen(BaseScreen):
             ).pack(pady=24)
             return
 
-        for form in forms:
-            self._form_row(form)
+        # --- Строка поиска ---
+        search_frame = tk.Frame(
+            self._content,
+            bg=theme.C["input_bg"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        )
+        search_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
 
-    def _form_row(self, form) -> None:
+        tk.Label(
+            search_frame, text="🔍",
+            font=theme.F["body"], bg=theme.C["input_bg"], fg=theme.C["text_muted"],
+            padx=8,
+        ).pack(side=tk.LEFT)
+
+        _HINT = "Поиск по названию формы..."
+        search_var = tk.StringVar(value=_HINT)
+        search_entry = tk.Entry(
+            search_frame, textvariable=search_var,
+            bg=theme.C["input_bg"], fg=theme.C["text_muted"],
+            insertbackground=theme.C["text"],
+            relief="flat", bd=0, font=theme.F["body"],
+            highlightthickness=0,
+        )
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=7, padx=(0, 8))
+
+        def _on_focus_in(_):
+            if search_var.get() == _HINT:
+                search_var.set("")
+                search_entry.config(fg=theme.C["text"])
+
+        def _on_focus_out(_):
+            if not search_var.get():
+                search_var.set(_HINT)
+                search_entry.config(fg=theme.C["text_muted"])
+
+        search_entry.bind("<FocusIn>",  _on_focus_in)
+        search_entry.bind("<FocusOut>", _on_focus_out)
+
+        # --- Карточки форм с фильтрацией ---
+        form_rows: list[tuple] = []   # (border_frame, form)
+
+        for form in forms:
+            border = self._form_row(form)
+            form_rows.append((border, form))
+
+        def _apply_filter(*_):
+            query = search_var.get()
+            if query == _HINT:
+                query = ""
+            query = query.strip().lower()
+            for border, form in form_rows:
+                if not query or query in form.title.lower():
+                    border.pack(fill=tk.X, pady=3, padx=2)
+                else:
+                    border.pack_forget()
+
+        search_var.trace_add("write", _apply_filter)
+
+    def _form_row(self, form) -> tk.Frame:
         border = tk.Frame(self._content, bg=theme.C["border"])
         border.pack(fill=tk.X, pady=3, padx=2)
         row = tk.Frame(border, bg=theme.C["surface"], cursor="hand2")
@@ -157,6 +214,8 @@ class CategoryScreen(BaseScreen):
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
             w.bind("<Button-1>", on_click)
+
+        return border
 
     # ------------------------------------------------------------------
 

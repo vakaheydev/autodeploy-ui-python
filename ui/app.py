@@ -68,6 +68,9 @@ class Application:
         self._main_container = tk.Frame(self._root, bg=C["bg"])
         self._main_container.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
 
+        # --- Глобальные биндинги ---
+        self._root.bind_all("<Control-KeyPress>", self._on_ctrl_key)
+
         # --- Запуск ---
         self.navigate_to(self._get_main_screen_class())
 
@@ -126,6 +129,67 @@ class Application:
     # ------------------------------------------------------------------
     # Внутренние методы
     # ------------------------------------------------------------------
+
+    def _on_ctrl_key(self, event: tk.Event) -> None:
+        """
+        Фикс Ctrl+A/C/V на русской раскладке.
+        Keysym зависит от раскладки, keycode — физический и не зависит.
+        65=A, 67=C, 86=V.
+        """
+        w = event.widget
+        if event.keycode == 65:           # Ctrl+A — выделить всё
+            if isinstance(w, tk.Entry):
+                w.select_range(0, tk.END)
+                w.icursor(tk.END)
+            elif isinstance(w, tk.Text):
+                w.tag_add(tk.SEL, "1.0", tk.END)
+                w.mark_set(tk.INSERT, tk.END)
+
+        elif event.keycode == 67 and event.keysym.lower() != 'c':   # Ctrl+C, русская раскладка
+            if isinstance(w, tk.Entry):
+                if w.selection_present():
+                    self._root.clipboard_clear()
+                    self._root.clipboard_append(w.selection_get())
+            elif isinstance(w, tk.Text):
+                try:
+                    self._root.clipboard_clear()
+                    self._root.clipboard_append(w.get(tk.SEL_FIRST, tk.SEL_LAST))
+                except tk.TclError:
+                    pass
+
+        elif event.keycode == 88 and event.keysym.lower() != 'x':   # Ctrl+X, русская раскладка
+            if isinstance(w, tk.Entry):
+                if w.selection_present():
+                    self._root.clipboard_clear()
+                    self._root.clipboard_append(w.selection_get())
+                    w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            elif isinstance(w, tk.Text):
+                try:
+                    self._root.clipboard_clear()
+                    self._root.clipboard_append(w.get(tk.SEL_FIRST, tk.SEL_LAST))
+                    w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except tk.TclError:
+                    pass
+
+        elif event.keycode == 86 and event.keysym.lower() != 'v':   # Ctrl+V, русская раскладка
+            if isinstance(w, tk.Entry):
+                try:
+                    text = self._root.clipboard_get()
+                    if w.selection_present():
+                        w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    w.insert(tk.INSERT, text)
+                except tk.TclError:
+                    pass
+            elif isinstance(w, tk.Text):
+                try:
+                    text = self._root.clipboard_get()
+                    try:
+                        w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    except tk.TclError:
+                        pass
+                    w.insert(tk.INSERT, text)
+                except tk.TclError:
+                    pass
 
     def _get_main_screen_class(self) -> Type[BaseScreen]:
         from ui.screens.main_screen import MainScreen
