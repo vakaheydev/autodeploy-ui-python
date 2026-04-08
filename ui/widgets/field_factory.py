@@ -378,9 +378,42 @@ class FieldFactory:
             fill=tk.X, padx=0, pady=(6, 0)
         )
 
-        # --- Список чекбоксов ---
-        cb_container = tk.Frame(frame, bg=theme.C["input_bg"])
-        cb_container.pack(fill=tk.X, pady=4)
+        # --- Скроллируемый список чекбоксов ---
+        _MAX_H = 220  # максимальная высота списка в пикселях
+
+        list_canvas = tk.Canvas(
+            frame,
+            bg=theme.C["input_bg"],
+            highlightthickness=0,
+            height=_MAX_H,
+        )
+        list_scroll = tk.Scrollbar(frame, orient=tk.VERTICAL, command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=list_scroll.set)
+
+        cb_container = tk.Frame(list_canvas, bg=theme.C["input_bg"])
+        cb_win = list_canvas.create_window((0, 0), window=cb_container, anchor="nw")
+
+        # Обновляем scrollregion и высоту canvas под реальный контент
+        def _on_cb_configure(_):
+            list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+            real_h = cb_container.winfo_reqheight()
+            list_canvas.configure(height=min(real_h, _MAX_H))
+
+        cb_container.bind("<Configure>", _on_cb_configure)
+
+        # Растягиваем inner frame по ширине canvas
+        def _on_canvas_resize(e):
+            list_canvas.itemconfig(cb_win, width=e.width)
+
+        list_canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Помечаем canvas как цель скролла — form_screen._route_mousewheel
+        # обнаружит этот атрибут при движении колеса над любым дочерним виджетом
+        list_canvas._scroll_target = list_canvas  # type: ignore[attr-defined]
+        cb_container._scroll_target = list_canvas  # type: ignore[attr-defined]
+
+        list_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=4)
+        list_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
 
         # Данные строк: (_ToggleRow, value, search_string)
         rows: List[Tuple[_ToggleRow, str, str]] = []
@@ -411,11 +444,10 @@ class FieldFactory:
             for toggle, _v, sstr in rows:
                 if not query or query in sstr:
                     toggle.pack()
+            # Сбрасываем позицию скролла при новом запросе
+            list_canvas.yview_moveto(0)
 
         search_var.trace_add("write", _apply_filter)
-
-        # Нижний отступ
-        tk.Frame(frame, bg=theme.C["input_bg"], height=4).pack()
 
         def get_selected() -> List[str]:
             return [val for toggle, val, _ in rows if toggle.get()]

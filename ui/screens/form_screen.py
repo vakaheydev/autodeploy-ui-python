@@ -98,11 +98,28 @@ class FormScreen(BaseScreen):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(
-            int(-1 * (e.delta / 120)), "units"
-        ))
+        self._scroll_canvas = canvas
+        canvas.bind_all("<MouseWheel>", self._route_mousewheel)
 
         self._render_fields(self._fields_frame)
+
+    def _route_mousewheel(self, event: tk.Event) -> None:
+        """
+        Глобальный обработчик колеса мыши.
+        Если курсор над виджетом с меткой _scroll_target — скроллим его,
+        иначе скроллим основной канвас формы.
+        """
+        w = event.widget
+        while w is not None:
+            target = getattr(w, "_scroll_target", None)
+            if target is not None:
+                target.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                return
+            try:
+                w = w.master
+            except AttributeError:
+                break
+        self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _render_fields(self, parent: tk.Frame) -> None:
         """
