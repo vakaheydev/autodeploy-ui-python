@@ -36,9 +36,10 @@ class ReferenceConfig:
     """
     source:      str
     resource:    str
-    value_key:   str            = "id"
-    label_key:   str            = "name"
+    value_key:   str             = "id"
+    label_key:   str             = "name"
     search_keys: tuple[str, ...] = ()
+    detail_keys: tuple[str, ...] = ()   # поля для детальной карточки; () — показать все
 
 
 @dataclass(frozen=True)

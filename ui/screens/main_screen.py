@@ -25,25 +25,16 @@ _TIER2: List[Tuple[str, str]] = [
 class MainScreen(BaseScreen):
 
     def _build(self) -> None:
+        self._add_back_button()
+
         # --- Заголовок ---
         header = tk.Frame(self, bg=theme.C["bg"])
         header.pack(fill=tk.X, pady=(0, 14))
 
         tk.Label(
-            header, text="AutoDeploy UI",
+            header, text="🚀  AutoDeploy UI",
             font=theme.F["h1"], bg=theme.C["bg"], fg=theme.C["text"],
         ).pack(side=tk.LEFT)
-
-        tk.Label(
-            header, text="v0.1",
-            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
-        ).pack(side=tk.LEFT, padx=(8, 0), anchor="s", pady=(0, 3))
-
-        ttk.Button(
-            header, text="⚙  Настройки",
-            style="Ghost.TButton",
-            command=self._open_settings,
-        ).pack(side=tk.RIGHT)
 
         theme.separator(self, pady=0)
 
@@ -168,10 +159,6 @@ class MainScreen(BaseScreen):
         from config.environments import ENVIRONMENT_MAP
         env = ENVIRONMENT_MAP.get(env_key)
         return f"Активное окружение: {env.label if env else env_key}"
-
-    def _open_settings(self) -> None:
-        from ui.screens.settings_screen import SettingsScreen
-        self.app.navigate_to(SettingsScreen)
 
     def _open_category(self) -> None:
         from ui.screens.category_screen import CategoryScreen

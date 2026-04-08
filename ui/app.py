@@ -32,7 +32,7 @@ class Application:
 
     def __init__(self) -> None:
         self._root = tk.Tk()
-        self._root.title("AutoDeploy UI")
+        self._root.title("Gravitee Admin UI")
         self._root.minsize(660, 480)
         self._root.resizable(True, True)
 
@@ -70,6 +70,7 @@ class Application:
 
         # --- Глобальные биндинги ---
         self._root.bind_all("<Control-KeyPress>", self._on_ctrl_key)
+        self._root.bind_all("<Control-BackSpace>", self._on_ctrl_backspace)
 
         # --- Запуск ---
         self.navigate_to(self._get_main_screen_class())
@@ -132,9 +133,9 @@ class Application:
 
     def _on_ctrl_key(self, event: tk.Event) -> None:
         """
-        Фикс Ctrl+A/C/V на русской раскладке.
+        Фикс Ctrl+A/C/V/X на русской раскладке + Ctrl+Backspace (удалить слово).
         Keysym зависит от раскладки, keycode — физический и не зависит.
-        65=A, 67=C, 86=V.
+        65=A, 67=C, 86=V, 88=X, 8=Backspace.
         """
         w = event.widget
         if event.keycode == 65:           # Ctrl+A — выделить всё
@@ -191,6 +192,23 @@ class Application:
                 except tk.TclError:
                     pass
 
+    def _on_ctrl_backspace(self, event: tk.Event) -> str:
+        """Ctrl+Backspace — удалить предыдущее слово (как в текстовых редакторах)."""
+        w = event.widget
+        if isinstance(w, tk.Entry):
+            pos = w.index(tk.INSERT)
+            text = w.get()
+            i = pos - 1
+            while i >= 0 and text[i] in (' ', '\t'):
+                i -= 1
+            while i >= 0 and text[i] not in (' ', '\t'):
+                i -= 1
+            w.delete(i + 1, pos)
+            return "break"
+        elif isinstance(w, tk.Text):
+            w.delete("insert -1c wordstart", "insert")
+            return "break"
+
     def _get_main_screen_class(self) -> Type[BaseScreen]:
-        from ui.screens.main_screen import MainScreen
-        return MainScreen
+        from ui.screens.home_screen import HomeScreen
+        return HomeScreen
