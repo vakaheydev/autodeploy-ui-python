@@ -36,14 +36,18 @@ class ReferenceCache:
         Возвращает данные, если они свежее TTL.
         Сначала проверяет память, затем файл.
         Возвращает None, если кеш отсутствует или устарел.
+
+        ttl == -1 (TTL_INFINITE) — данные считаются актуальными всегда,
+        пока кеш не сброшен вручную через invalidate().
         """
         key = (resource, environment)
+        infinite = (ttl == -1)
 
         # 1. Проверяем память
         entry = self._store.get(key)
         if entry is not None:
             ts, data = entry
-            if time.time() - ts <= ttl:
+            if infinite or time.time() - ts <= ttl:
                 return data
             del self._store[key]
 
@@ -51,11 +55,31 @@ class ReferenceCache:
         file_entry = self._load_file(resource, environment)
         if file_entry is not None:
             ts, data = file_entry
-            if time.time() - ts <= ttl:
+            if infinite or time.time() - ts <= ttl:
                 self._store[key] = (ts, data)   # восстанавливаем в памяти
                 return data
             # Файл устарел — удаляем
             self._delete_file(resource, environment)
+
+        return None
+
+    def get_timestamp(
+        self, resource: str, environment: str
+    ) -> Optional[float]:
+        """
+        Возвращает unix-timestamp последней записи кеша (memory → file).
+        Возвращает None, если кеш отсутствует.
+        """
+        key = (resource, environment)
+        entry = self._store.get(key)
+        if entry is not None:
+            return entry[0]
+
+        file_entry = self._load_file(resource, environment)
+        if file_entry is not None:
+            ts, data = file_entry
+            self._store[key] = (ts, data)  # восстанавливаем в памяти попутно
+            return ts
 
         return None
 

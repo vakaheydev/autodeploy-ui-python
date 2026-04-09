@@ -13,7 +13,7 @@ import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
-from ui.dialogs import show_error, show_info, show_text_viewer, show_warning
+from ui.dialogs import show_error, show_info, show_refresh_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -294,10 +294,15 @@ class FormScreen(BaseScreen):
             return []
 
     def _reload_reference_field(self, field_def: FieldDefinition, btn: tk.Button) -> None:
-        """Инвалидирует кеш и перезагружает справочник в отдельном потоке."""
+        """Показывает диалог подтверждения, затем инвалидирует кеш и перезагружает справочник."""
         assert field_def.reference is not None
         resource = field_def.reference.resource
         env = self.app.current_environment.get()
+
+        # Показываем дату последнего обновления и просим подтверждение
+        cached_ts = self.app.reference_cache.get_timestamp(resource, env)
+        if not show_refresh_confirm(self, field_def.label, cached_ts):
+            return  # пользователь отменил
 
         btn.config(state=tk.DISABLED, fg=theme.C["text_muted"])
 
