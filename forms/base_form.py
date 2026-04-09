@@ -89,6 +89,18 @@ class BaseForm(ABC):
         """
         return {}
 
+    def get_auth_type(self) -> str:
+        """
+        Тип авторизации при отправке формы. Возможные значения:
+          "gravitee" — Bearer GRAVITEE_TOKEN_<ENV_KEY> (по умолчанию)
+          "tfs"      — Bearer TFS_TOKEN
+          "itsm"     — Basic ITSM_LOGIN:ITSM_PASSWORD
+          "none"     — без авторизации
+
+        Переопределить, если форма обращается не к Gravitee.
+        """
+        return "gravitee"
+
     # ------------------------------------------------------------------
     # Экран результата
     # ------------------------------------------------------------------

@@ -1,12 +1,11 @@
 """
 SubmitService — отправка заполненной формы на удалённый сервис.
 """
-import json
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 from core.env_manager import EnvManager
 from core.http_client import HttpClient, HttpError
-from config.environments import gravitee_token_key
+from config.environments import ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key
 from forms.base_form import BaseForm
 
 
@@ -60,9 +59,8 @@ class SubmitService:
                 "Откройте форму и добавьте URL в get_submit_endpoint().",
             )
 
-        # 3. Обновить токен под текущее окружение
-        token = self._env_manager.get(gravitee_token_key(environment))
-        self._client.set_token(token)
+        # 3. Установить авторизацию согласно типу формы
+        self._set_auth(form, environment)
 
         # 4. Собрать payload
         payload = form.build_payload(form_data)
@@ -88,9 +86,29 @@ class SubmitService:
             return SubmitResult(False, f"Неожиданная ошибка: {exc}")
 
         # 6. Успех
-        pretty = json.dumps(response, ensure_ascii=False, indent=2)
         return SubmitResult(
             True,
             f"Успешно отправлено в '{environment}'",
             raw_response=response,
         )
+
+    # ------------------------------------------------------------------
+    # Внутренние методы
+    # ------------------------------------------------------------------
+
+    def _set_auth(self, form: BaseForm, environment: str) -> None:
+        """Устанавливает авторизацию на HttpClient согласно form.get_auth_type()."""
+        auth_type = form.get_auth_type()
+        if auth_type == "gravitee":
+            self._client.set_token(self._env_manager.get(gravitee_token_key(environment)))
+        elif auth_type == "tfs":
+            self._client.set_token(self._env_manager.get(TFS_TOKEN_KEY))
+        elif auth_type == "itsm":
+            self._client.set_basic_auth(
+                self._env_manager.get(ITSM_LOGIN_KEY),
+                self._env_manager.get(ITSM_PASSWORD_KEY),
+            )
+        elif auth_type == "none":
+            self._client.set_token("")
+        else:
+            raise ValueError(f"Неизвестный тип авторизации '{auth_type}' в форме {form!r}")
