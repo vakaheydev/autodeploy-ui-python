@@ -6,10 +6,12 @@ BaseForm — абстрактный базовый класс для всех ф
   2. Реализовать все абстрактные свойства/методы
   3. Зарегистрировать экземпляр в forms/loader.py
 """
+import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from forms.fields import FieldDefinition
+from forms.result_config import ResultScreenConfig
 
 
 class BaseForm(ABC):
@@ -86,6 +88,52 @@ class BaseForm(ABC):
         По умолчанию пустой словарь — авторизация добавляется автоматически.
         """
         return {}
+
+    # ------------------------------------------------------------------
+    # Экран результата
+    # ------------------------------------------------------------------
+
+    def get_result_config(self) -> ResultScreenConfig:
+        """
+        Конфигурация экрана результата (заголовок, интервал опроса).
+        Переопределить для включения автообновления.
+
+        Пример с опросом каждые 5 секунд:
+            return ResultScreenConfig(poll_interval_ms=5000, title="Статус деплоя")
+        """
+        return ResultScreenConfig()
+
+    def build_result_content(self, environment: str, response: Any) -> str:
+        """
+        Форматирует ответ сервера для отображения на экране результата.
+        Вызывается сразу после успешной отправки.
+
+        Переопределить для кастомного отображения (статус, прогресс-бар и т.д.).
+        """
+        if response is None:
+            return "Форма успешно отправлена."
+        return json.dumps(response, ensure_ascii=False, indent=2)
+
+    def get_poll_endpoint(self, environment: str, response: Any) -> Optional[str]:
+        """
+        Возвращает URL для периодического GET-опроса состояния.
+        Вызывается только если get_result_config().poll_interval_ms задан.
+
+        response — ответ первоначального POST/PUT (можно извлечь ID задачи и т.п.).
+        Вернуть None или пустую строку — опрос не будет выполнен.
+        """
+        return None
+
+    def build_poll_content(self, environment: str, poll_response: Any) -> str:
+        """
+        Форматирует ответ опроса для отображения на экране результата.
+        Вызывается после каждого успешного poll-запроса.
+
+        Переопределить для извлечения нужных полей из ответа.
+        """
+        if poll_response is None:
+            return ""
+        return json.dumps(poll_response, ensure_ascii=False, indent=2)
 
     # ------------------------------------------------------------------
     # Вспомогательные методы

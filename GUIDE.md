@@ -22,18 +22,26 @@
   - [Изменить структуру JSON](#изменить-структуру-json-payload)
   - [Изменить HTTP метод](#изменить-http-метод)
   - [Добавить заголовки к запросу](#добавить-дополнительные-заголовки-к-запросу)
-  - [Изменить логику после отправки](#изменить-логику-после-успешной-отправки)
-- [5. Переключение справочников: HTTP ↔ локальный](#5-переключение-справочников-http--локальный)
+- [5. Экран результата после сабмита](#5-экран-результата-после-сабмита)
+  - [Как работает экран результата](#как-работает-экран-результата)
+  - [Настроить заголовок и автообновление](#настроить-заголовок-и-автообновление)
+  - [Кастомный контент результата](#кастомный-контент-результата)
+  - [Включить автоопрос (polling)](#включить-автоопрос-polling)
+- [6. UI-утилиты: диалоги](#6-ui-утилиты-диалоги)
+  - [Информационные диалоги](#информационные-диалоги)
+  - [Диалог подтверждения](#диалог-подтверждения)
+  - [Просмотрщик текста](#просмотрщик-текста)
+- [7. Переключение справочников: HTTP ↔ локальный](#7-переключение-справочников-http--локальный)
   - [Где хранятся локальные справочники](#где-хранятся-локальные-справочники)
   - [Переключить с локального на HTTP](#переключить-справочник-с-локального-на-http)
   - [Переключить с HTTP на локальный](#переключить-справочник-с-http-на-локальный)
   - [Добавить поиск по нескольким полям](#добавить-поиск-по-нескольким-полям)
   - [Изменить справочник у существующего поля](#изменить-справочник-у-существующего-поля)
-- [6. Авторизация HTTP-справочников](#6-авторизация-http-справочников)
+- [8. Авторизация HTTP-справочников](#8-авторизация-http-справочников)
   - [Как работает авторизация](#как-работает-авторизация)
   - [Подключить токен к ресурсу](#подключить-токен-к-ресурсу)
   - [Добавить новый тип токена](#добавить-новый-тип-токена)
-- [7. Кеширование HTTP-справочников](#7-кеширование-http-справочников)
+- [9. Кеширование HTTP-справочников](#9-кеширование-http-справочников)
   - [Настроить TTL для ресурса](#настроить-ttl-для-ресурса)
   - [Добавить кеширование для нового ресурса](#добавить-кеширование-для-нового-http-справочника)
   - [Отключить кеширование](#отключить-кеширование-для-ресурса)
@@ -362,12 +370,18 @@ def validate(self, form_data):
 
 ```
 FormScreen._on_submit()
-    └─ _collect_form_data()          # собирает данные только видимых полей
+    └─ _collect_form_data()              # собирает данные только видимых полей
     └─ SubmitService.submit()
-            └─ form.validate()       # валидация
-            └─ form.build_payload()  # конструирование JSON
-            └─ EnvManager.get()      # берёт токен для выбранного окружения
-            └─ HttpClient.post/put() # HTTP запрос
+            └─ form.validate()           # валидация
+            └─ form.build_payload()      # конструирование JSON
+            └─ EnvManager.get()          # берёт токен для выбранного окружения
+            └─ HttpClient.post/put()     # HTTP запрос
+    └─ (при успехе) navigate_to(ResultScreen)
+            └─ form.get_result_config()  # заголовок и интервал опроса
+            └─ form.build_result_content()  # отображает первичный ответ
+            └─ (если poll_interval_ms)
+                    └─ form.get_poll_endpoint()   # URL для GET-опроса
+                    └─ form.build_poll_content()  # форматирует каждый ответ
 ```
 
 ---
@@ -443,15 +457,161 @@ def get_submit_headers(self, environment: str) -> Dict[str, str]:
 
 ---
 
-### Изменить логику после успешной отправки
+## 5. Экран результата после сабмита
 
-Переопределить в `FormScreen` не получится без наследования.
-Логика находится в `services/submit_service.py` → `SubmitResult`.
-Реакция UI на результат — в `ui/screens/form_screen.py` → `_on_submit()`.
+### Как работает экран результата
+
+После успешной отправки `FormScreen` переходит на `ResultScreen` (`ui/screens/result_screen.py`).
+Что показывается и как обновляется — определяется четырьмя переопределяемыми методами формы.
+
+| Метод | Когда вызывается | По умолчанию |
+|---|---|---|
+| `get_result_config()` | один раз при открытии экрана | `ResultScreenConfig()` — без опроса |
+| `build_result_content(env, response)` | сразу после перехода на экран | JSON-дамп ответа сервера |
+| `get_poll_endpoint(env, response)` | перед каждым GET-запросом | `None` — опрос не выполняется |
+| `build_poll_content(env, poll_response)` | после каждого успешного опроса | JSON-дамп ответа |
+
+`response` — ответ первоначального POST/PUT. Из него можно извлечь ID задачи, jobId и т.п. для формирования URL опроса.
 
 ---
 
-## 5. Переключение справочников: HTTP ↔ локальный
+### Настроить заголовок и автообновление
+
+Переопределить `get_result_config()` в форме:
+
+```python
+from forms.result_config import ResultScreenConfig
+
+def get_result_config(self) -> ResultScreenConfig:
+    return ResultScreenConfig(
+        title="Статус деплоя",   # заголовок экрана (по умолч. — form.title)
+        poll_interval_ms=5000,   # опрашивать каждые 5 секунд (None — без опроса)
+    )
+```
+
+При включённом опросе на экране появляется:
+- бейдж «↻ каждые N с» рядом с заголовком
+- кнопка «⏸ Пауза / ▶ Возобновить»
+- метка «Обновлено: HH:MM:SS» после каждого обновления
+
+---
+
+### Кастомный контент результата
+
+Переопределить `build_result_content()`, чтобы показать только нужные поля вместо сырого JSON:
+
+```python
+def build_result_content(self, environment: str, response: Any) -> str:
+    if response is None:
+        return "Деплой успешно запущен."
+    job_id  = response.get("jobId", "—")
+    status  = response.get("status", "—")
+    app     = response.get("appName", "—")
+    return (
+        f"Приложение:  {app}\n"
+        f"Job ID:      {job_id}\n"
+        f"Статус:      {status}\n"
+    )
+```
+
+---
+
+### Включить автоопрос (polling)
+
+Нужно переопределить три метода:
+
+```python
+from typing import Any, Optional
+from forms.result_config import ResultScreenConfig
+
+def get_result_config(self) -> ResultScreenConfig:
+    return ResultScreenConfig(poll_interval_ms=3000, title="Статус деплоя")
+
+def get_poll_endpoint(self, environment: str, response: Any) -> Optional[str]:
+    # Извлекаем jobId из первичного ответа
+    job_id = (response or {}).get("jobId")
+    if not job_id:
+        return None
+    urls = {
+        "prod_int": "https://deploy.prod-int.example.com/jobs",
+        "test_int": "https://deploy.test-int.example.com/jobs",
+    }
+    base = urls.get(environment, "")
+    return f"{base}/{job_id}" if base else None
+
+def build_poll_content(self, environment: str, poll_response: Any) -> str:
+    status   = (poll_response or {}).get("status", "—")
+    progress = (poll_response or {}).get("progress", "—")
+    log      = (poll_response or {}).get("lastLog", "")
+    return (
+        f"Статус:    {status}\n"
+        f"Прогресс:  {progress}\n\n"
+        f"{log}"
+    )
+```
+
+Опрос выполняется через `HttpClient.get()` с тем же Bearer-токеном, что и при отправке формы.
+Если `get_poll_endpoint()` вернёт `None` или пустую строку — цикл пропускается, но следующий через N секунд всё равно запланируется.
+
+---
+
+## 6. UI-утилиты: диалоги
+
+Все утилиты находятся в `ui/dialogs.py` и используют тему приложения (цвета, шрифты).
+Импорт: `from ui.dialogs import show_info, show_error, show_warning, show_confirm, show_text_viewer`.
+
+### Информационные диалоги
+
+```python
+from ui.dialogs import show_info, show_error, show_warning
+
+# Информационное сообщение
+show_info(self, "Готово", "Операция успешно выполнена.")
+
+# Ошибка (длинный текст — прокрутка автоматически)
+show_error(self, "Ошибка подключения", f"Не удалось соединиться:\n{exc}")
+
+# Предупреждение
+show_warning(self, "Внимание", "Поле 'Описание' не заполнено.")
+```
+
+Все три принимают `parent: tk.Widget` (обычно `self`), `title: str`, `body: str`.
+Открываются как модальные окна (блокируют родительское окно до нажатия «ОК»).
+
+---
+
+### Диалог подтверждения
+
+```python
+from ui.dialogs import show_confirm
+
+if show_confirm(self, "Подтверждение", "Удалить выбранный ресурс?"):
+    # пользователь нажал «Да»
+    self._do_delete()
+```
+
+Возвращает `True` («Да») или `False` («Нет» / закрыл крестиком).
+
+---
+
+### Просмотрщик текста
+
+```python
+from ui.dialogs import show_text_viewer
+import json
+
+# Показать JSON
+show_text_viewer(self, "Ответ сервера", json.dumps(data, ensure_ascii=False, indent=2))
+
+# Показать лог
+show_text_viewer(self, "Лог выполнения", log_text, width=80, height=30)
+```
+
+Открывает модальное окно с прокручиваемым моноширинным текстом и кнопкой «Закрыть».
+
+---
+
+## 7. Переключение справочников: HTTP ↔ локальный
 
 ### Где хранятся локальные справочники
 
@@ -625,7 +785,7 @@ reference=ReferenceConfig(
 
 ---
 
-## 6. Авторизация HTTP-справочников
+## 8. Авторизация HTTP-справочников
 
 ### Как работает авторизация
 
@@ -712,7 +872,7 @@ MY_SERVICE_PASSWORD=secret
 
 ---
 
-## 7. Кеширование HTTP-справочников
+## 9. Кеширование HTTP-справочников
 
 Загруженные данные хранятся в памяти до истечения TTL. При повторном открытии формы сетевой запрос не делается — отдаётся кеш. После истечения TTL следующий запрос обновляет кеш.
 
@@ -790,7 +950,8 @@ autodeploy-ui-python/
 │   ├── reference_cache.py         # кеш HTTP-справочников (память + файлы cached/)
 │   └── reference_resolver.py      # выбирает нужный обработчик справочника
 ├── forms/
-│   ├── base_form.py               # абстрактный класс формы
+│   ├── base_form.py               # абстрактный класс формы (+ методы экрана результата)
+│   ├── result_config.py           # ← ResultScreenConfig: poll_interval_ms, title
 │   ├── fields.py                  # FieldDefinition, FieldType, ReferenceConfig, FieldCondition
 │   ├── registry.py                # реестр форм (Singleton)
 │   ├── loader.py                  # ← регистрировать новые формы здесь
@@ -806,6 +967,7 @@ autodeploy-ui-python/
 └── ui/
     ├── theme.py                   # цвета, шрифты, ttk-стили ← менять внешний вид здесь
     ├── app.py                     # DI-контейнер, навигация, Ctrl+A/C/V/X fix
+    ├── dialogs.py                 # ← UI-утилиты: show_info/error/warning/confirm/text_viewer
     ├── widgets/
     │   └── field_factory.py       # виджеты полей: SELECT, MULTISELECT, TEXT и др.
     └── screens/
@@ -817,5 +979,6 @@ autodeploy-ui-python/
         ├── main_screen.py         # AutoDeploy UI: выбор окружения
         ├── category_screen.py     # выбор формы внутри категории
         ├── form_screen.py         # рендер полей, условная видимость, сабмит
+        ├── result_screen.py       # ← экран результата: контент + автоопрос
         └── settings_screen.py     # токены и креды (.env)
 ```

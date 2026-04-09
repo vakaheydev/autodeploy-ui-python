@@ -6,13 +6,14 @@ FormScreen — экран заполнения и отправки формы.
 import json
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import ttk
 from typing import Any, Dict, List
 
 import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
+from ui.dialogs import show_error, show_info, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -342,7 +343,8 @@ class FormScreen(BaseScreen):
 
         if error:
             btn.config(state=tk.NORMAL, fg=theme.C["primary"])
-            messagebox.showerror(
+            show_error(
+                self,
                 "Ошибка обновления",
                 f"Не удалось обновить справочник «{field_def.label}»:\n{error}",
             )
@@ -374,7 +376,8 @@ class FormScreen(BaseScreen):
 
         btn.config(state=tk.NORMAL, fg=theme.C["primary"])
 
-        messagebox.showinfo(
+        show_info(
+            self,
             "Обновление завершено",
             f"Справочник «{field_def.label}» успешно обновлён.\n"
             f"Загружено элементов: {len(new_items)}.",
@@ -409,57 +412,26 @@ class FormScreen(BaseScreen):
 
         if result.success:
             self._set_status(f"✓  {result.message}", "success")
-            self._show_response_dialog(result.raw_response)
+            from ui.screens.result_screen import ResultScreen
+            self.app.navigate_to(
+                ResultScreen,
+                form=self._form,
+                environment=environment,
+                initial_response=result.raw_response,
+            )
         else:
             self._set_status(f"✗  {result.message.splitlines()[0]}", "error")
-            messagebox.showerror("Ошибка отправки", result.message)
+            show_error(self, "Ошибка отправки", result.message)
 
     def _preview_payload(self) -> None:
         form_data = self._collect_form_data()
         errors = self._form.validate(form_data)
         if errors:
-            messagebox.showwarning("Валидация", "\n".join(errors))
+            show_warning(self, "Валидация", "\n".join(errors))
             return
         payload = self._form.build_payload(form_data)
-        self._open_text_dialog("Предварительный просмотр JSON",
-                               json.dumps(payload, ensure_ascii=False, indent=2))
-
-    # ------------------------------------------------------------------
-    # Диалоги
-    # ------------------------------------------------------------------
-
-    def _show_response_dialog(self, response: Any) -> None:
-        if response is None:
-            messagebox.showinfo("Успех", "Форма успешно отправлена.")
-            return
-        self._open_text_dialog("Ответ сервера",
-                               json.dumps(response, ensure_ascii=False, indent=2))
-
-    def _open_text_dialog(self, title: str, text: str) -> None:
-        dialog = tk.Toplevel(self)
-        dialog.title(title)
-        dialog.configure(bg=theme.C["bg"])
-        dialog.grab_set()
-        dialog.minsize(540, 400)
-
-        tk.Label(
-            dialog, text=title,
-            font=theme.F["h2"], bg=theme.C["bg"], fg=theme.C["text"],
-        ).pack(anchor=tk.W, padx=14, pady=(12, 6))
-
-        st = scrolledtext.ScrolledText(
-            dialog, width=68, height=22, wrap=tk.WORD,
-            font=theme.F["mono"],
-            bg=theme.C["surface"], fg=theme.C["text"],
-            relief="flat", bd=0, padx=10, pady=8,
-        )
-        st.insert("1.0", text)
-        st.config(state=tk.DISABLED)
-        st.pack(padx=12, pady=(0, 8), fill=tk.BOTH, expand=True)
-
-        ttk.Button(
-            dialog, text="Закрыть", style="Secondary.TButton", command=dialog.destroy,
-        ).pack(pady=(0, 12))
+        show_text_viewer(self, "Предварительный просмотр JSON",
+                         json.dumps(payload, ensure_ascii=False, indent=2))
 
     # ------------------------------------------------------------------
     # Утилиты
