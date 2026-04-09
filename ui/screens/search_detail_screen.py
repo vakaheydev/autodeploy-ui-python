@@ -52,7 +52,31 @@ class SearchDetailScreen(BaseScreen):
 
     def _build(self) -> None:
         self._add_back_button()
-        self._add_title(f"{self._section_icon}  {self._section_title}")
+
+        # Заголовок + кнопка обновления справочника (только для HTTP)
+        header = tk.Frame(self, bg=theme.C["bg"])
+        header.pack(fill=tk.X, pady=(0, 6))
+
+        ttk.Label(
+            header,
+            text=f"{self._section_icon}  {self._section_title}",
+            style="H1.TLabel",
+        ).pack(side=tk.LEFT)
+
+        if self._ref.source == "http":
+            self._refresh_btn = tk.Button(
+                header,
+                text="↻",
+                font=theme.F["body"],
+                bg=theme.C["bg"],
+                fg=theme.C["primary"],
+                activebackground=theme.C["bg"],
+                activeforeground=theme.C["primary_h"],
+                relief="flat", bd=0,
+                cursor="hand2",
+                command=self._on_refresh_click,
+            )
+            self._refresh_btn.pack(side=tk.LEFT, padx=(10, 0), pady=(4, 0))
 
         self._tier = tk.StringVar(value="test")
         self._net  = tk.StringVar(value="int")
@@ -307,6 +331,25 @@ class SearchDetailScreen(BaseScreen):
             self.after(0, lambda: self._on_search_done(unique, version))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_refresh_click(self) -> None:
+        """Показывает дату кеша и по подтверждению инвалидирует его и перезапускает поиск."""
+        from ui.dialogs import show_refresh_confirm
+
+        resource = self._ref.resource
+        envs = _resolve_envs(self._tier.get(), self._net.get())
+        timestamps = {
+            env: self.app.reference_cache.get_timestamp(resource, env)
+            for env in envs
+        }
+
+        if not show_refresh_confirm(self, self._section_title, timestamps):
+            return
+
+        # Сбрасываем кеш для всех окружений этого ресурса
+        self.app.reference_cache.invalidate(resource)
+        # Перезапускаем поиск — фоновый поток загрузит свежие данные
+        self._rerun_search()
 
     def _show_loading(self) -> None:
         """Показывает индикатор загрузки в зоне результатов."""

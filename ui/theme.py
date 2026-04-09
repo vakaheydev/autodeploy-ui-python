@@ -240,7 +240,7 @@ def card(parent: tk.Widget, pady: int = 6) -> tk.Frame:
     return inner
 
 
-def separator(parent: tk.Widget, pady: int = 8) -> None:
+def separator(parent: tk.Misc, pady: int = 8) -> None:
     """Горизонтальный разделитель."""
     tk.Frame(parent, bg=C["border"], height=1).pack(fill=tk.X, pady=pady)
 

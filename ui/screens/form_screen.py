@@ -377,7 +377,7 @@ class FormScreen(BaseScreen):
 
         # Показываем дату последнего обновления и просим подтверждение
         cached_ts = self.app.reference_cache.get_timestamp(resource, env)
-        if not show_refresh_confirm(self, field_def.label, cached_ts):
+        if not show_refresh_confirm(self, field_def.label, {env: cached_ts}):
             return  # пользователь отменил
 
         btn.config(state=tk.DISABLED, fg=theme.C["text_muted"])
