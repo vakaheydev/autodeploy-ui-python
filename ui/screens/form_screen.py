@@ -5,6 +5,7 @@ FormScreen — экран заполнения и отправки формы.
 """
 import json
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Dict, List
@@ -106,7 +107,82 @@ class FormScreen(BaseScreen):
         self._scroll_canvas = canvas
         canvas.bind_all("<MouseWheel>", self._route_mousewheel)
 
-        self._render_fields(self._fields_frame)
+        env = self.app.current_environment.get()
+        to_load = self._fields_needing_http(env)
+
+        if to_load:
+            self._render_with_loading(env, to_load)
+        else:
+            self._render_fields(self._fields_frame)
+
+    def _fields_needing_http(self, env: str) -> List[FieldDefinition]:
+        """Возвращает поля, для которых потребуется реальный HTTP-запрос (промах кеша)."""
+        from config.reference_cache_config import CACHE_TTL, TTL_INFINITE
+        result = []
+        for field in self._form.fields:
+            if field.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
+                continue
+            if field.reference is None or field.reference.source != "http":
+                continue
+            resource = field.reference.resource
+            ttl = CACHE_TTL.get(resource)
+            if ttl is None:
+                result.append(field)   # кеш отключён — всегда HTTP
+                continue
+            ts = self.app.reference_cache.get_timestamp(resource, env)
+            if ts is None:
+                result.append(field)   # кеша нет
+                continue
+            if ttl != TTL_INFINITE and time.time() - ts > ttl:
+                result.append(field)   # кеш протух
+        return result
+
+    def _render_with_loading(self, env: str, to_load: List[FieldDefinition]) -> None:
+        """
+        Показывает окно загрузки, прогревает кеш в фоне для каждого
+        HTTP-справочника, затем рендерит поля на главном потоке.
+        """
+        loading = tk.Toplevel(self)
+        loading.title("Загрузка данных")
+        loading.configure(bg=theme.C["bg"])
+        loading.resizable(False, False)
+        loading.transient(self.winfo_toplevel())
+        loading.grab_set()
+
+        pad = tk.Frame(loading, bg=theme.C["bg"])
+        pad.pack(padx=28, pady=(18, 14))
+
+        tk.Label(
+            pad, text="Загрузка справочников…",
+            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
+        ).pack(pady=(0, 10))
+
+        _label_var = tk.StringVar(value="")
+        tk.Label(
+            pad, textvariable=_label_var,
+            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
+            width=36,
+        ).pack()
+
+        loading.update()
+
+        def _worker() -> None:
+            for field in to_load:
+                self.after(0, lambda lbl=field.label: _label_var.set(lbl))
+                try:
+                    self.app.reference_resolver.resolve(field.reference, env)  # type: ignore[arg-type]
+                except Exception as exc:
+                    print(f"[FormScreen] Ошибка предзагрузки '{field.key}': {exc}")
+            self.after(0, _finish)
+
+        def _finish() -> None:
+            try:
+                loading.destroy()
+            except Exception:
+                pass
+            self._render_fields(self._fields_frame)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _route_mousewheel(self, event: tk.Event) -> None:
         """

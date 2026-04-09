@@ -4,10 +4,14 @@ HttpClient — тонкая обёртка над urllib для HTTP запро�
 """
 import base64
 import json
+import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
+
+_log = logging.getLogger(__name__)
 
 
 class HttpError(Exception):
@@ -103,12 +107,21 @@ class HttpClient:
         return req
 
     def _execute(self, req: urllib.request.Request) -> Any:
+        method = req.get_method()
+        url = req.full_url
+        _start = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = resp.read().decode("utf-8")
+                elapsed = time.monotonic() - _start
+                _log.info("%s %s → %d  (%.2fs)", method, url, resp.status, elapsed)
                 return json.loads(body) if body.strip() else {}
         except urllib.error.HTTPError as exc:
+            elapsed = time.monotonic() - _start
+            _log.warning("%s %s → %d  (%.2fs)", method, url, exc.code, elapsed)
             body = exc.read().decode("utf-8", errors="replace")
             raise HttpError(exc.code, body) from exc
         except urllib.error.URLError as exc:
+            elapsed = time.monotonic() - _start
+            _log.error("%s %s → ERROR  (%.2fs): %s", method, url, elapsed, exc.reason)
             raise ConnectionError(f"Ошибка соединения: {exc.reason}") from exc

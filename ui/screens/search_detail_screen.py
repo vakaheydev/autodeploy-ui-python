@@ -7,6 +7,7 @@ SearchDetailScreen — экран поиска по конкретному ра�
   [  Поисковая строка (по центру)   ]
   Результаты
 """
+import threading
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Dict, List, Tuple
@@ -268,35 +269,64 @@ class SearchDetailScreen(BaseScreen):
             self._show_results([])
             return
 
+        # Версия запроса — устаревшие фоновые потоки не перетрут свежие результаты
+        self._search_version: int = getattr(self, "_search_version", 0) + 1
+        version = self._search_version
+
+        self._show_loading()
+
         envs = _resolve_envs(self._tier.get(), self._net.get())
         ref  = self._ref
         keys = ref.search_keys if ref.search_keys else (ref.label_key,)
         q    = query.strip().lower()
 
-        all_items: List[Tuple[str, Dict[str, Any]]] = []
-        for env in envs:
-            try:
-                for item in self.app.reference_resolver.resolve(ref, env):
-                    all_items.append((env, item))
-            except Exception:
-                pass
+        def _worker() -> None:
+            all_items: List[Tuple[str, Dict[str, Any]]] = []
+            for env in envs:
+                try:
+                    for item in self.app.reference_resolver.resolve(ref, env):
+                        all_items.append((env, item))
+                except Exception:
+                    pass
 
-        # Фильтрация
-        filtered = [
-            (env, item) for env, item in all_items
-            if any(q in str(item.get(k, "")).lower() for k in keys)
-        ]
+            # Фильтрация
+            filtered = [
+                (env, item) for env, item in all_items
+                if any(q in str(item.get(k, "")).lower() for k in keys)
+            ]
 
-        # Дедупликация (env + value_key)
-        seen: set = set()
-        unique = []
-        for env, item in filtered:
-            uid = (env, str(item.get(ref.value_key, "")))
-            if uid not in seen:
-                seen.add(uid)
-                unique.append((env, item))
+            # Дедупликация (env + value_key)
+            seen: set = set()
+            unique: List[Tuple[str, Dict[str, Any]]] = []
+            for env, item in filtered:
+                uid = (env, str(item.get(ref.value_key, "")))
+                if uid not in seen:
+                    seen.add(uid)
+                    unique.append((env, item))
 
-        self._show_results(unique)
+            self.after(0, lambda: self._on_search_done(unique, version))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _show_loading(self) -> None:
+        """Показывает индикатор загрузки в зоне результатов."""
+        for w in self._results_outer.winfo_children():
+            w.destroy()
+        tk.Label(
+            self._results_outer,
+            text="Загрузка…",
+            font=theme.F["body"],
+            bg=theme.C["bg"],
+            fg=theme.C["text_muted"],
+        ).pack(pady=20)
+
+    def _on_search_done(
+        self, results: List[Tuple[str, Dict[str, Any]]], version: int
+    ) -> None:
+        """Вызывается из главного потока когда фоновый поиск завершён."""
+        if version != self._search_version:
+            return  # пришёл устаревший результат — игнорируем
+        self._show_results(results)
 
     def _show_results(self, results: List[Tuple[str, Dict[str, Any]]]) -> None:
         for w in self._results_outer.winfo_children():
