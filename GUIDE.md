@@ -35,6 +35,7 @@
   - [Где хранятся локальные справочники](#где-хранятся-локальные-справочники)
   - [Переключить с локального на HTTP](#переключить-справочник-с-локального-на-http)
   - [Переключить с HTTP на локальный](#переключить-справочник-с-http-на-локальный)
+  - [Фильтровать элементы справочника по окружению](#фильтровать-элементы-справочника-по-окружению)
   - [Добавить поиск по нескольким полям](#добавить-поиск-по-нескольким-полям)
   - [Изменить справочник у существующего поля](#изменить-справочник-у-существующего-поля)
 - [8. Авторизация HTTP-справочников](#8-авторизация-http-справочников)
@@ -674,6 +675,37 @@ _RESPONSE_PROCESSORS: Dict[str, Callable[[Any], List[Dict]]] = {
 
 ---
 
+### Фильтровать элементы справочника по окружению
+
+Для кастомной фильтрации **уже распакованного** списка элементов в зависимости от окружения используется `_FILTER_MAP` в `handlers/http_reference_handler.py`.
+
+Сигнатура: `(environment: str, items: List[Dict]) -> List[Dict]`
+
+Фильтр применяется **после** `_RESPONSE_PROCESSORS` и **до** записи в кеш — каждое окружение кешируется отдельно с уже отфильтрованными данными.
+
+**Пример — разделить приложения по смысловой принадлежности:**
+
+```python
+_FILTER_MAP: Dict[str, Callable[[str, List[Dict]], List[Dict]]] = {
+    "applications": lambda env, items: [
+        item for item in items
+        if ("regress" in item.get("name", "").lower()) == env.startswith("regress")
+    ],
+    # TEST_INT/TEST_EXT/PROD_*  → приложения без "regress" в имени
+    # REGRESS_INT/REGRESS_EXT   → только приложения с "regress" в имени
+}
+```
+
+**Конвейер целиком:**
+```
+HTTP-ответ → _RESPONSE_PROCESSORS (распаковка) → _FILTER_MAP (фильтр по env) → кеш → UI
+```
+
+Ключ `_FILTER_MAP` — `resource` из `ReferenceConfig` (тот же, что в `_URL_MAP`).
+Ресурсы без записи в `_FILTER_MAP` не фильтруются.
+
+---
+
 ### Переключить справочник с HTTP на локальный
 
 **В файле формы**:
@@ -987,7 +1019,7 @@ autodeploy-ui-python/
 │   └── other/                     # формы категории Операции
 ├── handlers/
 │   ├── local_reference_handler.py # читает config/references/*.json
-│   └── http_reference_handler.py  # ← добавлять URL справочников и авторизацию здесь
+│   └── http_reference_handler.py  # ← URL, авторизация, _RESPONSE_PROCESSORS, _FILTER_MAP
 ├── services/
 │   └── submit_service.py          # валидация → payload → HTTP запрос
 ├── cached/                        # файловый кеш HTTP-справочников (авто, не коммитить)

@@ -38,10 +38,22 @@ _URL_MAP: Dict[str, Dict[str, str]] = {
 }
 
 # Необязательные постпроцессоры для конкретных ресурсов.
-# Позволяют трансформировать/фильтровать ответ сервера.
+# Преобразуют/распаковывают сырой HTTP-ответ в плоский List[Dict].
 # Сигнатура: (raw_response: Any) -> List[Dict]
 _RESPONSE_PROCESSORS: Dict[str, Callable[[Any], List[Dict]]] = {
     "gravitee_apis": lambda resp: resp.get("data", []),
+}
+
+# Необязательные фильтры по окружению.
+# Вызываются ПОСЛЕ _RESPONSE_PROCESSORS, уже на готовом списке элементов.
+# Сигнатура: (environment: str, items: List[Dict]) -> List[Dict]
+#
+# Пример — разделить приложения по окружению:
+#   "applications": lambda env, items: [
+#       item for item in items
+#       if ("regress" in item.get("name", "").lower()) == env.startswith("regress")
+#   ],
+_FILTER_MAP: Dict[str, Callable[[str, List[Dict]], List[Dict]]] = {
 }
 
 
@@ -91,6 +103,7 @@ class HttpReferenceHandler(BaseReferenceHandler):
             return []
 
         items = self._process_response(resource, raw)
+        items = self._filter_items(resource, environment, items)
 
         if ttl is not None:
             self._cache.set(resource, environment, items)
@@ -120,6 +133,13 @@ class HttpReferenceHandler(BaseReferenceHandler):
     def _resolve_url(self, resource: str, environment: str) -> str:
         """Возвращает URL для ресурса в заданном окружении."""
         return _URL_MAP.get(resource, {}).get(environment, "")
+
+    def _filter_items(
+        self, resource: str, environment: str, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Применяет env-фильтр из _FILTER_MAP, если он зарегистрирован."""
+        fn = _FILTER_MAP.get(resource)
+        return fn(environment, items) if fn is not None else items
 
     def _process_response(
         self, resource: str, raw: Any
