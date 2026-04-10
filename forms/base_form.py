@@ -194,6 +194,17 @@ class BaseForm(ABC):
         """
         return None
 
+    def should_continue_polling(self, _environment: str, _poll_response: Any) -> bool:
+        """
+        Возвращает True если опрос нужно продолжать, False — чтобы остановить.
+        Вызывается после каждого успешного poll-запроса.
+
+        По умолчанию опрос идёт бесконечно. Переопределить для завершения
+        по условию из ответа:
+            return poll_response.get("status") not in ("success", "error")
+        """
+        return True
+
     def build_poll_content(self, environment: str, poll_response: Any) -> str:
         """
         Форматирует ответ опроса для отображения на экране результата.

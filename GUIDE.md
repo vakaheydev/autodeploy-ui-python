@@ -27,6 +27,7 @@
 - [5. Экран результата после сабмита](#5-экран-результата-после-сабмита)
   - [Как работает экран результата](#как-работает-экран-результата)
   - [Настроить заголовок и автообновление](#настроить-заголовок-и-автообновление)
+  - [Иконка статуса в заголовке](#иконка-статуса-в-заголовке)
   - [Кастомный контент результата](#кастомный-контент-результата)
   - [Включить автоопрос (polling)](#включить-автоопрос-polling)
 - [6. UI-утилиты: диалоги](#6-ui-утилиты-диалоги)
@@ -516,16 +517,21 @@ def build_confirm_text(
 ### Как работает экран результата
 
 После успешной отправки `FormScreen` переходит на `ResultScreen` (`ui/screens/result_screen.py`).
-Что показывается и как обновляется — определяется четырьмя переопределяемыми методами формы.
+Что показывается и как обновляется — определяется переопределяемыми методами формы.
 
 | Метод | Когда вызывается | По умолчанию |
 |---|---|---|
 | `get_result_config()` | один раз при открытии экрана | `ResultScreenConfig()` — без опроса |
 | `build_result_content(env, response)` | сразу после перехода на экран | JSON-дамп ответа сервера |
+| `get_result_status(env, response)` | сразу после перехода на экран | `ResultStatus.PENDING` |
 | `get_poll_endpoint(env, response)` | перед каждым GET-запросом | `None` — опрос не выполняется |
 | `build_poll_content(env, poll_response)` | после каждого успешного опроса | JSON-дамп ответа |
+| `get_poll_status(env, poll_response)` | после каждого успешного опроса | `ResultStatus.WAITING` |
+| `should_continue_polling(env, poll_response)` | после каждого успешного опроса | `True` — продолжать |
 
 `response` — ответ первоначального POST/PUT. Из него можно извлечь ID задачи, jobId и т.п. для формирования URL опроса.
+
+Авторизация poll-запросов — та же, что задана в `get_auth_type()` формы.
 
 ---
 
@@ -545,8 +551,44 @@ def get_result_config(self) -> ResultScreenConfig:
 
 При включённом опросе на экране появляется:
 - бейдж «↻ каждые N с» рядом с заголовком
-- кнопка «⏸ Пауза / ▶ Возобновить»
+- кнопки «⏸ Пауза / ▶ Возобновить» и «⏹ Стоп»
 - метка «Обновлено: HH:MM:SS» после каждого обновления
+
+«⏹ Стоп» безвозвратно останавливает опрос. Возобновить можно только переотправив форму.
+
+---
+
+### Иконка статуса в заголовке
+
+Рядом с заголовком отображается цветная иконка, отражающая текущее состояние операции:
+
+| `ResultStatus` | Иконка | Цвет | Смысл |
+|---|---|---|---|
+| `PENDING` | ◷ | серый | форма принята, ожидает обработки |
+| `WAITING` | ⏳ | оранжевый | процесс идёт, опрос продолжается |
+| `SUCCESS` | ✓ | зелёный | операция завершена успешно |
+| `ERROR` | ✗ | красный | ошибка |
+
+Статус после первичного ответа задаёт `get_result_status()`, после каждого опроса — `get_poll_status()`.
+При ошибке poll-запроса статус автоматически ставится в `ERROR`.
+
+```python
+from forms.result_config import ResultStatus
+
+def get_result_status(self, environment: str, response: Any) -> ResultStatus:
+    # Начальный ответ содержит статус — можно сразу показать итог
+    if (response or {}).get("status") == "success":
+        return ResultStatus.SUCCESS
+    return ResultStatus.PENDING
+
+def get_poll_status(self, environment: str, poll_response: Any) -> ResultStatus:
+    status = (poll_response or {}).get("status", "")
+    if status == "success":
+        return ResultStatus.SUCCESS
+    if status == "error":
+        return ResultStatus.ERROR
+    return ResultStatus.WAITING
+```
 
 ---
 
@@ -572,17 +614,14 @@ def build_result_content(self, environment: str, response: Any) -> str:
 
 ### Включить автоопрос (polling)
 
-Нужно переопределить три метода:
-
 ```python
 from typing import Any, Optional
-from forms.result_config import ResultScreenConfig
+from forms.result_config import ResultScreenConfig, ResultStatus
 
 def get_result_config(self) -> ResultScreenConfig:
     return ResultScreenConfig(poll_interval_ms=3000, title="Статус деплоя")
 
 def get_poll_endpoint(self, environment: str, response: Any) -> Optional[str]:
-    # Извлекаем jobId из первичного ответа
     job_id = (response or {}).get("jobId")
     if not job_id:
         return None
@@ -602,10 +641,20 @@ def build_poll_content(self, environment: str, poll_response: Any) -> str:
         f"Прогресс:  {progress}\n\n"
         f"{log}"
     )
+
+def get_poll_status(self, environment: str, poll_response: Any) -> ResultStatus:
+    match (poll_response or {}).get("status", ""):
+        case "success": return ResultStatus.SUCCESS
+        case "error":   return ResultStatus.ERROR
+        case _:         return ResultStatus.WAITING
+
+def should_continue_polling(self, environment: str, poll_response: Any) -> bool:
+    # Остановить опрос когда задача завершена (успешно или с ошибкой)
+    return (poll_response or {}).get("status") not in ("success", "error")
 ```
 
-Опрос выполняется через `HttpClient.get()` с тем же Bearer-токеном, что и при отправке формы.
 Если `get_poll_endpoint()` вернёт `None` или пустую строку — цикл пропускается, но следующий через N секунд всё равно запланируется.
+Если `should_continue_polling()` вернёт `False` — опрос останавливается автоматически (эквивалент нажатия «⏹ Стоп»).
 
 ---
 

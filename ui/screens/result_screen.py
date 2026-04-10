@@ -184,14 +184,20 @@ class ResultScreen(BaseScreen):
         if error:
             self._set_content(f"[Ошибка опроса]\n{error}")
             self._set_status(ResultStatus.ERROR)
-        else:
-            content = self._form.build_poll_content(self._environment, response)
-            status = self._form.get_poll_status(self._environment, response)
-            self._set_content(content)
-            self._set_status(status)
+            self._update_timestamp()
+            self._schedule_poll()
+            return
 
+        content = self._form.build_poll_content(self._environment, response)
+        status = self._form.get_poll_status(self._environment, response)
+        self._set_content(content)
+        self._set_status(status)
         self._update_timestamp()
-        self._schedule_poll()
+
+        if self._form.should_continue_polling(self._environment, response):
+            self._schedule_poll()
+        else:
+            self._stop_poll()
 
     # ------------------------------------------------------------------
     # Пауза / возобновление
