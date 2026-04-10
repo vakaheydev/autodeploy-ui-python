@@ -76,6 +76,9 @@ class EnableIngressForm(BaseForm):
                 ),
             ),
         ]
+        
+    def confirm_submit(self) -> bool:
+        return True
 
     def validate(self, form_data: Dict[str, Any]) -> List[str]:
         errors = super().validate(form_data)

@@ -14,7 +14,7 @@ import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
-from ui.dialogs import show_error, show_info, show_refresh_confirm, show_text_viewer, show_warning
+from ui.dialogs import show_error, show_info, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -485,6 +485,23 @@ class FormScreen(BaseScreen):
     def _on_submit(self) -> None:
         form_data = self._collect_form_data()
         environment = self.app.current_environment.get()
+
+        # Предварительная валидация — до диалога подтверждения
+        errors = self._form.validate(form_data)
+        if errors:
+            self._set_status(f"✗  {errors[0]}", "error")
+            show_error(self, "Ошибка заполнения", "\n".join(errors))
+            return
+
+        # Диалог подтверждения (если форма его требует)
+        if self._form.confirm_submit():
+            endpoint = self._form.get_submit_endpoint(environment)
+            method   = self._form.get_http_method()
+            payload  = self._form.build_payload(form_data)
+            text     = self._form.build_confirm_text(environment, endpoint, method, payload)
+            if not show_submit_confirm(self, self._form.title, text):
+                self._set_status("", "muted")
+                return
 
         self._set_status("Отправка...", "muted")
         self.update_idletasks()

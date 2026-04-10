@@ -22,6 +22,8 @@
   - [Изменить структуру JSON](#изменить-структуру-json-payload)
   - [Изменить HTTP метод](#изменить-http-метод)
   - [Добавить заголовки к запросу](#добавить-дополнительные-заголовки-к-запросу)
+  - [Изменить тип авторизации](#изменить-тип-авторизации)
+  - [Добавить диалог подтверждения перед отправкой](#добавить-диалог-подтверждения-перед-отправкой)
 - [5. Экран результата после сабмита](#5-экран-результата-после-сабмита)
   - [Как работает экран результата](#как-работает-экран-результата)
   - [Настроить заголовок и автообновление](#настроить-заголовок-и-автообновление)
@@ -455,6 +457,57 @@ def get_submit_headers(self, environment: str) -> Dict[str, str]:
 > # передать extra в self._client.post(endpoint, payload, headers=extra)
 > ```
 > и принять `headers` в `HttpClient.post()`.
+
+---
+
+### Изменить тип авторизации
+
+По умолчанию все формы используют Gravitee Bearer-токен. Переопределить `get_auth_type()`:
+
+```python
+def get_auth_type(self) -> str:
+    return "tfs"   # Bearer TFS_TOKEN
+```
+
+| Значение | Авторизация |
+|---|---|
+| `"gravitee"` | Bearer `GRAVITEE_TOKEN_<ENV_KEY>` (по умолчанию) |
+| `"tfs"` | Bearer `TFS_TOKEN` |
+| `"itsm"` | Basic `ITSM_LOGIN:ITSM_PASSWORD` |
+| `"none"` | без авторизации |
+
+Токены и логин/пароль берутся из `.env` через `EnvManager`.
+
+---
+
+### Добавить диалог подтверждения перед отправкой
+
+Включить для необратимых операций — переопределить `confirm_submit()`:
+
+```python
+def confirm_submit(self) -> bool:
+    return True
+```
+
+При нажатии «Отправить» откроется окно с методом, URL, окружением и payload.
+Форма отправится только при подтверждении.
+
+**Кастомный текст подтверждения** — переопределить `build_confirm_text()`:
+
+```python
+def build_confirm_text(
+    self, environment: str, endpoint: str, method: str, payload: Dict[str, Any]
+) -> str:
+    app_name = payload.get("appName", "—")
+    return (
+        f"Вы собираетесь задеплоить приложение «{app_name}»\n"
+        f"в окружение {environment.upper()}.\n\n"
+        f"URL:  {endpoint}\n"
+        f"Метод: {method}"
+    )
+```
+
+По умолчанию показывается: метод, URL, окружение и полный JSON payload.
 
 ---
 

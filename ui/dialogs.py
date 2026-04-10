@@ -324,6 +324,72 @@ def show_refresh_confirm(
 
 
 # -------------------------------------------------------------------------
+# Диалог подтверждения сабмита
+# -------------------------------------------------------------------------
+
+def show_submit_confirm(parent: tk.Widget, form_title: str, body: str) -> bool:
+    """
+    Диалог подтверждения отправки формы.
+
+    Показывает метод, URL, окружение и payload (или кастомный текст из
+    form.build_confirm_text()), предлагает «Отправить» / «Отмена».
+
+    Возвращает True если пользователь нажал «Отправить».
+
+    Пример:
+        if show_submit_confirm(self, self._form.title, confirm_text):
+            ...
+    """
+    result: list[bool] = [False]
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("Подтверждение отправки")
+    dlg.configure(bg=theme.C["bg"])
+    dlg.minsize(520, 380)
+    dlg.transient(parent.winfo_toplevel())
+    dlg.grab_set()
+
+    # Заголовок
+    hdr = tk.Frame(dlg, bg=theme.C["bg"])
+    hdr.pack(fill=tk.X, padx=16, pady=(14, 6))
+
+    _icon_label(hdr, "⚠", theme.C["warning"]).pack(side=tk.LEFT, padx=(0, 10))
+    tk.Label(
+        hdr, text=form_title,
+        font=theme.F["h2"], bg=theme.C["bg"], fg=theme.C["text"],
+    ).pack(side=tk.LEFT)
+
+    # Тело — прокручиваемый текст
+    st = scrolledtext.ScrolledText(
+        dlg, width=64, height=16, wrap=tk.WORD,
+        font=theme.F["mono"],
+        bg=theme.C["surface"], fg=theme.C["text"],
+        relief="flat", bd=0, padx=10, pady=8,
+    )
+    st.insert("1.0", body)
+    st.config(state=tk.DISABLED)
+    st.pack(padx=12, pady=(0, 4), fill=tk.BOTH, expand=True)
+
+    theme.separator(dlg, pady=6)
+
+    btn_row = tk.Frame(dlg, bg=theme.C["bg"])
+    btn_row.pack(pady=(0, 14))
+
+    def _confirm():
+        result[0] = True
+        dlg.destroy()
+
+    ttk.Button(btn_row, text="Отправить", style="Primary.TButton",
+               command=_confirm).pack(side=tk.LEFT, padx=(0, 8))
+    ttk.Button(btn_row, text="Отмена", style="Secondary.TButton",
+               command=dlg.destroy).pack(side=tk.LEFT)
+
+    _center(dlg)
+    dlg.wait_window()
+    return result[0]
+
+
+# -------------------------------------------------------------------------
 # Просмотрщик текста / JSON
 # -------------------------------------------------------------------------
 

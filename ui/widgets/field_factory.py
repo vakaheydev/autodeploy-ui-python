@@ -19,9 +19,15 @@ class _ToggleRow:
     _OFF = "☐"
     _ON  = "☑"
 
-    def __init__(self, parent: tk.Widget, label: str) -> None:
-        self._label   = label
-        self._checked = False
+    def __init__(
+        self,
+        parent: tk.Widget,
+        label: str,
+        on_toggle: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._label     = label
+        self._checked   = False
+        self._on_toggle = on_toggle
 
         self._btn = tk.Button(
             parent,
@@ -50,6 +56,8 @@ class _ToggleRow:
                 fg=theme.C["text"],
                 bg=theme.C["input_bg"],
             )
+        if self._on_toggle is not None:
+            self._on_toggle()
 
     def get(self) -> bool:
         return self._checked
@@ -136,6 +144,7 @@ class _SearchableSelectWidget:
             relief="flat", bd=0,
             font=theme.F["body"],
             activestyle="none",
+            exportselection=False,
             height=6,
         )
         scrollbar.config(command=self._listbox.yview)
@@ -418,9 +427,30 @@ class FieldFactory:
         # Данные строк: (_ToggleRow, value, search_string)
         rows: List[Tuple[_ToggleRow, str, str]] = []
 
+        def _get_query() -> str:
+            q = search_var.get()
+            return "" if q == hint else q.strip().lower()
+
+        def _render_rows(reset_scroll: bool = False) -> None:
+            """Перерисовывает список: выбранные элементы — вверху, затем остальные."""
+            query = _get_query()
+            for toggle, _v, _s in rows:
+                toggle.pack_forget()
+            for toggle, _v, sstr in rows:
+                if toggle.get() and (not query or query in sstr):
+                    toggle.pack()
+            for toggle, _v, sstr in rows:
+                if not toggle.get() and (not query or query in sstr):
+                    toggle.pack()
+            if reset_scroll:
+                list_canvas.yview_moveto(0)
+
+        def _on_row_toggle() -> None:
+            _render_rows()
+
         if display_labels:
             for dlabel, val, sstr in zip(display_labels, values, search_strings):
-                toggle = _ToggleRow(cb_container, dlabel)
+                toggle = _ToggleRow(cb_container, dlabel, on_toggle=_on_row_toggle)
                 toggle.pack()
                 rows.append((toggle, val, sstr))
         else:
@@ -434,18 +464,7 @@ class FieldFactory:
 
         # --- Фильтрация ---
         def _apply_filter(*_):
-            query = search_var.get()
-            if query == hint:
-                query = ""
-            query = query.strip().lower()
-
-            for toggle, _v, _s in rows:
-                toggle.pack_forget()
-            for toggle, _v, sstr in rows:
-                if not query or query in sstr:
-                    toggle.pack()
-            # Сбрасываем позицию скролла при новом запросе
-            list_canvas.yview_moveto(0)
+            _render_rows(reset_scroll=True)
 
         search_var.trace_add("write", _apply_filter)
 

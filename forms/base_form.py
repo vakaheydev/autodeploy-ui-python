@@ -89,6 +89,37 @@ class BaseForm(ABC):
         """
         return {}
 
+    def confirm_submit(self) -> bool:
+        """
+        Показывать ли диалог подтверждения перед отправкой формы.
+        По умолчанию False — форма отправляется без лишнего шага.
+
+        Включить для необратимых или критичных операций:
+            return True
+        """
+        return False
+
+    def build_confirm_text(
+        self,
+        environment: str,
+        endpoint: str,
+        method: str,
+        payload: Dict[str, Any],
+    ) -> str:
+        """
+        Генерирует текст для диалога подтверждения сабмита.
+        Переопределить для кастомного сообщения (например, человекочитаемое резюме).
+
+        По умолчанию показывает метод, URL, окружение и JSON payload.
+        """
+        payload_str = json.dumps(payload, ensure_ascii=False, indent=2)
+        return (
+            f"Метод:      {method}\n"
+            f"URL:        {endpoint}\n"
+            f"Окружение:  {environment}\n\n"
+            f"Payload:\n{payload_str}"
+        )
+
     def get_auth_type(self) -> str:
         """
         Тип авторизации при отправке формы. Возможные значения:
