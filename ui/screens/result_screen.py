@@ -90,21 +90,30 @@ class ResultScreen(BaseScreen):
 
         # Кнопки управления
         theme.separator(self, pady=6)
-        footer = tk.Frame(self, bg=theme.C["bg"])
-        footer.pack(fill=tk.X)
+        self._footer = tk.Frame(self, bg=theme.C["bg"])
+        self._footer.pack(fill=tk.X)
 
         if cfg.poll_interval_ms:
             self._pause_var = tk.StringVar(value="⏸ Пауза")
             self._paused = False
-            ttk.Button(
-                footer,
+            self._pause_btn = ttk.Button(
+                self._footer,
                 textvariable=self._pause_var,
                 style="Secondary.TButton",
                 command=self._toggle_pause,
-            ).pack(side=tk.LEFT, padx=(0, 8))
+            )
+            self._pause_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+            self._stop_btn = ttk.Button(
+                self._footer,
+                text="⏹ Стоп",
+                style="Secondary.TButton",
+                command=self._stop_poll,
+            )
+            self._stop_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Button(
-            footer,
+            self._footer,
             text="На главную",
             style="Ghost.TButton",
             command=self.app.go_home,
@@ -143,9 +152,7 @@ class ResultScreen(BaseScreen):
 
         def _worker() -> None:
             try:
-                from config.environments import gravitee_token_key
-                token = self.app.env_manager.get(gravitee_token_key(self._environment))
-                self.app.http_client.set_token(token)
+                self.app.submit_service.set_auth(self._form, self._environment)
                 response = self.app.http_client.get(endpoint)
                 error: Optional[str] = None
             except Exception as exc:
@@ -189,6 +196,23 @@ class ResultScreen(BaseScreen):
         else:
             self._pause_var.set("⏸ Пауза")
             self._schedule_poll()
+
+    def _stop_poll(self) -> None:
+        """Безвозвратно останавливает опрос и убирает кнопки управления."""
+        self._paused = True
+        if self._poll_after_id:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
+        # Убираем кнопки паузы и стопа
+        try:
+            self._pause_btn.destroy()
+            self._stop_btn.destroy()
+        except Exception:
+            pass
+        self._ts_var.set("Опрос остановлен")
 
     # ------------------------------------------------------------------
     # Обновление UI

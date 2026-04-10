@@ -60,7 +60,7 @@ class SubmitService:
             )
 
         # 3. Установить авторизацию согласно типу формы
-        self._set_auth(form, environment)
+        self.set_auth(form, environment)
 
         # 4. Собрать payload
         payload = form.build_payload(form_data)
@@ -96,7 +96,7 @@ class SubmitService:
     # Внутренние методы
     # ------------------------------------------------------------------
 
-    def _set_auth(self, form: BaseForm, environment: str) -> None:
+    def set_auth(self, form: BaseForm, environment: str) -> None:
         """Устанавливает авторизацию на HttpClient согласно form.get_auth_type()."""
         auth_type = form.get_auth_type()
         if auth_type == "gravitee":
