@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from forms.fields import FieldDefinition
-from forms.result_config import ResultScreenConfig
+from forms.result_config import ResultScreenConfig, ResultStatus
 
 
 class BaseForm(ABC):
@@ -145,6 +145,33 @@ class BaseForm(ABC):
             return ResultScreenConfig(poll_interval_ms=5000, title="Статус деплоя")
         """
         return ResultScreenConfig()
+
+    def get_result_status(self, environment: str, response: Any) -> ResultStatus:
+        """
+        Возвращает визуальный статус после первичного ответа сервера.
+        По умолчанию — WAITING (форма находится в обработке).
+
+        Переопределить, если начальный ответ может означать «ожидание»:
+            if response.get("status") == "pending":
+                return ResultStatus.WAITING
+            return ResultStatus.SUCCESS
+        """
+        return ResultStatus.WAITING
+
+    def get_poll_status(self, environment: str, poll_response: Any) -> ResultStatus:
+        """
+        Возвращает визуальный статус на основе ответа опроса.
+        По умолчанию — WAITING (процесс ещё идёт).
+
+        Переопределить для отображения финального состояния:
+            status = poll_response.get("status", "")
+            if status == "success":
+                return ResultStatus.SUCCESS
+            if status == "error":
+                return ResultStatus.ERROR
+            return ResultStatus.WAITING
+        """
+        return ResultStatus.WAITING
 
     def build_result_content(self, environment: str, response: Any) -> str:
         """

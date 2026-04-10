@@ -2,7 +2,23 @@
 ResultScreenConfig — конфигурация экрана результата после отправки формы.
 Возвращается методом BaseForm.get_result_config().
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from enum import Enum
+
+
+class ResultStatus(Enum):
+    """
+    Визуальный статус на экране результата.
+
+    PENDING  — серые часы ◷      (принято, ожидает обработки)
+    SUCCESS  — зелёная галочка ✓ (операция завершена успешно)
+    WAITING  — жёлтые часы ⏳   (в процессе / активный опрос)
+    ERROR    — красный крест ✗   (ошибка)
+    """
+    PENDING = "pending"
+    SUCCESS = "success"
+    WAITING = "waiting"
+    ERROR   = "error"
 
 
 @dataclass

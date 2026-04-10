@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import ui.theme as theme
 from forms.base_form import BaseForm
+from forms.result_config import ResultStatus
 from ui.screens.base_screen import BaseScreen
 
 
@@ -55,6 +56,12 @@ class ResultScreen(BaseScreen):
         title_text = cfg.title if cfg.title else self._form.title
         header = tk.Frame(self, bg=theme.C["bg"])
         header.pack(fill=tk.X, pady=(0, 4))
+
+        self._status_icon = tk.Label(
+            header, text="",
+            font=("Segoe UI", 20), bg=theme.C["bg"],
+        )
+        self._status_icon.pack(side=tk.LEFT, padx=(0, 8))
 
         tk.Label(
             header, text=title_text,
@@ -123,7 +130,11 @@ class ResultScreen(BaseScreen):
         initial_content = self._form.build_result_content(
             self._environment, self._initial_response
         )
+        initial_status = self._form.get_result_status(
+            self._environment, self._initial_response
+        )
         self._set_content(initial_content)
+        self._set_status(initial_status)
         self._update_timestamp()
 
         if cfg.poll_interval_ms:
@@ -172,9 +183,12 @@ class ResultScreen(BaseScreen):
 
         if error:
             self._set_content(f"[Ошибка опроса]\n{error}")
+            self._set_status(ResultStatus.ERROR)
         else:
             content = self._form.build_poll_content(self._environment, response)
+            status = self._form.get_poll_status(self._environment, response)
             self._set_content(content)
+            self._set_status(status)
 
         self._update_timestamp()
         self._schedule_poll()
@@ -217,6 +231,17 @@ class ResultScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Обновление UI
     # ------------------------------------------------------------------
+
+    _STATUS_ICON: dict = {
+        ResultStatus.PENDING: ("◷", "#8899aa"),
+        ResultStatus.SUCCESS: ("✓", "#4caf50"),
+        ResultStatus.WAITING: ("⏳", "#ff9800"),
+        ResultStatus.ERROR:   ("✗", "#f44336"),
+    }
+
+    def _set_status(self, status: ResultStatus) -> None:
+        icon, color = self._STATUS_ICON.get(status, ("", theme.C["text_muted"]))
+        self._status_icon.config(text=icon, fg=color)
 
     def _set_content(self, text: str) -> None:
         self._content.config(state=tk.NORMAL)
