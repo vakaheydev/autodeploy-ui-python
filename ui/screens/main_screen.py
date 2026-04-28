@@ -6,6 +6,7 @@ from tkinter import ttk
 from typing import List, Tuple
 
 import ui.theme as theme
+from config.environments import GRAVITEE_REPO_PATH_KEY
 from ui.screens.base_screen import BaseScreen
 
 # Уровень 1: группа окружения
@@ -25,6 +26,32 @@ _TIER2: List[Tuple[str, str]] = [
 class MainScreen(BaseScreen):
 
     def _build(self) -> None:
+        # --- Панель ветки (bottom-anchored — добавляется ДО top-элементов) ---
+        branch_bar = tk.Frame(self, bg=theme.C["bg"])
+        branch_bar.pack(side=tk.BOTTOM, anchor=tk.W, fill=tk.X, pady=(8, 0))
+
+        self._branch_var = tk.StringVar(value=self._get_branch_name())
+
+        tk.Label(
+            branch_bar,
+            textvariable=self._branch_var,
+            font=theme.F["small"],
+            bg=theme.C["bg"],
+            fg=theme.C["text_muted"],
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            branch_bar,
+            text="↻",
+            font=theme.F["body"],
+            bg=theme.C["bg"],
+            fg=theme.C["text_muted"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["text"],
+            relief="flat", bd=0, cursor="hand2",
+            command=self._refresh_branch,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
         self._add_back_button()
 
         # --- Заголовок ---
@@ -151,6 +178,7 @@ class MainScreen(BaseScreen):
         self.app.current_environment.set(env_key)
         self._refresh_segments()
         self._status_var.set(self._status_text())
+        self._on_environment_changed(env_key)
 
     # ------------------------------------------------------------------
 
@@ -163,3 +191,23 @@ class MainScreen(BaseScreen):
     def _open_category(self) -> None:
         from ui.screens.category_screen import CategoryScreen
         self.app.navigate_to(CategoryScreen)
+
+    # ------------------------------------------------------------------
+    # Переопределяемые хуки
+    # ------------------------------------------------------------------
+
+    def _on_environment_changed(self, env_key: str) -> None:
+        """Вызывается при каждом переключении окружения. Переопределить при необходимости."""
+
+    def _get_branch_name(self) -> str:
+        """
+        Возвращает название текущей ветки для отображения внизу экрана.
+        Путь к репозиторию берётся из env_manager по ключу GRAVITEE_REPO_PATH_KEY.
+        """
+        env = self.app.env_manager.load()
+        _ = env.get(GRAVITEE_REPO_PATH_KEY, "")
+        return ""
+
+    def _refresh_branch(self) -> None:
+        """Вызывается при нажатии ↻ рядом с веткой. Обновляет отображаемое название."""
+        self._branch_var.set(self._get_branch_name())
