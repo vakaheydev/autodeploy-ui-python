@@ -65,6 +65,12 @@ class SubmitService:
         # 4. Собрать payload
         payload = form.build_payload(form_data)
 
+        # 4.5. Хук перед отправкой
+        try:
+            form.pre_submit(form_data, payload, environment)
+        except Exception as exc:
+            return SubmitResult(False, f"pre_submit: {exc}")
+
         # 5. Отправить
         method = form.get_http_method().upper()
         try:

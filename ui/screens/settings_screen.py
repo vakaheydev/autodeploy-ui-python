@@ -226,7 +226,7 @@ class SettingsScreen(BaseScreen):
         values = {key: var.get() for key, var in self._token_vars.items()}
         try:
             self.app.env_manager.save(values)
-            messagebox.showinfo("Настройки", "Токены сохранены.")
+            messagebox.showinfo("Настройки", "Настройки сохранены.")
             self.app.go_back()
         except Exception as exc:
             messagebox.showerror("Ошибка", f"Не удалось сохранить:\n{exc}")

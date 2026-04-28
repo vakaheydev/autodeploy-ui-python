@@ -24,6 +24,7 @@
   - [Добавить заголовки к запросу](#добавить-дополнительные-заголовки-к-запросу)
   - [Изменить тип авторизации](#изменить-тип-авторизации)
   - [Добавить диалог подтверждения перед отправкой](#добавить-диалог-подтверждения-перед-отправкой)
+  - [Выполнить действие перед отправкой (pre_submit)](#выполнить-действие-перед-отправкой-pre_submit)
 - [5. Экран результата после сабмита](#5-экран-результата-после-сабмита)
   - [Как работает экран результата](#как-работает-экран-результата)
   - [Настроить заголовок и автообновление](#настроить-заголовок-и-автообновление)
@@ -514,6 +515,42 @@ def build_confirm_text(
 ```
 
 По умолчанию показывается: метод, URL, окружение и полный JSON payload.
+
+---
+
+### Выполнить действие перед отправкой (pre_submit)
+
+`pre_submit()` вызывается **после** сборки payload и **до** HTTP-запроса. По умолчанию ничего не делает.
+
+Переопределить для любых побочных действий: запись файлов, git-операции, логирование, нотификации, проверка внешних условий.
+
+```python
+def pre_submit(
+    self,
+    form_data: Dict[str, Any],
+    payload: Dict[str, Any],
+    environment: str,
+) -> None:
+    # form_data  — исходные значения полей {field.key: value}
+    # payload    — собранный JSON-словарь (можно изменить через payload.update(...))
+    # environment — ключ текущего окружения, напр. "prod_int"
+    import subprocess, json, pathlib
+
+    repo = pathlib.Path("/path/to/repo")
+    config_file = repo / "config.json"
+    config_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    subprocess.run(["git", "-C", str(repo), "add", str(config_file)], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", f"update config [{environment}]"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push"], check=True)
+```
+
+Если метод бросает исключение — **сабмит прерывается**, HTTP-запрос не отправляется, пользователю показывается диалог ошибки с текстом исключения.
+
+> **Порядок выполнения:**
+> ```
+> validate() → get_submit_endpoint() → set_auth() → build_payload() → pre_submit() → HTTP-запрос
+> ```
 
 ---
 
