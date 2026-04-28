@@ -2,12 +2,13 @@
 SettingsScreen — экран настроек (токены).
 """
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Dict
 
 import ui.theme as theme
 from config.environments import (
-    ENVIRONMENTS, ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key,
+    ENVIRONMENTS, GRAVITEE_REPO_PATH_KEY, ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY,
+    TFS_TOKEN_KEY, gravitee_token_key,
 )
 from ui.screens.base_screen import BaseScreen
 
@@ -55,6 +56,57 @@ class SettingsScreen(BaseScreen):
             ).grid(row=i, column=2, padx=8)
 
         grid.columnconfigure(1, weight=1)
+
+        theme.separator(self, pady=10)
+
+        # --- Gravitee Repository ---
+        repo_card = theme.card(self, pady=0)
+        tk.Label(
+            repo_card, text="GRAVITEE REPOSITORY",
+            font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(anchor=tk.W, padx=14, pady=(10, 6))
+
+        repo_row = tk.Frame(repo_card, bg=theme.C["surface"])
+        repo_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        repo_var = tk.StringVar(value=saved.get(GRAVITEE_REPO_PATH_KEY, ""))
+        self._token_vars[GRAVITEE_REPO_PATH_KEY] = repo_var
+
+        tk.Label(
+            repo_row, text="Repository path",
+            font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_label"],
+            width=18, anchor="w",
+        ).pack(side=tk.LEFT)
+
+        tk.Entry(
+            repo_row, textvariable=repo_var,
+            bg=theme.C["input_bg"], fg=theme.C["text"],
+            relief="solid", bd=1,
+            font=theme.F["body"],
+            insertbackground=theme.C["text"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+
+        def _browse_repo():
+            path = filedialog.askdirectory(
+                title="Выберите папку репозитория Gravitee",
+                initialdir=repo_var.get() or "/",
+            )
+            if path:
+                repo_var.set(path)
+
+        tk.Button(
+            repo_row, text="📁",
+            font=theme.F["body"],
+            bg=theme.C["surface"],
+            fg=theme.C["text"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["text"],
+            relief="flat", bd=0, cursor="hand2",
+            command=_browse_repo,
+        ).pack(side=tk.LEFT)
 
         theme.separator(self, pady=10)
 
