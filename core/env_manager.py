@@ -5,7 +5,7 @@ EnvManager — чтение и запись токенов из .env файла.
 from pathlib import Path
 from typing import Dict
 
-ENV_FILE = Path(".env")
+ENV_FILE = Path(__file__).parent.parent / ".env"
 
 
 class EnvManager:
