@@ -5,9 +5,9 @@
   1. Добавить значение в FieldType
   2. Добавить обработку в ui/widgets/field_factory.py
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 
 class FieldType(Enum):
@@ -18,6 +18,7 @@ class FieldType(Enum):
     CHECKBOX    = "checkbox"    # одиночный чекбокс (bool)
     NUMBER      = "number"      # числовой ввод
     FILE        = "file"        # выбор файла + ручной ввод содержимого
+    BLOCK       = "block"       # группа вложенных полей
 
 
 @dataclass(frozen=True)
@@ -77,3 +78,4 @@ class FieldDefinition:
     file_type:   str                       = ""    # для FILE: расширение, напр. ".json"
     plural:      bool                      = False  # включить кнопку "+" для дублирования
     plural_max:  Optional[int]             = None   # макс. кол-во экземпляров (None = без лимита)
+    block_fields: List['FieldDefinition']  = dc_field(default_factory=list)  # вложенные поля для BLOCK

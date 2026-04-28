@@ -233,6 +233,106 @@ class _SearchableSelectWidget:
         return ""
 
 
+class _BlockWidget:
+    """
+    Группа вложенных полей (BLOCK).
+    Поддерживает условную видимость sub-полей и возвращает Dict[str, Any] из .get().
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        sub_fields: List[FieldDefinition],
+        factory: "FieldFactory",
+        ref_loader: Callable[[FieldDefinition], List[Dict]],
+    ) -> None:
+        self.frame = tk.Frame(
+            parent,
+            bg=theme.C["surface"],
+            highlightthickness=1,
+            highlightbackground=theme.C["border"],
+            highlightcolor=theme.C["border_focus"],
+        )
+
+        self._sub_fields = sub_fields
+        self._sub_widgets: Dict[str, "FieldWidget"] = {}
+        self._sub_containers: Dict[str, tk.Frame] = {}
+
+        for sub_field in sub_fields:
+            outer = tk.Frame(self.frame, bg=theme.C["border"])
+            inner = tk.Frame(outer, bg=theme.C["surface"])
+            inner.pack(fill=tk.BOTH, padx=1, pady=1)
+            self._sub_containers[sub_field.key] = outer
+
+            label_row = tk.Frame(inner, bg=theme.C["surface"])
+            label_row.pack(fill=tk.X, padx=10, pady=(6, 2))
+            req = "  *" if sub_field.required else ""
+            tk.Label(
+                label_row,
+                text=f"{sub_field.label}{req}",
+                font=theme.F["small"],
+                bg=theme.C["surface"],
+                fg=theme.C["text_label"] if sub_field.required else theme.C["text_muted"],
+            ).pack(side=tk.LEFT)
+
+            ref_items = ref_loader(sub_field)
+            fw = factory.create(inner, sub_field, ref_items, ref_loader=ref_loader)
+            fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
+            self._sub_widgets[sub_field.key] = fw
+
+            if sub_field.condition:
+                outer.pack_forget()
+            else:
+                outer.pack(fill=tk.X, pady=2, padx=4)
+
+        self._setup_conditions()
+
+    def _setup_conditions(self) -> None:
+        for sub_field in self._sub_fields:
+            if not sub_field.condition:
+                continue
+            trigger_fw = self._sub_widgets.get(sub_field.condition.field_key)
+            if trigger_fw is None:
+                continue
+            widget = trigger_fw.widget
+            if isinstance(widget, ttk.Combobox):
+                widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditions())
+            else:
+                trigger_fw.bind_change(self._refresh_conditions)
+
+    def _refresh_conditions(self) -> None:
+        for sub_field in self._sub_fields:
+            if not sub_field.condition:
+                continue
+            outer = self._sub_containers.get(sub_field.key)
+            trigger_fw = self._sub_widgets.get(sub_field.condition.field_key)
+            if outer is None or trigger_fw is None:
+                continue
+            should_show = trigger_fw.get() == sub_field.condition.value
+            is_visible = bool(outer.winfo_manager())
+            if should_show and not is_visible:
+                outer.pack(fill=tk.X, pady=2, padx=4)
+            elif not should_show and is_visible:
+                outer.pack_forget()
+
+    def get(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {}
+        for key, fw in self._sub_widgets.items():
+            outer = self._sub_containers.get(key)
+            if outer and not outer.winfo_manager():
+                continue
+            data[key] = fw.get()
+        return data
+
+    def set(self, values: Any) -> None:
+        if not isinstance(values, dict):
+            return
+        for key, value in values.items():
+            fw = self._sub_widgets.get(key)
+            if fw:
+                fw.set(value)
+
+
 class FieldWidget:
     """Обёртка над виджетом с унифицированным .get()/.set() и опциональным bind_change()."""
 
@@ -283,8 +383,11 @@ class FieldFactory:
         parent: tk.Widget,
         field_def: FieldDefinition,
         reference_items: List[Dict[str, Any]] | None = None,
+        ref_loader: Optional[Callable[[FieldDefinition], List[Dict[str, Any]]]] = None,
     ) -> FieldWidget:
         items = reference_items or []
+        _empty_loader: Callable[[FieldDefinition], List[Dict[str, Any]]] = lambda _: []
+        loader = ref_loader or _empty_loader
         match field_def.field_type:
             case FieldType.TEXT:
                 return self._create_text(parent, field_def)
@@ -300,6 +403,8 @@ class FieldFactory:
                 return self._create_number(parent, field_def)
             case FieldType.FILE:
                 return self._create_file(parent, field_def)
+            case FieldType.BLOCK:
+                return self._create_block(parent, field_def, loader)
             case _:
                 raise ValueError(f"Неизвестный тип поля: {field_def.field_type}")
 
@@ -359,6 +464,8 @@ class FieldFactory:
             search_strings = [lbl.lower() for lbl in labels]
 
         w = _SearchableSelectWidget(parent, labels, values, search_strings)
+        if field.default is not None:
+            w.set_value(str(field.default))
         return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value)
 
     def _create_multiselect(
@@ -536,6 +643,9 @@ class FieldFactory:
                 toggle.set(val in target)
             _render_rows()
 
+        if field.default is not None:
+            set_selected(field.default)
+
         return FieldWidget(frame, get_selected, set_fn=set_selected)
 
     def _create_checkbox(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
@@ -544,7 +654,7 @@ class FieldFactory:
         return FieldWidget(chk, var.get, set_fn=lambda v: var.set(bool(v)))
 
     def _create_number(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
-        var = tk.StringVar(value=str(field.default or ""))
+        var = tk.StringVar(value=str(field.default) if field.default is not None else "")
         vcmd = (parent.register(lambda v: v == "" or v.isdigit()), "%P")
         entry = tk.Entry(
             parent, textvariable=var,
@@ -556,6 +666,15 @@ class FieldFactory:
             lambda: int(var.get()) if var.get().isdigit() else 0,
             set_fn=lambda v: var.set(str(int(v)) if v is not None and str(v).isdigit() else ""),
         )
+
+    def _create_block(
+        self,
+        parent: tk.Widget,
+        field: FieldDefinition,
+        ref_loader: Callable[[FieldDefinition], List[Dict[str, Any]]],
+    ) -> FieldWidget:
+        block = _BlockWidget(parent, field.block_fields, self, ref_loader)
+        return FieldWidget(block.frame, block.get, set_fn=block.set)
 
     def _create_file(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         """
@@ -630,8 +749,10 @@ class FieldFactory:
     def _add_placeholder(entry: tk.Entry, var: tk.StringVar, placeholder: str) -> None:
         if not placeholder:
             return
-        var.set(placeholder)
-        entry.config(fg=theme.C["text_muted"])
+        # Устанавливаем плейсхолдер только если нет заранее заданного значения (default)
+        if not var.get():
+            var.set(placeholder)
+            entry.config(fg=theme.C["text_muted"])
 
         def on_focus_in(_):
             if var.get() == placeholder:

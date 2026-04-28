@@ -279,7 +279,7 @@ class FormScreen(BaseScreen):
 
             # Виджет ввода
             ref_items = self._load_reference(field_def)
-            fw = self._factory.create(inner, field_def, ref_items)
+            fw = self._factory.create(inner, field_def, ref_items, ref_loader=self._load_reference)
             fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
             self._field_widgets[field_def.key] = fw
 
@@ -470,7 +470,7 @@ class FormScreen(BaseScreen):
             old_fw.widget.destroy()
 
         inner = self._field_inner_frames[key]
-        fw = self._factory.create(inner, field_def, new_items)
+        fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
 
@@ -617,7 +617,7 @@ class FormScreen(BaseScreen):
 
         # Виджет
         ref_items = self._load_reference(base_def)
-        fw = self._factory.create(inner, base_def, ref_items)
+        fw = self._factory.create(inner, base_def, ref_items, ref_loader=self._load_reference)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[new_key] = fw
 

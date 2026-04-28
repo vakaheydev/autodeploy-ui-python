@@ -15,6 +15,7 @@
   - [Добавить новую категорию](#добавить-новую-категорию)
   - [Типы полей](#типы-полей)
   - [Поле типа FILE](#поле-типа-file)
+  - [Поле типа BLOCK: группа вложенных полей](#поле-типа-block-группа-вложенных-полей)
   - [Plural-поле: дублирование по кнопке «+»](#plural-поле-дублирование-по-кнопке-)
   - [Условное поле](#условное-поле-показатьскрыть-при-выборе-другого)
   - [Изменить существующую форму](#изменить-существующую-форму)
@@ -309,6 +310,7 @@ CATEGORY_ORDER = ["api", "apps", "other", "infra"]
 | `CHECKBOX`    | одиночный чекбокс                    | `bool`              |
 | `NUMBER`      | числовой ввод                        | `int`               |
 | `FILE`        | кнопка выбора файла + textarea       | `str` (содержимое)  |
+| `BLOCK`       | группа вложенных полей               | `Dict[str, Any]`    |
 
 Полный список параметров `FieldDefinition`:
 
@@ -325,8 +327,22 @@ FieldDefinition(
     file_type="",             # для FILE: расширение файла, напр. ".json"
     plural=False,             # включить кнопку "+" для дублирования поля
     plural_max=None,          # макс. кол-во экземпляров при plural=True
+    block_fields=[],          # для BLOCK: список вложенных FieldDefinition
 )
 ```
+
+Параметр `default` работает для всех типов полей:
+
+| Тип           | Что подставляется                                               |
+|---------------|-----------------------------------------------------------------|
+| `TEXT`        | строка; если задан и `placeholder` — показывается текст, не подсказка |
+| `TEXTAREA`    | строка                                                          |
+| `NUMBER`      | число (в том числе `0`)                                         |
+| `CHECKBOX`    | `True` / `False`                                                |
+| `SELECT`      | `value_key` элемента, который будет выбран изначально           |
+| `MULTISELECT` | список `value_key` изначально отмеченных элементов              |
+| `FILE`        | строка-содержимое (подставляется в textarea)                    |
+| `BLOCK`       | словарь `{sub_key: value}` для предзаполнения вложенных полей  |
 
 ---
 
@@ -355,6 +371,117 @@ def build_payload(self, form_data):
 
 `file_type` принимает расширение с точкой (`.json`, `.yaml`) или без (`json`, `yaml`).
 Если не задан — диалог открывается без фильтра.
+
+---
+
+### Поле типа BLOCK: группа вложенных полей
+
+`BLOCK` объединяет несколько полей в визуальный блок. Поддерживает условную видимость вложенных полей и `plural` (дублирование всего блока целиком).
+
+`.get()` возвращает `Dict[str, Any]` со значениями всех видимых вложенных полей.
+
+**Пример — блок «Тарифный план»:**
+
+```python
+from forms.fields import FieldCondition, FieldDefinition, FieldType, ReferenceConfig
+
+FieldDefinition(
+    key="plan",
+    label="Тарифный план",
+    field_type=FieldType.BLOCK,
+    plural=True,
+    plural_max=10,
+    block_fields=[
+        FieldDefinition(
+            key="plan_type",
+            label="Тип плана",
+            field_type=FieldType.SELECT,
+            required=True,
+            reference=ReferenceConfig(
+                source="local",
+                resource="plan_types.json",
+                value_key="id",
+                label_key="name",
+            ),
+        ),
+        FieldDefinition(
+            key="jwt_type",
+            label="Тип JWT",
+            field_type=FieldType.SELECT,
+            required=False,
+            reference=ReferenceConfig(
+                source="local",
+                resource="jwt_types.json",
+                value_key="id",
+                label_key="name",
+            ),
+            # Показывается только когда plan_type == "JWT"
+            condition=FieldCondition(field_key="plan_type", value="JWT"),
+        ),
+    ],
+)
+```
+
+Условная видимость (`condition`) работает внутри блока независимо от условных полей формы.
+
+**`build_payload()` — сбор блоков:**
+
+```python
+def build_payload(self, form_data):
+    # Один блок — form_data["plan"] уже Dict[str, Any]
+    plan = form_data.get("plan", {})
+
+    # Несколько блоков (plural=True) — collect_plural возвращает List[Dict]
+    plans = self.collect_plural(form_data, "plan")
+    return {
+        "plans": [
+            {"type": p.get("plan_type"), "jwtType": p.get("jwt_type")}
+            for p in plans
+        ]
+    }
+```
+
+**Структура `form_data` с BLOCK-полем:**
+
+`form_data` остаётся плоским на верхнем уровне. Значение BLOCK-поля — вложенный словарь. Условные sub-поля, которые скрыты, в словарь не попадают.
+
+```python
+# Один блок, plan_type == "JWT" → jwt_type видим
+form_data = {
+    "plan": {
+        "plan_type": "JWT",
+        "jwt_type":  "old_idp",
+    }
+}
+
+# Один блок, plan_type == "API_KEY" → jwt_type скрыт
+form_data = {
+    "plan": {
+        "plan_type": "API_KEY",
+        # jwt_type не включается
+    }
+}
+
+# plural=True, пользователь добавил ещё два блока
+form_data = {
+    "plan":   {"plan_type": "JWT",     "jwt_type": "old_idp"},
+    "plan_2": {"plan_type": "API_KEY"},
+    "plan_3": {"plan_type": "JWT",     "jwt_type": "m2m_int"},
+}
+
+# collect_plural собирает все экземпляры в список
+plans = self.collect_plural(form_data, "plan")
+# → [
+#     {"plan_type": "JWT",     "jwt_type": "old_idp"},
+#     {"plan_type": "API_KEY"},
+#     {"plan_type": "JWT",     "jwt_type": "m2m_int"},
+# ]
+```
+
+**Ограничения:**
+- Вложенные BLOCK внутри BLOCK не поддерживаются
+- `plural` у вложенных полей блока игнорируется (дублируется весь блок)
+- HTTP-справочники в `block_fields` загружаются без диалога «Загрузка»
 
 ---
 
