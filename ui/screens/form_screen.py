@@ -279,6 +279,13 @@ class FormScreen(BaseScreen):
             command=self._preview_payload,
         ).pack(side=tk.LEFT)
 
+        if self._form.itsm_support:
+            ttk.Button(
+                foot, text="⬇ Подтянуть из заявки",
+                style="Secondary.TButton",
+                command=self._on_fetch_from_itsm,
+            ).pack(side=tk.LEFT, padx=(8, 0))
+
         self._status_var = tk.StringVar()
         self._status_lbl = ttk.Label(self, textvariable=self._status_var, style="Muted.TLabel")
         self._status_lbl.pack(anchor=tk.W, pady=(6, 0))
@@ -530,6 +537,87 @@ class FormScreen(BaseScreen):
         payload = self._form.build_payload(form_data)
         show_text_viewer(self, "Предварительный просмотр JSON",
                          json.dumps(payload, ensure_ascii=False, indent=2))
+
+    # ------------------------------------------------------------------
+    # ITSM-интеграция
+    # ------------------------------------------------------------------
+
+    def _on_fetch_from_itsm(self) -> None:
+        """Запускает fetch_from_itsm() в фоне, показывает диалог прогресса."""
+        environment = self.app.current_environment.get()
+
+        # Диалог «В процессе»
+        progress = tk.Toplevel(self)
+        progress.title("Подтягиваем данные")
+        progress.configure(bg=theme.C["bg"])
+        progress.resizable(False, False)
+        progress.transient(self.winfo_toplevel())
+        progress.grab_set()
+        progress.protocol("WM_DELETE_WINDOW", lambda: None)  # запрет закрытия
+
+        pad = tk.Frame(progress, bg=theme.C["bg"])
+        pad.pack(padx=32, pady=(20, 16))
+
+        tk.Label(
+            pad, text="⬇",
+            font=("Segoe UI", 24), bg=theme.C["bg"], fg=theme.C["primary"],
+        ).pack(pady=(0, 6))
+
+        tk.Label(
+            pad, text="Подтягиваем данные из заявки…",
+            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
+        ).pack()
+
+        tk.Label(
+            pad, text="Пожалуйста, подождите",
+            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
+        ).pack(pady=(4, 0))
+
+        progress.update()
+
+        def _worker() -> None:
+            try:
+                data = self._form.fetch_from_itsm(environment)
+                self.after(0, lambda: _finish(data, None))
+            except Exception as exc:
+                self.after(0, lambda: _finish(None, str(exc)))
+
+        def _finish(data, error: str | None) -> None:
+            try:
+                progress.destroy()
+            except Exception:
+                pass
+            if error:
+                show_error(self, "Ошибка получения данных", error)
+                return
+            filled = self._apply_itsm_data(data or {})
+            if filled:
+                fields_text = "\n".join(f"  • {k}" for k in filled)
+                show_info(
+                    self,
+                    "Данные получены",
+                    f"Данные из заявки успешно подтянуты.\n\nЗаполнено полей: {len(filled)}\n{fields_text}",
+                )
+            else:
+                show_info(
+                    self,
+                    "Данные получены",
+                    "Ответ получен, но ни одно из полей формы не было обновлено.\n"
+                    "Проверьте, что ключи в ответе совпадают с ключами полей формы.",
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_itsm_data(self, data: dict) -> list[str]:
+        """Применяет данные из ITSM к виджетам формы. Возвращает список заполненных ключей."""
+        filled: list[str] = []
+        for key, value in data.items():
+            fw = self._field_widgets.get(key)
+            if fw is None:
+                continue
+            fw.set(value)
+            filled.append(key)
+        return filled
 
     # ------------------------------------------------------------------
     # Утилиты

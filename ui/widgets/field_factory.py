@@ -59,6 +59,24 @@ class _ToggleRow:
         if self._on_toggle is not None:
             self._on_toggle()
 
+    def set(self, checked: bool) -> None:
+        """Устанавливает состояние без вызова on_toggle-коллбэка."""
+        if self._checked == checked:
+            return
+        self._checked = checked
+        if checked:
+            self._btn.config(
+                text=f"  {self._ON}  {self._label}",
+                fg=theme.C["primary"],
+                bg=theme.C["badge_api"],
+            )
+        else:
+            self._btn.config(
+                text=f"  {self._OFF}  {self._label}",
+                fg=theme.C["text"],
+                bg=theme.C["input_bg"],
+            )
+
     def get(self) -> bool:
         return self._checked
 
@@ -196,6 +214,19 @@ class _SearchableSelectWidget:
         """Регистрирует коллбэк, вызываемый при выборе элемента."""
         self._change_callbacks.append(callback)
 
+    def set_value(self, value: str) -> None:
+        """Программно выбирает элемент по значению."""
+        try:
+            idx = self._values.index(value)
+        except ValueError:
+            return
+        self._selected_idx = idx
+        if idx in self._visible_indices:
+            pos = self._visible_indices.index(idx)
+            self._listbox.selection_clear(0, tk.END)
+            self._listbox.selection_set(pos)
+            self._listbox.see(pos)
+
     def get(self) -> str:
         if self._selected_idx is not None:
             return self._values[self._selected_idx]
@@ -203,20 +234,27 @@ class _SearchableSelectWidget:
 
 
 class FieldWidget:
-    """Обёртка над виджетом с унифицированным .get() и опциональным bind_change()."""
+    """Обёртка над виджетом с унифицированным .get()/.set() и опциональным bind_change()."""
 
     def __init__(
         self,
         widget: tk.Widget,
         get_fn: Callable[[], Any],
         bind_change_fn: Optional[Callable[[Callable[[], None]], None]] = None,
+        set_fn: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.widget = widget
         self._get_fn = get_fn
         self._bind_change_fn = bind_change_fn
+        self._set_fn = set_fn
 
     def get(self) -> Any:
         return self._get_fn()
+
+    def set(self, value: Any) -> None:
+        """Программно устанавливает значение поля. Игнорируется если set_fn не задана."""
+        if self._set_fn is not None:
+            self._set_fn(value)
 
     def bind_change(self, callback: Callable[[], None]) -> None:
         """Подписывается на изменение значения. Работает для SELECT с поиском."""
@@ -269,13 +307,32 @@ class FieldFactory:
         var = tk.StringVar(value=str(field.default or ""))
         entry = tk.Entry(parent, textvariable=var, **_ENTRY_KWARGS)
         self._add_placeholder(entry, var, field.placeholder)
-        return FieldWidget(entry, lambda: self._real_value(var, field.placeholder))
+
+        def _set(value: Any) -> None:
+            s = str(value) if value is not None else ""
+            if s:
+                var.set(s)
+                entry.config(fg=theme.C["text"])
+            elif field.placeholder:
+                var.set(field.placeholder)
+                entry.config(fg=theme.C["text_muted"])
+            else:
+                var.set("")
+
+        return FieldWidget(entry, lambda: self._real_value(var, field.placeholder), set_fn=_set)
 
     def _create_textarea(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         text = tk.Text(parent, height=4, wrap=tk.WORD, **_ENTRY_KWARGS, padx=6, pady=6)
         if field.default:
             text.insert("1.0", str(field.default))
-        return FieldWidget(text, lambda: text.get("1.0", tk.END).strip())
+
+        def _set(value: Any) -> None:
+            s = str(value) if value is not None else ""
+            text.delete("1.0", tk.END)
+            if s:
+                text.insert("1.0", s)
+
+        return FieldWidget(text, lambda: text.get("1.0", tk.END).strip(), set_fn=_set)
 
     def _create_select(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]
@@ -300,7 +357,7 @@ class FieldFactory:
             search_strings = [lbl.lower() for lbl in labels]
 
         w = _SearchableSelectWidget(parent, labels, values, search_strings)
-        return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change)
+        return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value)
 
     def _create_multiselect(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]
@@ -471,12 +528,18 @@ class FieldFactory:
         def get_selected() -> List[str]:
             return [val for toggle, val, _ in rows if toggle.get()]
 
-        return FieldWidget(frame, get_selected)
+        def set_selected(values_to_set: Any) -> None:
+            target = set(values_to_set) if values_to_set else set()
+            for toggle, val, _ in rows:
+                toggle.set(val in target)
+            _render_rows()
+
+        return FieldWidget(frame, get_selected, set_fn=set_selected)
 
     def _create_checkbox(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.BooleanVar(value=bool(field.default))
         chk = ttk.Checkbutton(parent, variable=var, style="TCheckbutton")
-        return FieldWidget(chk, var.get)
+        return FieldWidget(chk, var.get, set_fn=lambda v: var.set(bool(v)))
 
     def _create_number(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.StringVar(value=str(field.default or ""))
@@ -486,7 +549,11 @@ class FieldFactory:
             validate="key", validatecommand=vcmd,
             **_ENTRY_KWARGS,
         )
-        return FieldWidget(entry, lambda: int(var.get()) if var.get().isdigit() else 0)
+        return FieldWidget(
+            entry,
+            lambda: int(var.get()) if var.get().isdigit() else 0,
+            set_fn=lambda v: var.set(str(int(v)) if v is not None and str(v).isdigit() else ""),
+        )
 
     # ------------------------------------------------------------------
     # Плейсхолдер

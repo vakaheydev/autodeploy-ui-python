@@ -236,5 +236,36 @@ class BaseForm(ABC):
                 errors.append(f'Поле "{field_def.label}" обязательно для заполнения')
         return errors
 
+    # ------------------------------------------------------------------
+    # ITSM-интеграция
+    # ------------------------------------------------------------------
+
+    @property
+    def itsm_support(self) -> bool:
+        """
+        Включает кнопку «Подтянуть из заявки» на экране формы.
+        Переопределить вместе с fetch_from_itsm():
+            @property
+            def itsm_support(self) -> bool:
+                return True
+        """
+        return False
+
+    def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
+        """
+        Получает данные из ITSM-заявки и возвращает словарь {field_key: value}.
+        Вызывается в фоновом потоке при нажатии кнопки «Подтянуть из заявки».
+
+        Ключи словаря должны совпадать с ключами полей формы (field.key).
+        Если ключ не найден среди полей — он игнорируется.
+
+        Переопределить в конкретной форме:
+            def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
+                ticket_id = ...  # можно спросить у пользователя через input()
+                response = http_client.get(f"/itsm/tickets/{ticket_id}", ...)
+                return {"app_name": response["appName"], "env": response["targetEnv"]}
+        """
+        raise NotImplementedError("fetch_from_itsm не реализован для этой формы")
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.form_id!r}>"
