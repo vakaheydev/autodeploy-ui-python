@@ -2,7 +2,7 @@
 FieldFactory — создаёт стилизованные виджеты по FieldDefinition.
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ui.theme as theme
@@ -298,6 +298,8 @@ class FieldFactory:
                 return self._create_checkbox(parent, field_def)
             case FieldType.NUMBER:
                 return self._create_number(parent, field_def)
+            case FieldType.FILE:
+                return self._create_file(parent, field_def)
             case _:
                 raise ValueError(f"Неизвестный тип поля: {field_def.field_type}")
 
@@ -554,6 +556,71 @@ class FieldFactory:
             lambda: int(var.get()) if var.get().isdigit() else 0,
             set_fn=lambda v: var.set(str(int(v)) if v is not None and str(v).isdigit() else ""),
         )
+
+    def _create_file(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
+        """
+        Виджет типа FILE: кнопка «Выбрать файл» + textarea для ручного ввода/просмотра.
+        .get() возвращает содержимое файла как строку.
+        """
+        frame = tk.Frame(
+            parent,
+            bg=theme.C["input_bg"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        )
+
+        # Панель с кнопкой выбора
+        top_bar = tk.Frame(frame, bg=theme.C["input_bg"])
+        top_bar.pack(fill=tk.X, padx=6, pady=(6, 0))
+
+        ext = field.file_type or ""
+        if ext and not ext.startswith("."):
+            ext = f".{ext}"
+        btn_label = f"Выбрать файл  {ext}".strip() if ext else "Выбрать файл"
+
+        text_widget = tk.Text(frame, height=5, wrap=tk.WORD, **_ENTRY_KWARGS, padx=6, pady=6)
+
+        def _browse() -> None:
+            filetypes: list[tuple[str, str]] = []
+            if ext:
+                filetypes.append((f"{ext} файлы", f"*{ext}"))
+            filetypes.append(("Все файлы", "*.*"))
+            path = filedialog.askopenfilename(
+                title=f"Выберите файл — {field.label}",
+                filetypes=filetypes,
+            )
+            if path:
+                import pathlib
+                content = pathlib.Path(path).read_text(encoding="utf-8")
+                text_widget.delete("1.0", tk.END)
+                text_widget.insert("1.0", content)
+
+        tk.Button(
+            top_bar,
+            text=btn_label,
+            font=theme.F["small"],
+            bg=theme.C["input_bg"],
+            fg=theme.C["primary"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["primary"],
+            relief="flat", bd=0, cursor="hand2",
+            command=_browse,
+        ).pack(side=tk.LEFT)
+
+        tk.Frame(frame, bg=theme.C["border"], height=1).pack(fill=tk.X, pady=(4, 0))
+        text_widget.pack(fill=tk.BOTH, padx=0, pady=0)
+
+        if field.default:
+            text_widget.insert("1.0", str(field.default))
+
+        def _set(value: Any) -> None:
+            s = str(value) if value is not None else ""
+            text_widget.delete("1.0", tk.END)
+            if s:
+                text_widget.insert("1.0", s)
+
+        return FieldWidget(frame, lambda: text_widget.get("1.0", tk.END).strip(), set_fn=_set)
 
     # ------------------------------------------------------------------
     # Плейсхолдер

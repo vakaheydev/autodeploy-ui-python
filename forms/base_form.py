@@ -252,6 +252,31 @@ class BaseForm(ABC):
         пользователю показывается диалог с текстом ошибки.
         """
 
+    @staticmethod
+    def collect_plural(form_data: Dict[str, Any], base_key: str) -> List[Any]:
+        """
+        Собирает все значения plural-группы по базовому ключу.
+
+        Возвращает список непустых значений: сначала base_key, затем
+        base_key_2, base_key_3, … — по порядку, пока ключи существуют.
+        Пустые строки, None и пустые списки пропускаются.
+
+        Использование в build_payload():
+            files = self.collect_plural(form_data, "config_file")
+            # → ["content1", "content2"]
+        """
+        results: List[Any] = []
+        base_val = form_data.get(base_key)
+        if base_val is not None and base_val != "" and base_val != []:
+            results.append(base_val)
+        i = 2
+        while f"{base_key}_{i}" in form_data:
+            val = form_data[f"{base_key}_{i}"]
+            if val is not None and val != "" and val != []:
+                results.append(val)
+            i += 1
+        return results
+
     def validate(self, form_data: Dict[str, Any]) -> List[str]:
         """
         Базовая валидация: проверяет обязательные поля.

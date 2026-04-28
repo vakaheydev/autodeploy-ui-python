@@ -30,6 +30,11 @@ class FormScreen(BaseScreen):
         self._field_inner_frames: Dict[str, tk.Frame] = {}
         # Порядок ключей для правильной вставки при показе
         self._field_order: List[str] = []
+        # Plural: кол-во экземпляров и кнопка "+" для каждого базового ключа
+        self._plural_counts: Dict[str, int] = {}
+        self._plural_add_btns: Dict[str, tk.Button] = {}
+        # Plural: последний созданный контейнер в группе (для pack after=)
+        self._plural_last_containers: Dict[str, tk.Frame] = {}
         self._factory = FieldFactory()
         super().__init__(master, app, **kwargs)
 
@@ -251,6 +256,26 @@ class FormScreen(BaseScreen):
                     )
                 )
                 refresh_btn.pack(side=tk.RIGHT)
+
+            if field_def.plural:
+                self._plural_counts[field_def.key] = 1
+                plus_btn = tk.Button(
+                    label_row,
+                    text="  +  ",
+                    font=theme.F["small"],
+                    bg=theme.C["surface"],
+                    fg=theme.C["primary"],
+                    activebackground=theme.C["ghost_h"],
+                    activeforeground=theme.C["primary"],
+                    relief="flat", bd=0,
+                    cursor="hand2",
+                )
+                plus_btn.config(
+                    command=lambda k=field_def.key: self._add_plural_field(k)
+                )
+                plus_btn.pack(side=tk.RIGHT, padx=(0, 4))
+                self._plural_add_btns[field_def.key] = plus_btn
+                self._plural_last_containers[field_def.key] = outer
 
             # Виджет ввода
             ref_items = self._load_reference(field_def)
@@ -537,6 +562,113 @@ class FormScreen(BaseScreen):
         payload = self._form.build_payload(form_data)
         show_text_viewer(self, "Предварительный просмотр JSON",
                          json.dumps(payload, ensure_ascii=False, indent=2))
+
+    # ------------------------------------------------------------------
+    # Plural-поля
+    # ------------------------------------------------------------------
+
+    def _add_plural_field(self, base_key: str) -> None:
+        """Добавляет ещё один экземпляр plural-поля с ключом {base_key}_{N}."""
+        base_def = next(f for f in self._form.fields if f.key == base_key)
+        new_count = self._plural_counts[base_key] + 1
+        self._plural_counts[base_key] = new_count
+        new_key = f"{base_key}_{new_count}"
+
+        # Вставить в field_order сразу после последнего элемента группы
+        last_pos = max(
+            i for i, k in enumerate(self._field_order)
+            if k == base_key or k.startswith(f"{base_key}_")
+        )
+        self._field_order.insert(last_pos + 1, new_key)
+
+        # Создать контейнеры
+        outer = tk.Frame(self._fields_frame, bg=theme.C["border"])
+        inner = tk.Frame(outer, bg=theme.C["surface"])
+        inner.pack(fill=tk.BOTH, padx=1, pady=1)
+
+        self._field_containers[new_key] = outer
+        self._field_inner_frames[new_key] = inner
+
+        # Label row с номером и кнопкой удаления
+        label_row = tk.Frame(inner, bg=theme.C["surface"])
+        label_row.pack(fill=tk.X, padx=12, pady=(8, 3))
+
+        req = "  *" if base_def.required else ""
+        tk.Label(
+            label_row,
+            text=f"{base_def.label} {new_count}{req}",
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["text_label"] if base_def.required else theme.C["text_muted"],
+        ).pack(side=tk.LEFT)
+
+        # Кнопка удаления этого экземпляра
+        tk.Button(
+            label_row,
+            text="  ×  ",
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["error"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["error"],
+            relief="flat", bd=0, cursor="hand2",
+            command=lambda k=new_key, bk=base_key, o=outer: self._remove_plural_field(bk, k, o),
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        # Виджет
+        ref_items = self._load_reference(base_def)
+        fw = self._factory.create(inner, base_def, ref_items)
+        fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self._field_widgets[new_key] = fw
+
+        # Разместить после последнего контейнера группы
+        prev = self._plural_last_containers.get(base_key)
+        if prev and prev.winfo_manager():
+            outer.pack(fill=tk.X, pady=3, padx=2, after=prev)
+        else:
+            outer.pack(fill=tk.X, pady=3, padx=2)
+        self._plural_last_containers[base_key] = outer
+
+        # Скрыть "+" если достигнут лимит
+        if base_def.plural_max is not None and new_count >= base_def.plural_max:
+            btn = self._plural_add_btns.get(base_key)
+            if btn:
+                btn.pack_forget()
+
+    def _remove_plural_field(self, base_key: str, key: str, outer: tk.Frame) -> None:
+        """Удаляет экземпляр plural-поля и возвращает кнопку '+' если она была скрыта."""
+        outer.pack_forget()
+        outer.destroy()
+        self._field_widgets.pop(key, None)
+        self._field_containers.pop(key, None)
+        self._field_inner_frames.pop(key, None)
+        if key in self._field_order:
+            self._field_order.remove(key)
+
+        # Обновить _plural_last_containers на предыдущий живой контейнер группы
+        last = None
+        for k in self._field_order:
+            if k == base_key or k.startswith(f"{base_key}_"):
+                c = self._field_containers.get(k)
+                if c:
+                    last = c
+        if last is not None:
+            self._plural_last_containers[base_key] = last
+
+        # Вернуть "+" если лимит больше не достигнут
+        base_def = next((f for f in self._form.fields if f.key == base_key), None)
+        if base_def and base_def.plural_max is not None:
+            current = self._plural_counts[base_key]
+            # Считаем реально живые экземпляры (base + copies в field_order)
+            alive = sum(
+                1 for k in self._field_order
+                if k == base_key or k.startswith(f"{base_key}_")
+            )
+            if alive < base_def.plural_max:
+                btn = self._plural_add_btns.get(base_key)
+                if btn:
+                    btn.pack(side=tk.RIGHT, padx=(0, 4))
+                    _ = current  # подавить предупреждение
 
     # ------------------------------------------------------------------
     # ITSM-интеграция

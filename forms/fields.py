@@ -17,6 +17,7 @@ class FieldType(Enum):
     MULTISELECT = "multiselect" # список с чекбоксами (множественный выбор)
     CHECKBOX    = "checkbox"    # одиночный чекбокс (bool)
     NUMBER      = "number"      # числовой ввод
+    FILE        = "file"        # выбор файла + ручной ввод содержимого
 
 
 @dataclass(frozen=True)
@@ -66,10 +67,13 @@ class FieldDefinition:
     label:      str
     field_type: FieldType
 
-    required:   bool                    = True
-    placeholder: str                    = ""
-    default:    Any                     = None
-    reference:  Optional[ReferenceConfig]  = None
-    condition:  Optional[FieldCondition]   = None  # если задано — поле условное
-    width:      int                     = 42
-    hint:       str                     = ""
+    required:    bool                      = True
+    placeholder: str                       = ""
+    default:     Any                       = None
+    reference:   Optional[ReferenceConfig] = None
+    condition:   Optional[FieldCondition]  = None  # если задано — поле условное
+    width:       int                       = 42
+    hint:        str                       = ""
+    file_type:   str                       = ""    # для FILE: расширение, напр. ".json"
+    plural:      bool                      = False  # включить кнопку "+" для дублирования
+    plural_max:  Optional[int]             = None   # макс. кол-во экземпляров (None = без лимита)
