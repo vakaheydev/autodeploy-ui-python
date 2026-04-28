@@ -288,27 +288,25 @@ class _BlockWidget:
         self._setup_conditions()
 
     def _setup_conditions(self) -> None:
-        for sub_field in self._sub_fields:
-            if not sub_field.condition:
-                continue
-            trigger_fw = self._sub_widgets.get(sub_field.condition.field_key)
-            if trigger_fw is None:
-                continue
-            widget = trigger_fw.widget
+        has_conditional = any(f.condition for f in self._sub_fields)
+        if not has_conditional:
+            return
+        for fw in self._sub_widgets.values():
+            widget = fw.widget
             if isinstance(widget, ttk.Combobox):
                 widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditions())
             else:
-                trigger_fw.bind_change(self._refresh_conditions)
+                fw.bind_change(self._refresh_conditions)
 
     def _refresh_conditions(self) -> None:
+        values = {key: fw.get() for key, fw in self._sub_widgets.items()}
         for sub_field in self._sub_fields:
             if not sub_field.condition:
                 continue
             outer = self._sub_containers.get(sub_field.key)
-            trigger_fw = self._sub_widgets.get(sub_field.condition.field_key)
-            if outer is None or trigger_fw is None:
+            if outer is None:
                 continue
-            should_show = trigger_fw.get() == sub_field.condition.value
+            should_show = sub_field.condition(values)
             is_visible = bool(outer.winfo_manager())
             if should_show and not is_visible:
                 outer.pack(fill=tk.X, pady=2, padx=4)
