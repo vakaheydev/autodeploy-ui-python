@@ -323,7 +323,7 @@ FieldDefinition(
     placeholder="Подсказка",  # серый текст в пустом поле
     default=None,             # начальное значение
     reference=None,           # ReferenceConfig для SELECT/MULTISELECT
-    condition=None,           # FieldCondition для условного появления
+    condition=None,           # lambda v: bool — предикат видимости поля
     file_type="",             # для FILE: расширение файла, напр. ".json"
     plural=False,             # включить кнопку "+" для дублирования поля
     plural_max=None,          # макс. кол-во экземпляров при plural=True
@@ -383,7 +383,7 @@ def build_payload(self, form_data):
 **Пример — блок «Тарифный план»:**
 
 ```python
-from forms.fields import FieldCondition, FieldDefinition, FieldType, ReferenceConfig
+from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 
 FieldDefinition(
     key="plan",
@@ -416,7 +416,7 @@ FieldDefinition(
                 label_key="name",
             ),
             # Показывается только когда plan_type == "JWT"
-            condition=FieldCondition(field_key="plan_type", value="JWT"),
+            condition=lambda v: v.get("plan_type") == "JWT",
         ),
     ],
 )
@@ -533,20 +533,32 @@ def build_payload(self, form_data):
 
 ### Условное поле (показать/скрыть при выборе другого)
 
-```python
-from forms.fields import FieldCondition
+`condition` — предикат `Callable[[Dict[str, Any]], bool]`.
+Инпут — словарь `{field.key: текущее_значение}` всех полей формы (тот же формат, что `form_data` в `build_payload`).
+Поле показывается когда предикат возвращает `True`, скрывается при `False`.
+Пересчитывается при изменении любого поля формы.
 
+**Простое условие — одно поле:**
+
+```python
 FieldDefinition(
     key="channel_type",
     label="Тип канала",
     field_type=FieldType.SELECT,
     required=False,                          # обязательность проверяется вручную в validate()
     reference=ReferenceConfig(...),
-    condition=FieldCondition(
-        field_key="ingress_type",            # ключ поля-триггера
-        value="platformeco",                 # значение, при котором это поле показывается
-    ),
+    condition=lambda v: v.get("ingress_type") == "platformeco",
 )
+```
+
+**AND / OR:**
+
+```python
+# Показать если тип "jwt" И окружение содержит "prod"
+condition=lambda v: v.get("plan_type") == "jwt" and "prod" in v.get("env", ""),
+
+# Показать если один из двух типов
+condition=lambda v: v.get("ingress_type") in ("platformeco", "nginx"),
 ```
 
 Если поле скрыто — оно **не попадает в payload** и **не валидируется** базовым методом.
@@ -1438,7 +1450,7 @@ autodeploy-ui-python/
 ├── forms/
 │   ├── base_form.py               # абстрактный класс формы (+ методы экрана результата)
 │   ├── result_config.py           # ← ResultScreenConfig: poll_interval_ms, title
-│   ├── fields.py                  # FieldDefinition, FieldType, ReferenceConfig, FieldCondition
+│   ├── fields.py                  # FieldDefinition, FieldType, ReferenceConfig, Condition
 │   ├── registry.py                # реестр форм (Singleton)
 │   ├── loader.py                  # ← регистрировать новые формы здесь
 │   ├── api/                       # формы категории АПИ

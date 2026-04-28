@@ -1,7 +1,7 @@
 """
 FormScreen — экран заполнения и отправки формы.
-Поддерживает условные поля (FieldCondition): поля, которые динамически
-появляются/скрываются в зависимости от значения другого поля.
+Поддерживает условные поля (condition): поля динамически появляются/скрываются
+в зависимости от предиката condition(values_dict) -> bool.
 """
 import json
 import threading
@@ -323,25 +323,24 @@ class FormScreen(BaseScreen):
 
     def _setup_conditional_fields(self) -> None:
         """
-        Скрывает поля с условием и подписывается на изменения триггеров.
+        Скрывает поля с условием и подписывается на изменения всех полей.
         Вызывается один раз после рендера всех полей.
         """
-        trigger_keys: set[str] = set()
+        has_conditional = False
 
         for field_def in self._form.fields:
             if field_def.condition is None:
                 continue
-            # Изначально скрыть
+            has_conditional = True
             outer = self._field_containers.get(field_def.key)
             if outer:
                 outer.pack_forget()
-            trigger_keys.add(field_def.condition.field_key)
 
-        # Подписываемся на изменения полей-триггеров
-        for key in trigger_keys:
-            fw = self._field_widgets.get(key)
-            if fw is None:
-                continue
+        if not has_conditional:
+            return
+
+        # Подписываемся на изменения всех полей
+        for key, fw in self._field_widgets.items():
             widget = fw.widget
             if isinstance(widget, ttk.Combobox):
                 widget.bind("<<ComboboxSelected>>",
@@ -350,7 +349,9 @@ class FormScreen(BaseScreen):
                 fw.bind_change(self._refresh_conditional_fields)
 
     def _refresh_conditional_fields(self) -> None:
-        """Пересчитывает видимость условных полей при изменении триггера."""
+        """Пересчитывает видимость условных полей при изменении любого поля."""
+        values = {key: fw.get() for key, fw in self._field_widgets.items()}
+
         for field_def in self._form.fields:
             if field_def.condition is None:
                 continue
@@ -359,11 +360,7 @@ class FormScreen(BaseScreen):
             if outer is None:
                 continue
 
-            trigger_fw = self._field_widgets.get(field_def.condition.field_key)
-            if trigger_fw is None:
-                continue
-
-            should_show = trigger_fw.get() == field_def.condition.value
+            should_show = field_def.condition(values)
             is_visible = bool(outer.winfo_manager())  # "" если скрыто
 
             if should_show and not is_visible:
@@ -476,12 +473,9 @@ class FormScreen(BaseScreen):
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
 
-        # Восстанавливаем подписку на изменения если поле является триггером
-        trigger_dependent = [
-            f for f in self._form.fields
-            if f.condition and f.condition.field_key == key
-        ]
-        if trigger_dependent:
+        # Восстанавливаем подписку если в форме есть условные поля
+        has_conditional = any(f.condition for f in self._form.fields)
+        if has_conditional:
             widget = fw.widget
             if isinstance(widget, ttk.Combobox):
                 widget.bind("<<ComboboxSelected>>",

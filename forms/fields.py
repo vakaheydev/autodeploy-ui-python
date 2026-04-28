@@ -7,7 +7,7 @@
 """
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class FieldType(Enum):
@@ -44,17 +44,7 @@ class ReferenceConfig:
     detail_keys: tuple[str, ...] = ()   # поля для детальной карточки; () — показать все
 
 
-@dataclass(frozen=True)
-class FieldCondition:
-    """
-    Условие видимости поля.
-    Поле отображается только когда поле-триггер имеет заданное значение.
-
-    field_key: ключ поля-триггера (должен быть объявлен раньше в fields)
-    value:     значение, при котором это поле становится видимым
-    """
-    field_key: str
-    value: Any
+Condition = Callable[[Dict[str, Any]], bool]
 
 
 @dataclass
@@ -72,7 +62,7 @@ class FieldDefinition:
     placeholder: str                       = ""
     default:     Any                       = None
     reference:   Optional[ReferenceConfig] = None
-    condition:   Optional[FieldCondition]  = None  # если задано — поле условное
+    condition:   Optional[Condition]        = None  # если задано — поле условное
     width:       int                       = 42
     hint:        str                       = ""
     file_type:   str                       = ""    # для FILE: расширение, напр. ".json"

@@ -4,7 +4,7 @@
 from typing import Any, Dict, List
 
 from forms.base_form import BaseForm
-from forms.fields import FieldCondition, FieldDefinition, FieldType, ReferenceConfig
+from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 
 _SUBMIT_URLS: Dict[str, str] = {
     "test_int":    "https://ops.test-int.example.com/api/ingress/disable",
@@ -69,10 +69,7 @@ class DisableIngressForm(BaseForm):
                     value_key="id",
                     label_key="name",
                 ),
-                condition=FieldCondition(
-                    field_key="ingress_type",
-                    value="platformeco",
-                ),
+                condition=lambda v: v.get("ingress_type") == "platformeco",
             ),
         ]
 
