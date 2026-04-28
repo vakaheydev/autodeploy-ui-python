@@ -14,7 +14,9 @@ from core.reference_resolver import ReferenceResolver
 from forms.loader import register_all_forms
 from handlers.http_reference_handler import HttpReferenceHandler
 from handlers.local_reference_handler import LocalReferenceHandler
+from services.itsm_service import ITSMService
 from services.submit_service import SubmitService
+from services.tfs_service import TfsService
 from ui.screens.base_screen import BaseScreen
 
 
@@ -53,6 +55,8 @@ class Application:
             ]
         )
         self.submit_service = SubmitService(self.http_client, self.env_manager)
+        self.tfs_service  = TfsService(self.env_manager, self.http_client)
+        self.itsm_service = ITSMService(self.env_manager, self.http_client)
 
         # --- Состояние приложения ---
         default_env = ENVIRONMENTS[0].key

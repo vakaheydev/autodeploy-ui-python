@@ -8,7 +8,11 @@ BaseForm — абстрактный базовый класс для всех ф
 """
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from services.itsm_service import ITSMService
+    from services.tfs_service import TfsService
 
 from forms.fields import FieldDefinition
 from forms.result_config import ResultScreenConfig, ResultStatus
@@ -19,6 +23,10 @@ class BaseForm(ABC):
     Декларативное описание формы.
     Знает о структуре данных, но НЕ знает об UI и HTTP деталях реализации.
     """
+
+    # Инжектируются FormScreen'ом перед открытием формы
+    tfs_service:  Optional["TfsService"]  = None
+    itsm_service: Optional["ITSMService"] = None
 
     # ------------------------------------------------------------------
     # Обязательные свойства — идентификация формы

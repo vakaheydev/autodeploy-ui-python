@@ -44,6 +44,8 @@ class FormScreen(BaseScreen):
 
     def _build(self) -> None:
         self._form: BaseForm = FormRegistry().get(self._form_id)
+        self._form.tfs_service  = self.app.tfs_service
+        self._form.itsm_service = self.app.itsm_service
 
         self._add_back_button()
 
