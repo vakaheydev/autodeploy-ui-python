@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-_CACHE_DIR = Path("cached")
+_CACHE_DIR = Path(__file__).parent.parent / "cached"
 
 
 class ReferenceCache:

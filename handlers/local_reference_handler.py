@@ -9,7 +9,7 @@ from forms.fields import ReferenceConfig
 from handlers.base_reference_handler import BaseReferenceHandler
 
 # Директория с локальными справочниками
-REFERENCES_DIR = Path("config/references")
+REFERENCES_DIR = Path(__file__).parent.parent / "config" / "references"
 
 
 class LocalReferenceHandler(BaseReferenceHandler):
