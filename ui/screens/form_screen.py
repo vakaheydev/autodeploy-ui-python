@@ -361,6 +361,7 @@ class FormScreen(BaseScreen):
                             lambda *_: self._refresh_conditional_fields())
             else:
                 fw.bind_change(self._refresh_conditional_fields)
+        self._refresh_conditional_fields()
 
     def _refresh_conditional_fields(self) -> None:
         """Пересчитывает видимость условных полей при изменении любого поля."""

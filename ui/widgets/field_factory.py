@@ -43,7 +43,7 @@ class _ToggleRow:
             command=self._toggle,
         )
         if on_double_click is not None:
-            self._btn.bind("<Double-Button-1>", lambda _: on_double_click())
+            self._btn.bind("<Button-3>", lambda _: on_double_click())
 
     def _toggle(self) -> None:
         self._checked = not self._checked
@@ -181,7 +181,7 @@ class _SearchableSelectWidget:
 
         self._listbox.bind("<<ListboxSelect>>", self._on_select)
         if on_detail:
-            self._listbox.bind("<Double-Button-1>", self._on_double_click)
+            self._listbox.bind("<Button-3>", self._on_double_click)
         self._search_var.trace_add("write", self._apply_filter)
 
     def _on_focus_in(self, _) -> None:
@@ -436,6 +436,7 @@ class _BlockWidget:
                 widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditions())
             else:
                 fw.bind_change(self._refresh_conditions)
+        self._refresh_conditions()
 
     def _refresh_conditions(self) -> None:
         values = {key: fw.get() for key, fw in self._sub_widgets.items()}
@@ -836,12 +837,51 @@ class FieldFactory:
 
     def _create_checkbox(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.BooleanVar(value=bool(field.default))
-        chk = ttk.Checkbutton(parent, variable=var, style="TCheckbutton")
+
+        btn = tk.Button(
+            parent,
+            font=theme.F["body"],
+            relief="flat", bd=0,
+            anchor="w", cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+            padx=8, pady=4,
+        )
+
+        def _refresh_btn() -> None:
+            if var.get():
+                btn.config(
+                    text="☑  Да",
+                    bg=theme.C["badge_api"],
+                    fg=theme.C["primary"],
+                    activebackground=theme.C["ghost_h"],
+                    activeforeground=theme.C["primary"],
+                )
+            else:
+                btn.config(
+                    text="☐  Нет",
+                    bg=theme.C["input_bg"],
+                    fg=theme.C["text_muted"],
+                    activebackground=theme.C["ghost_h"],
+                    activeforeground=theme.C["text"],
+                )
+
+        def _toggle() -> None:
+            var.set(not var.get())
+            _refresh_btn()
+
+        btn.config(command=_toggle)
+        _refresh_btn()
+
+        def _set(value: Any) -> None:
+            var.set(bool(value))
+            _refresh_btn()
 
         def _bind(cb: Callable[[], None]) -> None:
             var.trace_add("write", lambda *_: cb())
 
-        return FieldWidget(chk, var.get, bind_change_fn=_bind, set_fn=lambda v: var.set(bool(v)))
+        return FieldWidget(btn, var.get, bind_change_fn=_bind, set_fn=_set)
 
     def _create_number(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.StringVar(value=str(field.default) if field.default is not None else "")

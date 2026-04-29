@@ -57,6 +57,10 @@ class EnableIngressForm(BaseForm):
                     value_key="id",
                     label_key="name",
                 ),
+            ),FieldDefinition(
+                key="test",
+                label="test",
+                field_type=FieldType.CHECKBOX,
             ),
             # Условное поле — видно только при ingress_type = "platformeco"
             FieldDefinition(
