@@ -129,25 +129,32 @@ class FormScreen(BaseScreen):
             self._render_fields(self._fields_frame)
 
     def _fields_needing_http(self, env: str) -> List[FieldDefinition]:
-        """Возвращает поля, для которых потребуется реальный HTTP-запрос (промах кеша)."""
+        """Возвращает поля (включая sub-поля BLOCK), для которых потребуется HTTP-запрос."""
         from config.reference_cache_config import CACHE_TTL, TTL_INFINITE
         result = []
-        for field in self._form.fields:
+
+        def _check(field: FieldDefinition) -> None:
             if field.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
-                continue
+                return
             if field.reference is None or field.reference.source != "http":
-                continue
+                return
             resource = field.reference.resource
             ttl = CACHE_TTL.get(resource)
             if ttl is None:
-                result.append(field)   # кеш отключён — всегда HTTP
-                continue
+                result.append(field)
+                return
             ts = self.app.reference_cache.get_timestamp(resource, env)
             if ts is None:
-                result.append(field)   # кеша нет
-                continue
+                result.append(field)
+                return
             if ttl != TTL_INFINITE and time.time() - ts > ttl:
-                result.append(field)   # кеш протух
+                result.append(field)
+
+        for field in self._form.fields:
+            _check(field)
+            if field.field_type == FieldType.BLOCK:
+                for sf in field.block_fields:
+                    _check(sf)
         return result
 
     def _render_with_loading(self, env: str, to_load: List[FieldDefinition]) -> None:
@@ -407,19 +414,34 @@ class FormScreen(BaseScreen):
         if not self._ready:
             return
         new_env = self.app.current_environment.get()
-        http_fields = [
+
+        # Верхнеуровневые HTTP SELECT/MULTISELECT
+        direct_http = [
             f for f in self._form.fields
             if f.field_type in (FieldType.SELECT, FieldType.MULTISELECT)
             and f.reference is not None
             and f.reference.source == "http"
         ]
-        if not http_fields:
+        # BLOCK-поля с HTTP sub-полями (перестраиваем блок целиком)
+        block_with_http = [
+            f for f in self._form.fields
+            if f.field_type == FieldType.BLOCK
+            and any(
+                sf.field_type in (FieldType.SELECT, FieldType.MULTISELECT)
+                and sf.reference is not None
+                and sf.reference.source == "http"
+                for sf in f.block_fields
+            )
+        ]
+        all_to_rebuild = direct_http + block_with_http
+        if not all_to_rebuild:
             return
+
         to_load = self._fields_needing_http(new_env)
         if to_load:
-            self._reload_env_with_loading(new_env, to_load, http_fields)
+            self._reload_env_with_loading(new_env, to_load, all_to_rebuild)
         else:
-            for field in http_fields:
+            for field in all_to_rebuild:
                 self._rebuild_reference_widget(field)
 
     def _rebuild_reference_widget(self, field_def: FieldDefinition) -> None:

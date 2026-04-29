@@ -24,6 +24,7 @@ class _ToggleRow:
         parent: tk.Widget,
         label: str,
         on_toggle: Optional[Callable[[], None]] = None,
+        on_double_click: Optional[Callable[[], None]] = None,
     ) -> None:
         self._label     = label
         self._checked   = False
@@ -41,6 +42,8 @@ class _ToggleRow:
             anchor="w", cursor="hand2",
             command=self._toggle,
         )
+        if on_double_click is not None:
+            self._btn.bind("<Double-Button-1>", lambda _: on_double_click())
 
     def _toggle(self) -> None:
         self._checked = not self._checked
@@ -103,10 +106,14 @@ class _SearchableSelectWidget:
         labels: List[str],
         values: List[str],
         search_strings: List[str],
+        items: Optional[List[Dict]] = None,
+        on_detail: Optional[Callable[[Dict], None]] = None,
     ) -> None:
         self._labels = labels
         self._values = values
         self._search_strings = search_strings
+        self._items = items or []
+        self._on_detail = on_detail
         self._selected_idx: Optional[int] = None
         self._visible_indices: List[int] = list(range(len(labels)))
         self._change_callbacks: List[Callable[[], None]] = []
@@ -173,6 +180,8 @@ class _SearchableSelectWidget:
             self._listbox.insert(tk.END, lbl)
 
         self._listbox.bind("<<ListboxSelect>>", self._on_select)
+        if on_detail:
+            self._listbox.bind("<Double-Button-1>", self._on_double_click)
         self._search_var.trace_add("write", self._apply_filter)
 
     def _on_focus_in(self, _) -> None:
@@ -210,6 +219,13 @@ class _SearchableSelectWidget:
             for cb in self._change_callbacks:
                 cb()
 
+    def _on_double_click(self, _) -> None:
+        sel = self._listbox.curselection()
+        if sel and self._on_detail and self._items:
+            idx = self._visible_indices[sel[0]]
+            if idx < len(self._items):
+                self._on_detail(self._items[idx])
+
     def on_change(self, callback: Callable[[], None]) -> None:
         """Регистрирует коллбэк, вызываемый при выборе элемента."""
         self._change_callbacks.append(callback)
@@ -236,7 +252,7 @@ class _SearchableSelectWidget:
 class _BlockWidget:
     """
     Группа вложенных полей (BLOCK).
-    Поддерживает условную видимость sub-полей и возвращает Dict[str, Any] из .get().
+    Поддерживает условную видимость sub-полей, plural и возвращает Dict[str, Any] из .get().
     """
 
     def __init__(
@@ -247,6 +263,16 @@ class _BlockWidget:
         ref_loader: Callable[[FieldDefinition], List[Dict]],
         on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> None:
+        self._sub_fields = sub_fields
+        self._sub_widgets: Dict[str, "FieldWidget"] = {}
+        self._sub_containers: Dict[str, tk.Frame] = {}
+        self._sub_plural_counts: Dict[str, int] = {}
+        self._sub_plural_add_btns: Dict[str, tk.Button] = {}
+        self._sub_plural_last: Dict[str, tk.Frame] = {}
+        self._fac = factory
+        self._ref_loader = ref_loader
+        self._on_refresh_cb = on_refresh
+
         self.frame = tk.Frame(
             parent,
             bg=theme.C["surface"],
@@ -254,10 +280,6 @@ class _BlockWidget:
             highlightbackground=theme.C["border"],
             highlightcolor=theme.C["border_focus"],
         )
-
-        self._sub_fields = sub_fields
-        self._sub_widgets: Dict[str, "FieldWidget"] = {}
-        self._sub_containers: Dict[str, tk.Frame] = {}
 
         for sub_field in sub_fields:
             outer = tk.Frame(self.frame, bg=theme.C["border"])
@@ -294,8 +316,24 @@ class _BlockWidget:
                 )
                 refresh_btn.pack(side=tk.RIGHT)
 
+            if sub_field.plural:
+                self._sub_plural_counts[sub_field.key] = 1
+                plus_btn = tk.Button(
+                    label_row,
+                    text="  +  ",
+                    font=theme.F["small"],
+                    bg=theme.C["surface"],
+                    fg=theme.C["primary"],
+                    activebackground=theme.C["ghost_h"],
+                    activeforeground=theme.C["primary"],
+                    relief="flat", bd=0, cursor="hand2",
+                )
+                plus_btn.config(command=lambda k=sub_field.key: self._add_sub_plural(k))
+                plus_btn.pack(side=tk.RIGHT, padx=(0, 4))
+                self._sub_plural_add_btns[sub_field.key] = plus_btn
+
             ref_items = ref_loader(sub_field)
-            fw = factory.create(inner, sub_field, ref_items, ref_loader=ref_loader)
+            fw = factory.create(inner, sub_field, ref_items, ref_loader=ref_loader, on_refresh=on_refresh)
             fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
             self._sub_widgets[sub_field.key] = fw
 
@@ -304,7 +342,89 @@ class _BlockWidget:
             else:
                 outer.pack(fill=tk.X, pady=2, padx=4)
 
+            if sub_field.plural:
+                self._sub_plural_last[sub_field.key] = outer
+
         self._setup_conditions()
+
+    def _add_sub_plural(self, base_key: str) -> None:
+        base_def = next(f for f in self._sub_fields if f.key == base_key)
+        count = self._sub_plural_counts[base_key] + 1
+        self._sub_plural_counts[base_key] = count
+        new_key = f"{base_key}_{count}"
+
+        outer = tk.Frame(self.frame, bg=theme.C["border"])
+        inner = tk.Frame(outer, bg=theme.C["surface"])
+        inner.pack(fill=tk.BOTH, padx=1, pady=1)
+        self._sub_containers[new_key] = outer
+
+        label_row = tk.Frame(inner, bg=theme.C["surface"])
+        label_row.pack(fill=tk.X, padx=10, pady=(6, 2))
+        req = "  *" if base_def.required else ""
+        tk.Label(
+            label_row,
+            text=f"{base_def.label} {count}{req}",
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["text_label"] if base_def.required else theme.C["text_muted"],
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            label_row,
+            text="  ×  ",
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["error"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["error"],
+            relief="flat", bd=0, cursor="hand2",
+            command=lambda k=new_key, bk=base_key, o=outer: self._remove_sub_plural(bk, k, o),
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        ref_items = self._ref_loader(base_def)
+        fw = self._fac.create(inner, base_def, ref_items, ref_loader=self._ref_loader, on_refresh=self._on_refresh_cb)
+        fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self._sub_widgets[new_key] = fw
+
+        prev = self._sub_plural_last.get(base_key)
+        if prev and prev.winfo_manager():
+            outer.pack(fill=tk.X, pady=2, padx=4, after=prev)
+        else:
+            outer.pack(fill=tk.X, pady=2, padx=4)
+        self._sub_plural_last[base_key] = outer
+
+        if base_def.plural_max is not None and count >= base_def.plural_max:
+            btn = self._sub_plural_add_btns.get(base_key)
+            if btn:
+                btn.pack_forget()
+
+    def _remove_sub_plural(self, base_key: str, key: str, outer: tk.Frame) -> None:
+        outer.pack_forget()
+        outer.destroy()
+        self._sub_widgets.pop(key, None)
+        self._sub_containers.pop(key, None)
+
+        # Обновляем last container для группы
+        last = self._sub_containers.get(base_key)
+        for k in list(self._sub_widgets.keys()):
+            if k.startswith(f"{base_key}_"):
+                c = self._sub_containers.get(k)
+                if c:
+                    last = c
+        if last:
+            self._sub_plural_last[base_key] = last
+
+        # Возвращаем + если лимит не достигнут
+        base_def = next((f for f in self._sub_fields if f.key == base_key), None)
+        if base_def and base_def.plural_max is not None:
+            alive = sum(
+                1 for k in self._sub_widgets
+                if k == base_key or k.startswith(f"{base_key}_")
+            )
+            if alive < base_def.plural_max:
+                btn = self._sub_plural_add_btns.get(base_key)
+                if btn:
+                    btn.pack(side=tk.RIGHT, padx=(0, 4))
 
     def _setup_conditions(self) -> None:
         has_conditional = any(f.condition for f in self._sub_fields)
@@ -444,7 +564,15 @@ class FieldFactory:
             else:
                 var.set("")
 
-        return FieldWidget(entry, lambda: self._real_value(var, field.placeholder), set_fn=_set)
+        def _bind(cb: Callable[[], None]) -> None:
+            var.trace_add("write", lambda *_: cb())
+
+        return FieldWidget(
+            entry,
+            lambda: self._real_value(var, field.placeholder),
+            bind_change_fn=_bind,
+            set_fn=_set,
+        )
 
     def _create_textarea(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         text = tk.Text(parent, height=4, wrap=tk.WORD, **_ENTRY_KWARGS, padx=6, pady=6)
@@ -457,7 +585,10 @@ class FieldFactory:
             if s:
                 text.insert("1.0", s)
 
-        return FieldWidget(text, lambda: text.get("1.0", tk.END).strip(), set_fn=_set)
+        def _bind(cb: Callable[[], None]) -> None:
+            text.bind("<KeyRelease>", lambda _: cb())
+
+        return FieldWidget(text, lambda: text.get("1.0", tk.END).strip(), bind_change_fn=_bind, set_fn=_set)
 
     def _create_select(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]
@@ -468,10 +599,15 @@ class FieldFactory:
             combo = ttk.Combobox(parent, textvariable=var, state="readonly")
             return FieldWidget(combo, var.get)
 
-        labels = [str(item.get(ref.label_key, "")) for item in items]
         values = [str(item.get(ref.value_key, "")) for item in items]
 
         if ref.search_keys:
+            labels = [
+                "  —  ".join(
+                    str(item.get(k, "")) for k in ref.search_keys if item.get(k) is not None
+                )
+                for item in items
+            ]
             search_strings = [
                 " ".join(
                     str(item.get(k, "")) for k in ref.search_keys if item.get(k) is not None
@@ -479,9 +615,24 @@ class FieldFactory:
                 for item in items
             ]
         else:
+            labels = [str(item.get(ref.label_key, "")) for item in items]
             search_strings = [lbl.lower() for lbl in labels]
 
-        w = _SearchableSelectWidget(parent, labels, values, search_strings)
+        def _on_detail(item: Dict[str, Any]) -> None:
+            from ui.dialogs import show_item_detail
+            show_item_detail(
+                parent,  # type: ignore[arg-type]
+                str(item.get(ref.label_key, "")),
+                item,
+                ref.detail_keys,
+            )
+
+        on_detail = _on_detail if items else None
+
+        w = _SearchableSelectWidget(
+            parent, labels, values, search_strings,
+            items=items, on_detail=on_detail,
+        )
         if field.default is not None:
             w.set_value(str(field.default))
         return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value)
@@ -632,9 +783,26 @@ class FieldFactory:
         def _on_row_toggle() -> None:
             _render_rows()
 
+        def _make_detail_cb(item: Dict[str, Any]) -> Optional[Callable[[], None]]:
+            if not item:
+                return None
+            def _cb() -> None:
+                from ui.dialogs import show_item_detail
+                show_item_detail(
+                    parent,  # type: ignore[arg-type]
+                    str(item.get(ref.label_key, "")) if ref else "",
+                    item,
+                    ref.detail_keys if ref else (),
+                )
+            return _cb
+
         if display_labels:
-            for dlabel, val, sstr in zip(display_labels, values, search_strings):
-                toggle = _ToggleRow(cb_container, dlabel, on_toggle=_on_row_toggle)
+            for dlabel, val, sstr, item in zip(display_labels, values, search_strings, items):
+                toggle = _ToggleRow(
+                    cb_container, dlabel,
+                    on_toggle=_on_row_toggle,
+                    on_double_click=_make_detail_cb(item),
+                )
                 toggle.pack()
                 rows.append((toggle, val, sstr))
         else:
@@ -669,7 +837,11 @@ class FieldFactory:
     def _create_checkbox(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.BooleanVar(value=bool(field.default))
         chk = ttk.Checkbutton(parent, variable=var, style="TCheckbutton")
-        return FieldWidget(chk, var.get, set_fn=lambda v: var.set(bool(v)))
+
+        def _bind(cb: Callable[[], None]) -> None:
+            var.trace_add("write", lambda *_: cb())
+
+        return FieldWidget(chk, var.get, bind_change_fn=_bind, set_fn=lambda v: var.set(bool(v)))
 
     def _create_number(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.StringVar(value=str(field.default) if field.default is not None else "")
@@ -679,9 +851,14 @@ class FieldFactory:
             validate="key", validatecommand=vcmd,
             **_ENTRY_KWARGS,
         )
+
+        def _bind(cb: Callable[[], None]) -> None:
+            var.trace_add("write", lambda *_: cb())
+
         return FieldWidget(
             entry,
             lambda: int(var.get()) if var.get().isdigit() else 0,
+            bind_change_fn=_bind,
             set_fn=lambda v: var.set(str(int(v)) if v is not None and str(v).isdigit() else ""),
         )
 
