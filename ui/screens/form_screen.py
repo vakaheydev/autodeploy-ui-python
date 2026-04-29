@@ -256,14 +256,15 @@ class FormScreen(BaseScreen):
                     and field_def.reference.source == "http"):
                 refresh_btn = tk.Button(
                     label_row,
-                    text="↻",
+                    text=" ↻ ",
                     font=theme.F["body"],
                     bg=theme.C["surface"],
                     fg=theme.C["primary"],
-                    activebackground=theme.C["surface"],
+                    activebackground=theme.C["ghost_h"],
                     activeforeground=theme.C["primary"],
                     relief="flat", bd=0,
                     cursor="hand2",
+                    padx=2,
                 )
                 refresh_btn.config(
                     command=lambda fd=field_def, b=refresh_btn: (
@@ -276,14 +277,15 @@ class FormScreen(BaseScreen):
                 self._plural_counts[field_def.key] = 1
                 plus_btn = tk.Button(
                     label_row,
-                    text="  +  ",
-                    font=theme.F["small"],
+                    text=" + ",
+                    font=theme.F["body"],
                     bg=theme.C["surface"],
                     fg=theme.C["primary"],
                     activebackground=theme.C["ghost_h"],
                     activeforeground=theme.C["primary"],
                     relief="flat", bd=0,
                     cursor="hand2",
+                    padx=4,
                 )
                 plus_btn.config(
                     command=lambda k=field_def.key: self._add_plural_field(k)
@@ -367,37 +369,30 @@ class FormScreen(BaseScreen):
         """Пересчитывает видимость условных полей при изменении любого поля."""
         values = {key: fw.get() for key, fw in self._field_widgets.items()}
 
+        # Вычисляем целевую видимость для условных полей
+        visibility: Dict[str, bool] = {}
+        changed = False
         for field_def in self._form.fields:
             if field_def.condition is None:
                 continue
-
             outer = self._field_containers.get(field_def.key)
+            should_show = field_def.condition(values)
+            visibility[field_def.key] = should_show
+            if outer and should_show != bool(outer.winfo_manager()):
+                changed = True
+
+        if not changed:
+            return
+
+        # Перепакуем все контейнеры в правильном порядке.
+        # Для условных полей — используем visibility; для остальных — всегда видимы.
+        for key in self._field_order:
+            outer = self._field_containers.get(key)
             if outer is None:
                 continue
-
-            should_show = field_def.condition(values)
-            is_visible = bool(outer.winfo_manager())  # "" если скрыто
-
-            if should_show and not is_visible:
-                self._show_field(field_def.key, outer)
-            elif not should_show and is_visible:
-                outer.pack_forget()
-
-    def _show_field(self, key: str, outer: tk.Frame) -> None:
-        """Показывает поле, сохраняя порядок среди остальных полей."""
-        idx = self._field_order.index(key)
-        # Ищем ближайшего предшественника, который сейчас видим
-        prev_container = None
-        for i in range(idx - 1, -1, -1):
-            prev = self._field_containers.get(self._field_order[i])
-            if prev and prev.winfo_manager():
-                prev_container = prev
-                break
-
-        if prev_container:
-            outer.pack(fill=tk.X, pady=3, padx=2, after=prev_container)
-        else:
-            outer.pack(fill=tk.X, pady=3, padx=2)
+            outer.pack_forget()
+            if visibility.get(key, True):
+                outer.pack(fill=tk.X, pady=3, padx=2)
 
     # ------------------------------------------------------------------
     # Справочники

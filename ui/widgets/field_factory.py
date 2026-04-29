@@ -303,13 +303,14 @@ class _BlockWidget:
                     and sub_field.reference.source == "http"):
                 refresh_btn = tk.Button(
                     label_row,
-                    text="↻",
+                    text=" ↻ ",
                     font=theme.F["body"],
                     bg=theme.C["surface"],
                     fg=theme.C["primary"],
                     activebackground=theme.C["ghost_h"],
                     activeforeground=theme.C["primary"],
                     relief="flat", bd=0, cursor="hand2",
+                    padx=2,
                 )
                 refresh_btn.config(
                     command=lambda fd=sub_field, b=refresh_btn: on_refresh(fd, b)
@@ -320,13 +321,14 @@ class _BlockWidget:
                 self._sub_plural_counts[sub_field.key] = 1
                 plus_btn = tk.Button(
                     label_row,
-                    text="  +  ",
-                    font=theme.F["small"],
+                    text=" + ",
+                    font=theme.F["body"],
                     bg=theme.C["surface"],
                     fg=theme.C["primary"],
                     activebackground=theme.C["ghost_h"],
                     activeforeground=theme.C["primary"],
                     relief="flat", bd=0, cursor="hand2",
+                    padx=4,
                 )
                 plus_btn.config(command=lambda k=sub_field.key: self._add_sub_plural(k))
                 plus_btn.pack(side=tk.RIGHT, padx=(0, 4))
@@ -440,18 +442,41 @@ class _BlockWidget:
 
     def _refresh_conditions(self) -> None:
         values = {key: fw.get() for key, fw in self._sub_widgets.items()}
+
+        # Вычисляем целевую видимость для условных sub-полей
+        visibility: Dict[str, bool] = {}
+        changed = False
         for sub_field in self._sub_fields:
-            if not sub_field.condition:
+            if sub_field.condition is None:
                 continue
             outer = self._sub_containers.get(sub_field.key)
-            if outer is None:
-                continue
             should_show = sub_field.condition(values)
-            is_visible = bool(outer.winfo_manager())
-            if should_show and not is_visible:
+            visibility[sub_field.key] = should_show
+            if outer and should_show != bool(outer.winfo_manager()):
+                changed = True
+
+        if not changed:
+            return
+
+        # Перепакуем в порядке вставки (_sub_containers — ordered dict).
+        # Plural-копии наследуют условие базового поля.
+        for key, outer in self._sub_containers.items():
+            outer.pack_forget()
+            base_key = next(
+                (sf.key for sf in self._sub_fields
+                 if key == sf.key or key.startswith(f"{sf.key}_")),
+                None,
+            )
+            if base_key is None:
                 outer.pack(fill=tk.X, pady=2, padx=4)
-            elif not should_show and is_visible:
-                outer.pack_forget()
+                continue
+            base_field = next((sf for sf in self._sub_fields if sf.key == base_key), None)
+            if base_field is None or base_field.condition is None:
+                show = True
+            else:
+                show = visibility.get(base_key, True)
+            if show:
+                outer.pack(fill=tk.X, pady=2, padx=4)
 
     def get(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
