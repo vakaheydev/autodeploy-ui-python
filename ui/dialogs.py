@@ -11,6 +11,7 @@ ui/dialogs.py — типовые диалоговые окна и UI-утили�
     show_confirm(parent, title, body) → bool — диалог «Да / Нет»
     show_text_viewer(parent, title, text)   — модальное окно с прокручиваемым текстом
     show_item_detail(parent, title, item, detail_keys) — карточка детали элемента справочника
+    ask_ticket_id(parent) → Optional[str]  — диалог ввода номера ITSM-заявки
 """
 import tkinter as tk
 from datetime import datetime
@@ -435,6 +436,66 @@ def show_text_viewer(
 
     _center(dlg)
     dlg.wait_window()
+
+
+# -------------------------------------------------------------------------
+# Ввод номера ITSM-заявки
+# -------------------------------------------------------------------------
+
+def ask_ticket_id(parent: tk.Widget) -> Optional[str]:
+    """
+    Диалог ввода номера ITSM-заявки.
+    Возвращает введённую строку или None если пользователь закрыл окно / нажал «Отмена».
+    """
+    result: list[Optional[str]] = [None]
+
+    dlg = _make_dialog(parent, "Подтянуть из заявки", min_width=340, min_height=120)
+
+    content = tk.Frame(dlg, bg=theme.C["bg"])
+    content.pack(padx=20, pady=(16, 8), fill=tk.BOTH, expand=True)
+
+    tk.Label(
+        content, text="Введите номер заявки",
+        font=theme.F["body"], bg=theme.C["bg"], fg=theme.C["text"],
+        anchor="w",
+    ).pack(fill=tk.X, pady=(0, 8))
+
+    var = tk.StringVar()
+    entry = tk.Entry(
+        content, textvariable=var,
+        font=theme.F["body"],
+        bg=theme.C["input_bg"], fg=theme.C["text"],
+        insertbackground=theme.C["text"],
+        relief="flat",
+        highlightthickness=1,
+        highlightbackground=theme.C["input_border"],
+        highlightcolor=theme.C["border_focus"],
+    )
+    entry.pack(fill=tk.X, ipady=4)
+
+    theme.separator(dlg, pady=6)
+
+    btn_row = tk.Frame(dlg, bg=theme.C["bg"])
+    btn_row.pack(pady=(0, 14))
+
+    def _confirm() -> None:
+        val = var.get().strip()
+        if val:
+            result[0] = val
+            dlg.destroy()
+
+    entry.bind("<Return>", lambda _: _confirm())
+    entry.bind("<KP_Enter>", lambda _: _confirm())
+
+    ttk.Button(btn_row, text="Подтянуть", style="Primary.TButton",
+               command=_confirm).pack(side=tk.LEFT, padx=(0, 8))
+    ttk.Button(btn_row, text="Отмена", style="Secondary.TButton",
+               command=dlg.destroy).pack(side=tk.LEFT)
+
+    _center(dlg)
+    entry.focus_set()
+    dlg.wait_window()
+    return result[0]
 
 
 # -------------------------------------------------------------------------

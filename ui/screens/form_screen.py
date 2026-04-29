@@ -14,7 +14,7 @@ import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
-from ui.dialogs import show_error, show_info, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
+from ui.dialogs import ask_ticket_id, show_error, show_info, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -794,7 +794,11 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
 
     def _on_fetch_from_itsm(self) -> None:
-        """Запускает fetch_from_itsm() в фоне, показывает диалог прогресса."""
+        """Запрашивает номер заявки, затем запускает fetch_from_itsm() в фоне."""
+        ticket_id = ask_ticket_id(self)
+        if ticket_id is None:
+            return
+
         environment = self.app.current_environment.get()
 
         # Диалог «В процессе»
@@ -828,7 +832,7 @@ class FormScreen(BaseScreen):
 
         def _worker() -> None:
             try:
-                data = self._form.fetch_from_itsm(environment)
+                data = self._form.fetch_from_itsm(environment, ticket_id)
                 self.after(0, lambda: _finish(data, None))
             except Exception as exc:
                 self.after(0, lambda: _finish(None, str(exc)))

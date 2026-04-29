@@ -316,18 +316,19 @@ class BaseForm(ABC):
         """
         return False
 
-    def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
+    def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
         """
         Получает данные из ITSM-заявки и возвращает словарь {field_key: value}.
         Вызывается в фоновом потоке при нажатии кнопки «Подтянуть из заявки».
+
+        ticket_id — номер заявки, введённый пользователем в диалоговом окне.
 
         Ключи словаря должны совпадать с ключами полей формы (field.key).
         Если ключ не найден среди полей — он игнорируется.
 
         Переопределить в конкретной форме:
-            def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
-                ticket_id = ...  # можно спросить у пользователя через input()
-                response = http_client.get(f"/itsm/tickets/{ticket_id}", ...)
+            def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
+                response = self.itsm_service.get_ticket(ticket_id, environment)
                 return {"app_name": response["appName"], "env": response["targetEnv"]}
         """
         raise NotImplementedError("fetch_from_itsm не реализован для этой формы")
