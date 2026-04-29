@@ -36,6 +36,7 @@ class FormScreen(BaseScreen):
         # Plural: последний созданный контейнер в группе (для pack after=)
         self._plural_last_containers: Dict[str, tk.Frame] = {}
         self._factory = FieldFactory()
+        self._ready = False
         super().__init__(master, app, **kwargs)
 
     # ------------------------------------------------------------------
@@ -68,6 +69,11 @@ class FormScreen(BaseScreen):
         theme.separator(self, pady=6)
         self._build_scrollable_fields()
         self._build_footer()
+
+        self._env_trace_id = self.app.current_environment.trace_add(
+            "write", lambda *_: self._on_env_changed()
+        )
+        self.bind("<Destroy>", self._on_destroy)
 
     def _build_env_bar(self) -> None:
         from config.environments import ENVIRONMENTS
@@ -281,12 +287,13 @@ class FormScreen(BaseScreen):
 
             # Виджет ввода
             ref_items = self._load_reference(field_def)
-            fw = self._factory.create(inner, field_def, ref_items, ref_loader=self._load_reference)
+            fw = self._factory.create(inner, field_def, ref_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
             fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
             self._field_widgets[field_def.key] = fw
 
         # Настраиваем условную видимость
         self._setup_conditional_fields()
+        self._ready = True
 
     def _build_footer(self) -> None:
         theme.separator(self, pady=6)
@@ -388,6 +395,104 @@ class FormScreen(BaseScreen):
     # Справочники
     # ------------------------------------------------------------------
 
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self:
+            try:
+                self.app.current_environment.trace_remove("write", self._env_trace_id)
+            except Exception:
+                pass
+
+    def _on_env_changed(self) -> None:
+        """Вызывается при смене окружения. Перезагружает HTTP-справочники."""
+        if not self._ready:
+            return
+        new_env = self.app.current_environment.get()
+        http_fields = [
+            f for f in self._form.fields
+            if f.field_type in (FieldType.SELECT, FieldType.MULTISELECT)
+            and f.reference is not None
+            and f.reference.source == "http"
+        ]
+        if not http_fields:
+            return
+        to_load = self._fields_needing_http(new_env)
+        if to_load:
+            self._reload_env_with_loading(new_env, to_load, http_fields)
+        else:
+            for field in http_fields:
+                self._rebuild_reference_widget(field)
+
+    def _rebuild_reference_widget(self, field_def: FieldDefinition) -> None:
+        """Пересоздаёт виджет справочника (данные уже в кеше — без диалога)."""
+        key = field_def.key
+        old_fw = self._field_widgets.get(key)
+        if old_fw is not None:
+            old_fw.widget.destroy()
+        inner = self._field_inner_frames.get(key)
+        if inner is None:
+            return
+        new_items = self._load_reference(field_def)
+        fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
+        fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
+        self._field_widgets[key] = fw
+        has_conditional = any(f.condition for f in self._form.fields)
+        if has_conditional:
+            widget = fw.widget
+            if isinstance(widget, ttk.Combobox):
+                widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditional_fields())
+            else:
+                fw.bind_change(self._refresh_conditional_fields)
+
+    def _reload_env_with_loading(
+        self,
+        env: str,
+        to_load: List[FieldDefinition],
+        all_http: List[FieldDefinition],
+    ) -> None:
+        """Показывает диалог загрузки, грузит промахи кеша, затем перестраивает все HTTP-поля."""
+        loading = tk.Toplevel(self)
+        loading.title("Загрузка данных")
+        loading.configure(bg=theme.C["bg"])
+        loading.resizable(False, False)
+        loading.transient(self.winfo_toplevel())
+        loading.grab_set()
+
+        pad = tk.Frame(loading, bg=theme.C["bg"])
+        pad.pack(padx=28, pady=(18, 14))
+
+        tk.Label(
+            pad, text="Загрузка справочников…",
+            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
+        ).pack(pady=(0, 10))
+
+        _label_var = tk.StringVar(value="")
+        tk.Label(
+            pad, textvariable=_label_var,
+            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
+            width=36,
+        ).pack()
+
+        loading.update()
+
+        def _worker() -> None:
+            for field in to_load:
+                self.after(0, lambda lbl=field.label: _label_var.set(lbl))
+                try:
+                    self.app.reference_resolver.resolve(field.reference, env)  # type: ignore[arg-type]
+                except Exception as exc:
+                    print(f"[FormScreen] Ошибка предзагрузки '{field.key}': {exc}")
+            self.after(0, _finish)
+
+        def _finish() -> None:
+            try:
+                loading.destroy()
+            except Exception:
+                pass
+            for field in all_http:
+                self._rebuild_reference_widget(field)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _load_reference(self, field_def: FieldDefinition) -> List[Dict[str, Any]]:
         if field_def.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
             return []
@@ -469,7 +574,7 @@ class FormScreen(BaseScreen):
             old_fw.widget.destroy()
 
         inner = self._field_inner_frames[key]
-        fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference)
+        fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
 
@@ -613,7 +718,7 @@ class FormScreen(BaseScreen):
 
         # Виджет
         ref_items = self._load_reference(base_def)
-        fw = self._factory.create(inner, base_def, ref_items, ref_loader=self._load_reference)
+        fw = self._factory.create(inner, base_def, ref_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[new_key] = fw
 

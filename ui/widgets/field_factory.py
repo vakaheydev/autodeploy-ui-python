@@ -245,6 +245,7 @@ class _BlockWidget:
         sub_fields: List[FieldDefinition],
         factory: "FieldFactory",
         ref_loader: Callable[[FieldDefinition], List[Dict]],
+        on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> None:
         self.frame = tk.Frame(
             parent,
@@ -274,6 +275,24 @@ class _BlockWidget:
                 bg=theme.C["surface"],
                 fg=theme.C["text_label"] if sub_field.required else theme.C["text_muted"],
             ).pack(side=tk.LEFT)
+
+            if (on_refresh is not None
+                    and sub_field.reference is not None
+                    and sub_field.reference.source == "http"):
+                refresh_btn = tk.Button(
+                    label_row,
+                    text="↻",
+                    font=theme.F["body"],
+                    bg=theme.C["surface"],
+                    fg=theme.C["primary"],
+                    activebackground=theme.C["ghost_h"],
+                    activeforeground=theme.C["primary"],
+                    relief="flat", bd=0, cursor="hand2",
+                )
+                refresh_btn.config(
+                    command=lambda fd=sub_field, b=refresh_btn: on_refresh(fd, b)
+                )
+                refresh_btn.pack(side=tk.RIGHT)
 
             ref_items = ref_loader(sub_field)
             fw = factory.create(inner, sub_field, ref_items, ref_loader=ref_loader)
@@ -382,6 +401,7 @@ class FieldFactory:
         field_def: FieldDefinition,
         reference_items: List[Dict[str, Any]] | None = None,
         ref_loader: Optional[Callable[[FieldDefinition], List[Dict[str, Any]]]] = None,
+        on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> FieldWidget:
         items = reference_items or []
         _empty_loader: Callable[[FieldDefinition], List[Dict[str, Any]]] = lambda _: []
@@ -402,7 +422,7 @@ class FieldFactory:
             case FieldType.FILE:
                 return self._create_file(parent, field_def)
             case FieldType.BLOCK:
-                return self._create_block(parent, field_def, loader)
+                return self._create_block(parent, field_def, loader, on_refresh)
             case _:
                 raise ValueError(f"Неизвестный тип поля: {field_def.field_type}")
 
@@ -670,8 +690,9 @@ class FieldFactory:
         parent: tk.Widget,
         field: FieldDefinition,
         ref_loader: Callable[[FieldDefinition], List[Dict[str, Any]]],
+        on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> FieldWidget:
-        block = _BlockWidget(parent, field.block_fields, self, ref_loader)
+        block = _BlockWidget(parent, field.block_fields, self, ref_loader, on_refresh)
         return FieldWidget(block.frame, block.get, set_fn=block.set)
 
     def _create_file(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
