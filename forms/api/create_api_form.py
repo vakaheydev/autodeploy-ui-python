@@ -5,7 +5,7 @@ TODO: заменить заглушки реальными URL и маппинг
 """
 from typing import Any, Dict, List
 
-from forms.base_form import BaseForm
+from forms.base_form import BaseForm, CustomButton
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 
 # TODO: перенести URL в конфигурационный файл или переменные окружения
@@ -102,3 +102,15 @@ class CreateApiForm(BaseForm):
 
     def get_submit_endpoint(self, environment: str) -> str:
         return _SUBMIT_URLS.get(environment, "")
+
+    def get_custom_buttons(self) -> List[CustomButton]:
+        return [
+            CustomButton(
+                label="Проверить АПИ",
+                handler=self._on_check_api,
+            ),
+        ]
+
+    def _on_check_api(self, environment: str) -> None:
+        # TODO: реализовать проверку существования АПИ через gravitee_service
+        pass

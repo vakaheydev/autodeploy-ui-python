@@ -8,14 +8,30 @@ BaseForm — абстрактный базовый класс для всех ф
 """
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from dataclasses import dataclass, field as _dc_field
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
+    from services.gravitee_service import GraviteeService
     from services.itsm_service import ITSMService
     from services.tfs_service import TfsService
 
 from forms.fields import FieldDefinition
 from forms.result_config import ResultScreenConfig, ResultStatus
+
+
+@dataclass
+class CustomButton:
+    """
+    Декларация кастомной кнопки в футере формы.
+
+    label   — текст на кнопке.
+    handler — вызывается на главном потоке: handler(environment: str) -> None.
+    style   — "Primary" или "Secondary" (по умолчанию Secondary).
+    """
+    label: str
+    handler: Callable[[str], None]
+    style: str = "Secondary"
 
 
 class BaseForm(ABC):
@@ -25,8 +41,9 @@ class BaseForm(ABC):
     """
 
     # Инжектируются FormScreen'ом перед открытием формы
-    tfs_service:  Optional["TfsService"]  = None
-    itsm_service: Optional["ITSMService"] = None
+    tfs_service:      Optional["TfsService"]      = None
+    itsm_service:     Optional["ITSMService"]     = None
+    gravitee_service: Optional["GraviteeService"] = None
 
     # ------------------------------------------------------------------
     # Обязательные свойства — идентификация формы
@@ -304,6 +321,23 @@ class BaseForm(ABC):
     # ------------------------------------------------------------------
     # ITSM-интеграция
     # ------------------------------------------------------------------
+
+    def get_custom_buttons(self) -> List[CustomButton]:
+        """
+        Возвращает список кастомных кнопок для футера формы.
+        Кнопки отображаются правее стандартных (Отправить, Просмотр JSON, Подтянуть из заявки).
+
+        handler вызывается на главном потоке с одним аргументом — ключом текущего окружения.
+        Для фоновых операций запускайте threading.Thread внутри handler.
+
+        Пример:
+            def get_custom_buttons(self):
+                return [CustomButton(label="Проверить", handler=self._on_check)]
+
+            def _on_check(self, environment: str) -> None:
+                ...
+        """
+        return []
 
     @property
     def itsm_support(self) -> bool:

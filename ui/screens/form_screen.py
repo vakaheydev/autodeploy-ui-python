@@ -45,8 +45,9 @@ class FormScreen(BaseScreen):
 
     def _build(self) -> None:
         self._form: BaseForm = FormRegistry().get(self._form_id)
-        self._form.tfs_service  = self.app.tfs_service
-        self._form.itsm_service = self.app.itsm_service
+        self._form.tfs_service      = self.app.tfs_service
+        self._form.itsm_service     = self.app.itsm_service
+        self._form.gravitee_service = self.app.gravitee_service
 
         self._add_back_button()
 
@@ -327,6 +328,15 @@ class FormScreen(BaseScreen):
                 foot, text="⬇ Подтянуть из заявки",
                 style="Secondary.TButton",
                 command=self._on_fetch_from_itsm,
+            ).pack(side=tk.LEFT, padx=(8, 0))
+
+        for btn_def in self._form.get_custom_buttons():
+            style = "Primary.TButton" if btn_def.style.lower() == "primary" else "Secondary.TButton"
+            ttk.Button(
+                foot,
+                text=btn_def.label,
+                style=style,
+                command=lambda h=btn_def.handler: h(self.app.current_environment.get()),
             ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._status_var = tk.StringVar()
