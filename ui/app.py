@@ -11,6 +11,7 @@ from core.env_manager import EnvManager
 from core.http_client import HttpClient
 from core.reference_cache import ReferenceCache
 from core.reference_resolver import ReferenceResolver
+from core.run_storage import RunStorage
 from forms.loader import register_all_forms
 from handlers.http_reference_handler import HttpReferenceHandler
 from handlers.local_reference_handler import LocalReferenceHandler
@@ -59,6 +60,7 @@ class Application:
         self.tfs_service       = TfsService(self.env_manager, self.http_client)
         self.itsm_service      = ITSMService(self.env_manager, self.http_client)
         self.gravitee_service  = GraviteeService(self.env_manager, self.http_client)
+        self.run_storage       = RunStorage()
 
         # --- Состояние приложения ---
         default_env = ENVIRONMENTS[0].key

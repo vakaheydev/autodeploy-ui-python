@@ -124,6 +124,13 @@ class MainScreen(BaseScreen):
             command=self._open_category,
         ).pack(pady=(0, 6))
 
+        ttk.Button(
+            self,
+            text="🕑  Предыдущие запуски",
+            style="Ghost.TButton",
+            command=self._open_runs,
+        ).pack(pady=(0, 6))
+
         # --- Статус ---
         self._status_var = tk.StringVar(value=self._status_text())
         ttk.Label(self, textvariable=self._status_var, style="Muted.TLabel").pack(pady=(6, 0))
@@ -191,6 +198,10 @@ class MainScreen(BaseScreen):
     def _open_category(self) -> None:
         from ui.screens.category_screen import CategoryScreen
         self.app.navigate_to(CategoryScreen)
+
+    def _open_runs(self) -> None:
+        from ui.screens.runs_screen import RunsScreen
+        self.app.navigate_to(RunsScreen)
 
     # ------------------------------------------------------------------
     # Переопределяемые хуки

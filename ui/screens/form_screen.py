@@ -8,7 +8,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import ui.theme as theme
 from forms.base_form import BaseForm
@@ -21,8 +21,16 @@ from ui.widgets.field_factory import FieldFactory, FieldWidget
 
 class FormScreen(BaseScreen):
 
-    def __init__(self, master: tk.Widget, app, form_id: str, **kwargs) -> None:
+    def __init__(
+        self,
+        master: tk.Widget,
+        app,
+        form_id: str,
+        initial_data: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> None:
         self._form_id = form_id
+        self._initial_data = initial_data
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
         self._field_containers: Dict[str, tk.Frame] = {}
@@ -300,6 +308,10 @@ class FormScreen(BaseScreen):
             fw = self._factory.create(inner, field_def, ref_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
             fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
             self._field_widgets[field_def.key] = fw
+
+        # Восстановление сохранённых данных (до расчёта условий)
+        if self._initial_data:
+            self.apply_form_data(self._initial_data)
 
         # Настраиваем условную видимость
         self._setup_conditional_fields()
@@ -595,8 +607,43 @@ class FormScreen(BaseScreen):
             )
             return
 
-        # Пересоздаём виджет с новыми данными
         key = field_def.key
+
+        # Sub-поле внутри BLOCK: пересоздаём весь блок, сохранив значения
+        if key not in self._field_inner_frames:
+            parent_block = next(
+                (f for f in self._form.fields
+                 if f.field_type == FieldType.BLOCK
+                 and any(sf.key == key for sf in f.block_fields)),
+                None,
+            )
+            if parent_block is not None:
+                bkey = parent_block.key
+                block_fw = self._field_widgets.get(bkey)
+                saved = block_fw.get() if block_fw else {}
+                if block_fw is not None:
+                    block_fw.widget.destroy()
+                inner = self._field_inner_frames.get(bkey)
+                if inner is not None:
+                    new_block_fw = self._factory.create(
+                        inner, parent_block, [],
+                        ref_loader=self._load_reference,
+                        on_refresh=self._reload_reference_field,
+                    )
+                    new_block_fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
+                    self._field_widgets[bkey] = new_block_fw
+                    if saved:
+                        new_block_fw.set(saved)
+            btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+            show_info(
+                self,
+                "Обновление завершено",
+                f"Справочник «{field_def.label}» успешно обновлён.\n"
+                f"Загружено элементов: {len(new_items)}.",
+            )
+            return
+
+        # Top-level поле: пересоздаём виджет напрямую
         old_fw = self._field_widgets.get(key)
         if old_fw is not None:
             old_fw.widget.destroy()
@@ -671,6 +718,13 @@ class FormScreen(BaseScreen):
 
         if result.success:
             self._set_status(f"✓  {result.message}", "success")
+            fields_snapshot = {f.key: f.field_type.value for f in self._form.fields}
+            self.app.run_storage.save(
+                form_id=self._form.form_id,
+                environment=environment,
+                form_data=form_data,
+                fields_snapshot=fields_snapshot,
+            )
             from ui.screens.result_screen import ResultScreen
             self.app.navigate_to(
                 ResultScreen,
@@ -855,7 +909,7 @@ class FormScreen(BaseScreen):
             if error:
                 show_error(self, "Ошибка получения данных", error)
                 return
-            filled = self._apply_itsm_data(data or {})
+            filled = self.apply_form_data(data or {})
             if filled:
                 fields_text = "\n".join(f"  • {k}" for k in filled)
                 show_info(
@@ -873,9 +927,46 @@ class FormScreen(BaseScreen):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _apply_itsm_data(self, data: dict) -> list[str]:
-        """Применяет данные из ITSM к виджетам формы. Возвращает список заполненных ключей."""
-        filled: list[str] = []
+    def apply_form_data(self, data: Dict[str, Any]) -> List[str]:
+        """
+        Заполняет поля формы из словаря {field_key: value}.
+
+        Ключи словаря должны совпадать с field.key полей формы.
+        Лишние ключи (нет соответствующего виджета) молча пропускаются.
+        Для каждого найденного виджета вызывается fw.set(value) — типы value
+        должны соответствовать типу поля (str для TEXT/SELECT, bool для CHECKBOX,
+        int для NUMBER, List[str] для MULTISELECT, Dict[str,Any] для BLOCK).
+
+        Plural-поля: если data содержит ключи вида «base_2», «base_3» и т.п.,
+        недостающие экземпляры создаются автоматически перед установкой значений.
+
+        Возвращает список ключей, для которых виджет был найден и значение применено.
+        Ключи из data, для которых виджета нет, в список не попадают.
+
+        Вызывается автоматически в двух случаях:
+          - при открытии FormScreen с initial_data= (восстановление из истории)
+          - после успешного fetch_from_itsm() (заполнение из ITSM-заявки)
+        Можно вызывать вручную из кастомных кнопок формы через screen.apply_form_data().
+        """
+        import re
+        _plural_re = re.compile(r"^(.+)_(\d+)$")
+
+        # Создаём недостающие plural-экземпляры (напр. cert_2, plan_3)
+        needed: Dict[str, List[int]] = {}
+        for key in data:
+            if key not in self._field_widgets:
+                m = _plural_re.match(key)
+                if m:
+                    base_key, n = m.group(1), int(m.group(2))
+                    if base_key in self._plural_counts:
+                        needed.setdefault(base_key, []).append(n)
+
+        for base_key, indices in needed.items():
+            for n in sorted(indices):
+                while self._plural_counts.get(base_key, 1) < n:
+                    self._add_plural_field(base_key)
+
+        filled: List[str] = []
         for key, value in data.items():
             fw = self._field_widgets.get(key)
             if fw is None:

@@ -18,6 +18,7 @@
   - [Поле типа BLOCK: группа вложенных полей](#поле-типа-block-группа-вложенных-полей)
   - [Plural-поле: дублирование по кнопке «+»](#plural-поле-дублирование-по-кнопке-)
   - [Условное поле](#условное-поле-показатьскрыть-при-выборе-другого)
+  - [Кастомные кнопки формы](#кастомные-кнопки-формы)
   - [Изменить существующую форму](#изменить-существующую-форму)
 - [4. Изменить обработку сабмита и конструирование JSON](#4-изменить-обработку-сабмита-и-конструирование-json)
   - [Как работает сабмит](#как-работает-сабмит)
@@ -38,6 +39,7 @@
   - [Информационные диалоги](#информационные-диалоги)
   - [Диалог подтверждения](#диалог-подтверждения)
   - [Просмотрщик текста](#просмотрщик-текста)
+  - [Диалог ввода номера заявки](#диалог-ввода-номера-заявки)
 - [7. Переключение справочников: HTTP ↔ локальный](#7-переключение-справочников-http--локальный)
   - [Где хранятся локальные справочники](#где-хранятся-локальные-справочники)
   - [Переключить с локального на HTTP](#переключить-справочник-с-локального-на-http)
@@ -59,6 +61,12 @@
   - [Включить для формы](#включить-для-формы)
   - [Реализовать получение данных](#реализовать-получение-данных)
   - [Программная установка значений полей](#программная-установка-значений-полей)
+- [11. Сервисы: GraviteeService, TfsService, ITSMService](#11-сервисы-graviteeservice-tfsservice-itsmservice)
+- [12. Предыдущие запуски](#12-предыдущие-запуски)
+  - [Как работает история запусков](#как-работает-история-запусков)
+  - [Структура записи RunRecord](#структура-записи-runrecord)
+  - [Обнаружение устаревших записей](#обнаружение-устаревших-записей)
+  - [Восстановление формы из истории](#восстановление-формы-из-истории)
 - [Структура проекта](#структура-проекта-справка)
 
 
@@ -140,6 +148,8 @@ SearchScreen
 
 Каждый результат отображается карточкой: `label_key` крупным текстом, остальные `search_keys` мелким, бейдж с окружением справа.
 
+Детальная карточка элемента открывается по **правой кнопке мыши (ПКМ)** на элементе списка — это не меняет текущий выбор.
+
 ---
 
 ### Добавить новый раздел поиска
@@ -193,7 +203,7 @@ ref=ReferenceConfig(
 
 ### Настроить поля в детальной карточке
 
-При клике на результат открывается карточка со всеми полями записи. Чтобы показывать только нужные поля — задать `detail_keys` в `ReferenceConfig`:
+При ПКМ на результате открывается карточка со всеми полями записи. Чтобы показывать только нужные поля — задать `detail_keys` в `ReferenceConfig`:
 
 ```python
 ref=ReferenceConfig(
@@ -307,7 +317,7 @@ CATEGORY_ORDER = ["api", "apps", "other", "infra"]
 | `TEXTAREA`    | многострочный ввод                   | `str`               |
 | `SELECT`      | выпадающий список с поиском          | `str` (value_key)   |
 | `MULTISELECT` | список чекбоксов                     | `List[str]`         |
-| `CHECKBOX`    | одиночный чекбокс                    | `bool`              |
+| `CHECKBOX`    | одиночный чекбокс (☐/☑)             | `bool`              |
 | `NUMBER`      | числовой ввод                        | `int`               |
 | `FILE`        | кнопка выбора файла + textarea       | `str` (содержимое)  |
 | `BLOCK`       | группа вложенных полей               | `Dict[str, Any]`    |
@@ -422,7 +432,10 @@ FieldDefinition(
 )
 ```
 
-Условная видимость (`condition`) работает внутри блока независимо от условных полей формы.
+Условная видимость (`condition`) внутри блока:
+- пересчитывается при каждом изменении любого вложенного поля
+- начальное состояние вычисляется сразу при открытии формы (поля с `default` учитываются)
+- поля всегда отображаются в том порядке, в котором они объявлены в `block_fields`
 
 **`build_payload()` — сбор блоков:**
 
@@ -479,7 +492,6 @@ plans = self.collect_plural(form_data, "plan")
 ```
 
 **Ограничения:**
-- Вложенные BLOCK внутри BLOCK не поддерживаются
 - `plural` у вложенных полей блока игнорируется (дублируется весь блок)
 - HTTP-справочники в `block_fields` загружаются без диалога «Загрузка»
 
@@ -536,7 +548,9 @@ def build_payload(self, form_data):
 `condition` — предикат `Callable[[Dict[str, Any]], bool]`.
 Инпут — словарь `{field.key: текущее_значение}` всех полей формы (тот же формат, что `form_data` в `build_payload`).
 Поле показывается когда предикат возвращает `True`, скрывается при `False`.
-Пересчитывается при изменении любого поля формы.
+Пересчитывается при изменении любого поля формы — **в том числе при начальной загрузке**: если поле имеет `default`, условие вычисляется сразу.
+
+Условные поля всегда отображаются в том порядке, в котором они объявлены в `fields`.
 
 **Простое условие — одно поле:**
 
@@ -575,6 +589,51 @@ def validate(self, form_data):
 
 ---
 
+### Кастомные кнопки формы
+
+Форма может объявить дополнительные кнопки, которые отображаются в футере рядом с «Отправить». Это удобно для дополнительных действий: проверить АПИ, загрузить данные из внешней системы, запустить валидацию и т.п.
+
+**Объявить кнопки — переопределить `get_custom_buttons()` в форме:**
+
+```python
+from forms.base_form import BaseForm, CustomButton
+
+class CreateApiForm(BaseForm):
+
+    def get_custom_buttons(self) -> List[CustomButton]:
+        return [
+            CustomButton(
+                label="Проверить АПИ",
+                handler=self._on_check_api,
+                style="Secondary",   # "Primary" | "Secondary" | "Ghost" (по умолч. "Secondary")
+            ),
+        ]
+
+    def _on_check_api(self, environment: str) -> None:
+        # environment — текущий ключ окружения, напр. "test_int"
+        # self.gravitee_service доступен здесь
+        result = self.gravitee_service.check_api(environment, ...)
+        # показать результат через диалог
+        from ui.dialogs import show_info
+        show_info(None, "Результат", str(result))
+```
+
+**Сигнатура `CustomButton`:**
+
+```python
+@dataclass
+class CustomButton:
+    label:   str                         # текст кнопки
+    handler: Callable[[str], None]       # вызывается с текущим environment
+    style:   str = "Secondary"           # стиль кнопки
+```
+
+- Кнопки отображаются слева от кнопки «Отправить» в том порядке, в котором возвращены из `get_custom_buttons()`
+- В `handler` всегда передаётся текущее окружение (строка вида `"test_int"`)
+- `self.gravitee_service`, `self.itsm_service` и другие сервисы доступны внутри `handler` — они устанавливаются перед вызовом кнопки (см. раздел 11)
+
+---
+
 ### Изменить существующую форму
 
 Все изменения — только в файле формы. Остальной код трогать не нужно.
@@ -586,6 +645,7 @@ def validate(self, form_data):
 | Структура JSON             | `build_payload()`            |
 | Кастомная валидация        | `validate()`                 |
 | HTTP метод (по умолч. POST)| переопределить `get_http_method()` → `"PUT"` |
+| Дополнительные кнопки      | `get_custom_buttons()`       |
 
 ---
 
@@ -605,6 +665,7 @@ FormScreen._on_submit()
             └─ form.build_payload()      # конструирование JSON
             └─ EnvManager.get()          # берёт токен для выбранного окружения
             └─ HttpClient.post/put()     # HTTP запрос
+    └─ (при успехе) run_storage.save()   # сохраняет данные в историю запусков
     └─ (при успехе) navigate_to(ResultScreen)
             └─ form.get_result_config()  # заголовок и интервал опроса
             └─ form.build_result_content()  # отображает первичный ответ
@@ -972,6 +1033,24 @@ show_text_viewer(self, "Лог выполнения", log_text, width=80, height
 ```
 
 Открывает модальное окно с прокручиваемым моноширинным текстом и кнопкой «Закрыть».
+
+---
+
+### Диалог ввода номера заявки
+
+```python
+from ui.dialogs import ask_ticket_id
+
+ticket_id = ask_ticket_id(self)   # self — любой tk.Widget
+if ticket_id is not None:
+    # пользователь ввёл номер и нажал «Подтянуть» или Enter
+    data = self.form.fetch_from_itsm(environment, ticket_id)
+```
+
+Возвращает `str` (введённый номер) или `None` (пользователь отменил / закрыл).
+Открывает модальное окно с полем ввода. Нажатие Enter подтверждает ввод.
+
+Используется **автоматически** при нажатии «⬇ Подтянуть из заявки» — вручную вызывать не нужно.
 
 ---
 
@@ -1363,9 +1442,10 @@ app.reference_cache.invalidate("gravitee_apis", "prod_int")
 
 При включённой опции `itsm_support` на экране формы появляется кнопка **«⬇ Подтянуть из заявки»**. При нажатии:
 
-1. Открывается модальное окно «Подтягиваем данные из заявки…» (нельзя закрыть вручную)
-2. В фоновом потоке вызывается `form.fetch_from_itsm(environment)`
-3. По завершении:
+1. Открывается модальное окно «Введите номер заявки» с полем ввода
+2. После ввода номера и нажатия «Подтянуть» (или Enter) — открывается окно «Подтягиваем данные…»
+3. В фоновом потоке вызывается `form.fetch_from_itsm(environment, ticket_id)`
+4. По завершении:
    - **Успех** — значения подставляются в поля формы, открывается диалог со списком заполненных полей
    - **Ошибка** — открывается диалог с текстом исключения
 
@@ -1394,11 +1474,10 @@ def itsm_support(self) -> bool:
 **Ключи словаря должны совпадать с `field.key` полей формы.** Лишние ключи игнорируются.
 
 ```python
-def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
+def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
     # environment — текущий ключ окружения, напр. "prod_int"
-    # Запрос к ITSM-сервису (авторизация через get_auth_type / .env)
-    ticket_id = "12345"  # можно запросить у пользователя через input() или хранить в состоянии
-    response = self._itsm_client.get(f"/tickets/{ticket_id}")
+    # ticket_id   — номер заявки, введённый пользователем в диалоге
+    response = self.itsm_service.get_ticket(environment, ticket_id)
     return {
         "app_name":  response.get("appName", ""),
         "namespace": response.get("targetNamespace", ""),
@@ -1410,9 +1489,24 @@ def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
 
 ---
 
-### Программная установка значений полей
+### Программная установка значений полей: apply_form_data
 
-Все типы полей поддерживают `.set(value)` через `FieldWidget`. Это используется внутри ITSM-интеграции, но доступно и в других сценариях (например, тест-режим или предзаполнение).
+`FormScreen.apply_form_data(data: Dict[str, Any]) -> List[str]` — единый публичный метод предзаполнения формы.
+
+**Контракт входных данных:**
+
+```python
+data = {
+    "field_key": value,   # ключ = field.key из FieldDefinition
+    "field_2":   value2,  # plural-копии: base_2, base_3 — создаются автоматически
+    ...
+}
+```
+
+Ключи, для которых не нашлось виджета, молча пропускаются.
+Возвращает `List[str]` — список ключей, по которым значение **было применено**.
+
+**Типы value по типам полей:**
 
 | `FieldType`   | Тип `value`          | Поведение                                              |
 |---------------|----------------------|--------------------------------------------------------|
@@ -1422,13 +1516,163 @@ def fetch_from_itsm(self, environment: str) -> Dict[str, Any]:
 | `CHECKBOX`    | `bool`               | Устанавливает состояние чекбокса                       |
 | `SELECT`      | `str` (value_key)    | Выбирает элемент по значению, сохраняет фильтр         |
 | `MULTISELECT` | `List[str]`          | Отмечает совпадающие элементы, снимает остальные       |
+| `BLOCK`       | `Dict[str, Any]`     | Рекурсивно устанавливает значения вложенных полей      |
 
-Использование из кода (например, в тестовом хелпере):
+**Когда вызывается автоматически:**
+
+| Сценарий | Источник данных | Кто вызывает |
+|---|---|---|
+| Восстановление из истории | `RunRecord.form_data` | `FormScreen._render_fields` через `initial_data=` |
+| Заполнение из ITSM-заявки | результат `fetch_from_itsm()` | `FormScreen._on_fetch_from_itsm` |
+
+**Связь `fetch_from_itsm` → `apply_form_data`:**
+
+Словарь, который возвращает `fetch_from_itsm`, напрямую передаётся в `apply_form_data`. Поэтому ключи словаря **должны совпадать с `field.key`** нужных полей:
 
 ```python
-fw = self._field_widgets.get("app_name")
-if fw:
-    fw.set("my-application")
+def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
+    response = self.itsm_service.get_ticket(environment, ticket_id)
+    return {
+        # ключи = field.key из self.fields
+        "app_name":  response.get("appName", ""),
+        "namespace": response.get("targetNamespace", ""),
+        "replicas":  response.get("replicaCount", 1),    # int для NUMBER
+        "is_public": response.get("publicAccess", False), # bool для CHECKBOX
+    }
+    # FormScreen сам вызовет apply_form_data(этот_словарь)
+    # и покажет диалог со списком заполненных полей
+```
+
+**Вызов из кастомной кнопки** (через `screen`, который передаётся в handler):
+
+```python
+# Кастомная кнопка не имеет прямого доступа к FormScreen.
+# Передайте screen в замыкание при создании CustomButton или
+# используйте self.gravitee_service / self.itsm_service для запроса,
+# а FormScreen вызовет apply_form_data сам — через аналогичный механизм.
+```
+
+> Если понадобится вызвать `apply_form_data` из нестандартного места —
+> храните ссылку на `FormScreen` в нужном объекте или добавьте
+> аналогичный callback в `CustomButton`.
+
+---
+
+## 11. Сервисы: GraviteeService, TfsService, ITSMService
+
+Все три сервиса создаются в `Application` (`ui/app.py`) и доступны формам через атрибуты `BaseForm`:
+
+| Атрибут формы           | Класс сервиса     | Файл                          |
+|-------------------------|-------------------|-------------------------------|
+| `self.gravitee_service` | `GraviteeService` | `services/gravitee_service.py` |
+| `self.itsm_service`     | `ITSMService`     | `services/itsm_service.py`    |
+| `self.tfs_service`      | `TfsService`      | `services/tfs_service.py`     |
+
+Атрибуты устанавливаются `FormScreen` перед открытием формы — доступны в `fetch_from_itsm()`, `pre_submit()`, обработчиках кастомных кнопок и любых других методах формы.
+
+**Добавить метод в GraviteeService:**
+
+```python
+# services/gravitee_service.py
+class GraviteeService:
+    def __init__(self, env_manager: EnvManager, http_client: HttpClient) -> None:
+        self._env_manager = env_manager
+        self._http_client = http_client
+
+    def check_api(self, environment: str, api_id: str) -> Dict[str, Any]:
+        # Установить авторизацию
+        token = self._env_manager.get(gravitee_token_key(environment))
+        self._http_client.set_token(token)
+        # Сделать запрос
+        url = f"https://api.{environment}.example.com/management/v2/apis/{api_id}"
+        return self._http_client.get(url)
+```
+
+**Использование в форме:**
+
+```python
+def _on_check_api(self, environment: str) -> None:
+    api_id = self._field_widgets["api_id"].get()
+    result = self.gravitee_service.check_api(environment, api_id)
+    from ui.dialogs import show_info
+    show_info(None, "Проверка АПИ", f"Статус: {result.get('state', '—')}")
+```
+
+---
+
+## 12. Предыдущие запуски
+
+### Как работает история запусков
+
+После каждого **успешного** сабмита формы данные автоматически сохраняются в `data/runs.json`. На главном экране AutoDeploy UI доступна кнопка **«🕑 Предыдущие запуски»**, открывающая `RunsScreen`.
+
+`RunsScreen` отображает список карточек: название формы, окружение, дата/время, статус актуальности. Записи отображаются в обратном хронологическом порядке (новые сверху).
+
+Хранится не более 100 последних запусков — старые автоматически вытесняются.
+
+---
+
+### Структура записи RunRecord
+
+```python
+@dataclass
+class RunRecord:
+    run_id:          str              # UUID записи
+    form_id:         str              # form.form_id
+    environment:     str              # напр. "prod_int"
+    timestamp:       float            # time.time() на момент сабмита
+    form_data:       Dict[str, Any]   # значения полей на момент сабмита
+    fields_snapshot: Dict[str, str]   # {field.key: field_type.value} — снимок структуры
+```
+
+`fields_snapshot` используется для обнаружения устаревших записей — он сохраняется вместе с данными и сравнивается с текущей структурой формы при загрузке истории.
+
+---
+
+### Обнаружение устаревших записей
+
+Запись считается **устаревшей** (`Устарело`) если:
+- форма с `run.form_id` больше не зарегистрирована в `FormRegistry`, или
+- текущий `{f.key: f.field_type.value}` для полей формы не совпадает с `run.fields_snapshot`
+
+Это улавливает переименование полей и смену типов. Устаревшие записи отображаются с бейджем «Устарело», кнопка «Восстановить →» для них недоступна.
+
+```python
+# Логика проверки (runs_screen.py)
+def _is_stale(run: RunRecord) -> bool:
+    try:
+        form = FormRegistry().get(run.form_id)
+        current = {f.key: f.field_type.value for f in form.fields}
+        return current != run.fields_snapshot
+    except Exception:
+        return True   # форма не найдена → устарело
+```
+
+---
+
+### Восстановление формы из истории
+
+При нажатии «Восстановить →»:
+1. Устанавливается `current_environment` из `run.environment`
+2. Открывается `FormScreen` с `form_id=run.form_id` и `initial_data=run.form_data`
+3. `FormScreen` заполняет все поля из `initial_data` **до** вычисления условий — условные поля отображаются корректно с учётом восстановленных значений
+
+`RunStorage` доступен как `app.run_storage`:
+
+```python
+# Сохранить запись (вызывается автоматически после успешного сабмита)
+app.run_storage.save(
+    form_id=form.form_id,
+    environment=environment,
+    form_data=form_data,
+    fields_snapshot={f.key: f.field_type.value for f in form.fields},
+)
+
+# Загрузить все записи
+records: List[RunRecord] = app.run_storage.load_all()
+
+# Удалить запись по ID
+app.run_storage.delete(run_id)
 ```
 
 ---
@@ -1446,9 +1690,12 @@ autodeploy-ui-python/
 │   ├── env_manager.py             # чтение/запись .env (токены)
 │   ├── http_client.py             # HTTP клиент (GET/POST/PUT/DELETE)
 │   ├── reference_cache.py         # кеш HTTP-справочников (память + файлы cached/)
-│   └── reference_resolver.py      # выбирает нужный обработчик справочника
+│   ├── reference_resolver.py      # выбирает нужный обработчик справочника
+│   └── run_storage.py             # ← история запусков форм (data/runs.json)
+├── data/
+│   └── runs.json                  # файл истории запусков (авто, не коммитить)
 ├── forms/
-│   ├── base_form.py               # абстрактный класс формы (+ методы экрана результата)
+│   ├── base_form.py               # абстрактный класс формы + CustomButton
 │   ├── result_config.py           # ← ResultScreenConfig: poll_interval_ms, title
 │   ├── fields.py                  # FieldDefinition, FieldType, ReferenceConfig, Condition
 │   ├── registry.py                # реестр форм (Singleton)
@@ -1460,12 +1707,15 @@ autodeploy-ui-python/
 │   ├── local_reference_handler.py # читает config/references/*.json
 │   └── http_reference_handler.py  # ← URL, авторизация, _RESPONSE_PROCESSORS, _FILTER_MAP
 ├── services/
-│   └── submit_service.py          # валидация → payload → HTTP запрос
+│   ├── submit_service.py          # валидация → payload → HTTP запрос
+│   ├── gravitee_service.py        # ← сервис Gravitee API (доступен в формах)
+│   ├── itsm_service.py            # ← сервис ITSM (доступен в формах)
+│   └── tfs_service.py             # ← сервис TFS/Azure DevOps (доступен в формах)
 ├── cached/                        # файловый кеш HTTP-справочников (авто, не коммитить)
 └── ui/
     ├── theme.py                   # цвета, шрифты, ttk-стили ← менять внешний вид здесь
     ├── app.py                     # DI-контейнер, навигация, Ctrl+A/C/V/X fix
-    ├── dialogs.py                 # ← UI-утилиты: show_info/error/warning/confirm/text_viewer
+    ├── dialogs.py                 # ← UI-утилиты: show_info/error/warning/confirm/text_viewer/ask_ticket_id
     ├── widgets/
     │   └── field_factory.py       # виджеты полей: SELECT, MULTISELECT, TEXT и др.
     └── screens/
@@ -1477,6 +1727,7 @@ autodeploy-ui-python/
         ├── main_screen.py         # AutoDeploy UI: выбор окружения
         ├── category_screen.py     # выбор формы внутри категории
         ├── form_screen.py         # рендер полей, условная видимость, сабмит
+        ├── runs_screen.py         # ← экран истории запусков
         ├── result_screen.py       # ← экран результата: контент + автоопрос
         └── settings_screen.py     # токены и креды (.env)
 ```
