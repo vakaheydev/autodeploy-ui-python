@@ -26,13 +26,13 @@ class CustomButton:
     Декларация кастомной кнопки в футере формы.
 
     label   — текст на кнопке.
-    handler — вызывается на главном потоке:
-              handler(environment: str, apply_form_data: Callable[[Dict], List[str]]) -> None
-              apply_form_data — метод FormScreen для предзаполнения полей формы.
+    handler — вызывается на главном потоке: handler(environment: str) -> None
+              Внутри handler доступны self.screen (FormScreen, использовать как parent
+              для диалогов) и self.screen.apply_form_data() для предзаполнения полей.
     style   — "Primary" или "Secondary" (по умолчанию Secondary).
     """
     label: str
-    handler: Callable[[str, Callable[[Dict[str, Any]], List[str]]], None]
+    handler: Callable[[str], None]
     style: str = "Secondary"
 
 
@@ -46,6 +46,7 @@ class BaseForm(ABC):
     tfs_service:      Optional["TfsService"]      = None
     itsm_service:     Optional["ITSMService"]     = None
     gravitee_service: Optional["GraviteeService"] = None
+    screen:           Optional[Any]               = None  # ссылка на FormScreen (tk.Widget)
 
     # ------------------------------------------------------------------
     # Обязательные свойства — идентификация формы
@@ -339,9 +340,11 @@ class BaseForm(ABC):
             def get_custom_buttons(self):
                 return [CustomButton(label="Заполнить", handler=self._on_fill)]
 
-            def _on_fill(self, environment: str, apply_form_data) -> None:
-                data = self.gravitee_service.get_defaults(environment)
-                apply_form_data({"field_key": data["value"]})
+            def _on_fill(self, environment: str) -> None:
+                # self.screen — FormScreen: parent для диалогов + apply_form_data
+                name = ask_string(self.screen, "Введите имя", "Имя ресурса")
+                if name:
+                    self.screen.apply_form_data({"resource_name": name})
         """
         return []
 

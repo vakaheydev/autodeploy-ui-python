@@ -611,17 +611,12 @@ class CreateApiForm(BaseForm):
             ),
         ]
 
-    def _on_fill_from_gravitee(
-        self,
-        environment: str,
-        apply_form_data: Callable[[Dict[str, Any]], List[str]],
-    ) -> None:
-        # environment     — текущий ключ окружения, напр. "test_int"
-        # apply_form_data — метод FormScreen: заполняет поля из словаря
+    def _on_fill_from_gravitee(self, environment: str) -> None:
+        # self.screen — FormScreen: parent для диалогов + apply_form_data
         # self.gravitee_service / self.itsm_service доступны здесь
         data = self.gravitee_service.get_api_defaults(environment)
-        apply_form_data({
-            "api_name":    data.get("name", ""),
+        self.screen.apply_form_data({
+            "api_name":     data.get("name", ""),
             "context_path": data.get("contextPath", ""),
         })
 ```
@@ -636,8 +631,9 @@ class CustomButton:
     style:   str = "Secondary"
 ```
 
-`handler` вызывается с двумя аргументами:
+`handler` вызывается с тремя аргументами:
 - `environment: str` — текущий ключ окружения (`"test_int"`, `"prod_ext"`, …)
+- `parent: tk.Widget` — виджет `FormScreen`; передавать в любой диалог из `ui.dialogs` как первый аргумент
 - `apply_form_data: Callable[[Dict[str, Any]], List[str]]` — метод предзаполнения формы (см. раздел ниже)
 
 Кнопки отображаются правее стандартных («Отправить», «Просмотр JSON», «Подтянуть из заявки») в том порядке, в котором возвращены из `get_custom_buttons()`.
@@ -1580,34 +1576,32 @@ def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
 
 **Вызов из кастомной кнопки:**
 
-`apply_form_data` передаётся вторым аргументом в `handler` каждой кастомной кнопки — вызывайте напрямую:
-
-```python
-def _on_fill(self, environment: str, apply_form_data) -> None:
-    data = self.gravitee_service.get_defaults(environment)
-    filled = apply_form_data({
-        "app_name": data["name"],
-        "replicas": data["replicaCount"],
-    })
-    # filled — список ключей, которые были применены
-```
-
-Для фоновых операций (HTTP-запрос внутри хендлера) — передайте `apply_form_data` в замыкание потока:
+Хендлер получает `parent` — его можно передавать напрямую в любой диалог из `ui.dialogs`:
 
 ```python
 import threading
-from ui.dialogs import show_error
+from ui.dialogs import ask_string, show_error, show_info
 
-def _on_fill(self, environment: str, apply_form_data) -> None:
+def _on_fill(self, environment: str, parent, apply_form_data) -> None:
+    # Спросить у пользователя строку прямо из хендлера
+    api_id = ask_string(parent, "Загрузить из Gravitee", "Введите ID АПИ", confirm_text="Загрузить")
+    if api_id is None:
+        return  # пользователь отменил
+
     def _worker():
         try:
-            data = self.gravitee_service.get_defaults(environment)
-            apply_form_data({"app_name": data["name"]})
+            data = self.gravitee_service.get_api(environment, api_id)
+            apply_form_data({
+                "app_name": data["name"],
+                "replicas": data["replicaCount"],
+            })
         except Exception as exc:
-            show_error(None, "Ошибка", str(exc))
+            show_error(parent, "Ошибка", str(exc))
 
     threading.Thread(target=_worker, daemon=True).start()
 ```
+
+`ask_string` вызывается **до** запуска потока — он модальный и блокирует до ответа пользователя. Фоновый поток запускается уже с готовым значением.
 
 ---
 

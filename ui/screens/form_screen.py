@@ -56,6 +56,7 @@ class FormScreen(BaseScreen):
         self._form.tfs_service      = self.app.tfs_service
         self._form.itsm_service     = self.app.itsm_service
         self._form.gravitee_service = self.app.gravitee_service
+        self._form.screen           = self
 
         self._add_back_button()
 
@@ -350,7 +351,6 @@ class FormScreen(BaseScreen):
                 style=style,
                 command=lambda h=btn_def.handler: h(
                     self.app.current_environment.get(),
-                    self.apply_form_data,
                 ),
             ).pack(side=tk.LEFT, padx=(8, 0))
 
