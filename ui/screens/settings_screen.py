@@ -7,8 +7,8 @@ from typing import Dict
 
 import ui.theme as theme
 from config.environments import (
-    ENVIRONMENTS, GRAVITEE_REPO_PATH_KEY, ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY,
-    TFS_TOKEN_KEY, gravitee_token_key,
+    CERT_PATH_KEY, ENVIRONMENTS, GRAVITEE_REPO_PATH_KEY, ITSM_LOGIN_KEY,
+    ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key,
 )
 from ui.screens.base_screen import BaseScreen
 
@@ -22,8 +22,25 @@ class SettingsScreen(BaseScreen):
         saved = self.app.env_manager.load()
         self._token_vars: Dict[str, tk.StringVar] = {}
 
+        # --- Прокручиваемый контейнер ---
+        wrap = tk.Frame(self, bg=theme.C["bg"])
+        wrap.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(wrap, bg=theme.C["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+
+        sf = tk.Frame(canvas, bg=theme.C["bg"])
+        sf.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        _win = canvas.create_window((0, 0), window=sf, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(_win, width=e.width - 2))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
         # --- Gravitee ---
-        grav_card = theme.card(self, pady=0)
+        grav_card = theme.card(sf, pady=0)
         tk.Label(
             grav_card, text="GRAVITEE TOKENS  (по окружениям)",
             font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
@@ -57,10 +74,10 @@ class SettingsScreen(BaseScreen):
 
         grid.columnconfigure(1, weight=1)
 
-        theme.separator(self, pady=10)
+        theme.separator(sf, pady=10)
 
         # --- Gravitee Repository ---
-        repo_card = theme.card(self, pady=0)
+        repo_card = theme.card(sf, pady=0)
         tk.Label(
             repo_card, text="GRAVITEE REPOSITORY",
             font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
@@ -108,10 +125,62 @@ class SettingsScreen(BaseScreen):
             command=_browse_repo,
         ).pack(side=tk.LEFT)
 
-        theme.separator(self, pady=10)
+        theme.separator(sf, pady=10)
+
+        # --- Сертификат ---
+        cert_card = theme.card(sf, pady=0)
+        tk.Label(
+            cert_card, text="СЕРТИФИКАТ",
+            font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(anchor=tk.W, padx=14, pady=(10, 6))
+
+        cert_row = tk.Frame(cert_card, bg=theme.C["surface"])
+        cert_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        cert_var = tk.StringVar(value=saved.get(CERT_PATH_KEY, ""))
+        self._token_vars[CERT_PATH_KEY] = cert_var
+
+        tk.Label(
+            cert_row, text="Путь к сертификату",
+            font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_label"],
+            width=18, anchor="w",
+        ).pack(side=tk.LEFT)
+
+        tk.Entry(
+            cert_row, textvariable=cert_var,
+            bg=theme.C["input_bg"], fg=theme.C["text"],
+            relief="solid", bd=1,
+            font=theme.F["body"],
+            insertbackground=theme.C["text"],
+            highlightthickness=1,
+            highlightbackground=theme.C["input_border"],
+            highlightcolor=theme.C["border_focus"],
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+
+        def _browse_cert():
+            path = filedialog.askopenfilename(
+                title="Выберите файл сертификата",
+                initialdir=cert_var.get() or "/",
+                filetypes=[("Certificate files", "*.pem *.crt *.cer *.p12 *.pfx"), ("All files", "*.*")],
+            )
+            if path:
+                cert_var.set(path)
+
+        tk.Button(
+            cert_row, text="📁",
+            font=theme.F["body"],
+            bg=theme.C["surface"],
+            fg=theme.C["text"],
+            activebackground=theme.C["ghost_h"],
+            activeforeground=theme.C["text"],
+            relief="flat", bd=0, cursor="hand2",
+            command=_browse_cert,
+        ).pack(side=tk.LEFT)
+
+        theme.separator(sf, pady=10)
 
         # --- TFS ---
-        tfs_card = theme.card(self, pady=0)
+        tfs_card = theme.card(sf, pady=0)
         tk.Label(
             tfs_card, text="TFS / Azure DevOps",
             font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
@@ -141,10 +210,10 @@ class SettingsScreen(BaseScreen):
             command=lambda e=tfs_entry, v=tfs_show: e.config(show="" if v.get() else "*"),
         ).pack(side=tk.LEFT, padx=8)
 
-        theme.separator(self, pady=10)
+        theme.separator(sf, pady=10)
 
         # --- ITSM ---
-        itsm_card = theme.card(self, pady=0)
+        itsm_card = theme.card(sf, pady=0)
         tk.Label(
             itsm_card, text="ITSM",
             font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
@@ -202,10 +271,10 @@ class SettingsScreen(BaseScreen):
         itsm_grid.columnconfigure(1, weight=1)
 
         # --- Сохранить ---
-        theme.separator(self, pady=10)
+        theme.separator(sf, pady=10)
         ttk.Button(
-            self, text="Сохранить", style="Primary.TButton", command=self._save,
-        ).pack(anchor=tk.W)
+            sf, text="Сохранить", style="Primary.TButton", command=self._save,
+        ).pack(anchor=tk.W, pady=(0, 10))
 
     # ------------------------------------------------------------------
 

@@ -627,14 +627,17 @@ class CreateApiForm(BaseForm):
 @dataclass
 class CustomButton:
     label:   str
-    handler: Callable[[str, Callable[[Dict[str, Any]], List[str]]], None]
+    handler: Callable[[str], None]   # handler(environment: str) -> None
     style:   str = "Secondary"
 ```
 
-`handler` вызывается с тремя аргументами:
+`handler` вызывается с одним аргументом:
 - `environment: str` — текущий ключ окружения (`"test_int"`, `"prod_ext"`, …)
-- `parent: tk.Widget` — виджет `FormScreen`; передавать в любой диалог из `ui.dialogs` как первый аргумент
-- `apply_form_data: Callable[[Dict[str, Any]], List[str]]` — метод предзаполнения формы (см. раздел ниже)
+
+Внутри обработчика доступны через `self` (форма — полноценный объект):
+- `self.screen` — ссылка на `FormScreen`; передавать как `parent` в любой диалог из `ui.dialogs`
+- `self.screen.apply_form_data({...})` — предзаполнить поля формы
+- `self.gravitee_service`, `self.itsm_service`, `self.tfs_service` — сервисы (как в `fetch_from_itsm`)
 
 Кнопки отображаются правее стандартных («Отправить», «Просмотр JSON», «Подтянуть из заявки») в том порядке, в котором возвращены из `get_custom_buttons()`.
 
@@ -1576,27 +1579,32 @@ def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
 
 **Вызов из кастомной кнопки:**
 
-Хендлер получает `parent` — его можно передавать напрямую в любой диалог из `ui.dialogs`:
+`self.screen` — это `FormScreen`; его можно передавать в любой диалог из `ui.dialogs` как `parent`:
 
 ```python
 import threading
-from ui.dialogs import ask_string, show_error, show_info
+from ui.dialogs import ask_string, show_error
 
-def _on_fill(self, environment: str, parent, apply_form_data) -> None:
+def _on_fill(self, environment: str) -> None:
     # Спросить у пользователя строку прямо из хендлера
-    api_id = ask_string(parent, "Загрузить из Gravitee", "Введите ID АПИ", confirm_text="Загрузить")
+    api_id = ask_string(
+        self.screen,
+        "Загрузить из Gravitee",
+        "Введите ID АПИ",
+        confirm_text="Загрузить",
+    )
     if api_id is None:
         return  # пользователь отменил
 
     def _worker():
         try:
             data = self.gravitee_service.get_api(environment, api_id)
-            apply_form_data({
+            self.screen.apply_form_data({
                 "app_name": data["name"],
                 "replicas": data["replicaCount"],
             })
         except Exception as exc:
-            show_error(parent, "Ошибка", str(exc))
+            show_error(self.screen, "Ошибка", str(exc))
 
     threading.Thread(target=_worker, daemon=True).start()
 ```
@@ -1635,14 +1643,14 @@ class GraviteeService:
         return self._http_client.get(url)
 ```
 
-**Использование в форме:**
+**Использование в форме (кастомная кнопка):**
 
 ```python
 def _on_check_api(self, environment: str) -> None:
-    api_id = self._field_widgets["api_id"].get()
-    result = self.gravitee_service.check_api(environment, api_id)
+    # self.screen — FormScreen, передаётся как parent в диалог
     from ui.dialogs import show_info
-    show_info(None, "Проверка АПИ", f"Статус: {result.get('state', '—')}")
+    result = self.gravitee_service.check_api(environment, "some-api-id")
+    show_info(self.screen, "Проверка АПИ", f"Статус: {result.get('state', '—')}")
 ```
 
 ---
