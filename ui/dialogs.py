@@ -630,20 +630,19 @@ def ask_dictionary(
     content = tk.Frame(dlg, bg=theme.C["bg"])
     content.pack(padx=16, pady=(14, 0), fill=tk.BOTH, expand=True)
 
-    # Поле поиска
-    search_outer = tk.Frame(
+    # Единый контейнер с границей: поиск + разделитель + список
+    outer = tk.Frame(
         content, bg=theme.C["input_bg"],
         highlightthickness=1,
         highlightbackground=theme.C["input_border"],
         highlightcolor=theme.C["border_focus"],
     )
-    search_outer.pack(fill=tk.X, pady=(0, 4))
+    outer.pack(fill=tk.BOTH, expand=True)
 
     visible: list[list[int]] = [list(range(len(labels)))]
 
-    # Listbox
-    lb_frame = tk.Frame(content, bg=theme.C["input_bg"])
-    lb_frame.pack(fill=tk.BOTH, expand=True)
+    # Listbox — создаём до _build_search_bar чтобы использовать в _filter
+    lb_frame = tk.Frame(outer, bg=theme.C["input_bg"])
 
     sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
     listbox = tk.Listbox(
@@ -672,7 +671,16 @@ def ask_dictionary(
                 vis.append(i)
         visible[0] = vis
 
-    search_var = _build_search_bar(search_outer, _filter)
+    search_var = _build_search_bar(outer, _filter)
+    tk.Frame(outer, bg=theme.C["border"], height=1).pack(fill=tk.X)
+    lb_frame.pack(fill=tk.BOTH, expand=True, pady=4)
+
+    # Локальный скролл — не трогает bind_all родительского окна
+    def _lb_scroll(e: tk.Event) -> str:
+        listbox.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        return "break"
+
+    listbox.bind("<MouseWheel>", _lb_scroll)
 
     def _confirm() -> None:
         sel = listbox.curselection()
@@ -739,19 +747,19 @@ def ask_multi_dictionary(
     content = tk.Frame(dlg, bg=theme.C["bg"])
     content.pack(padx=16, pady=(14, 0), fill=tk.BOTH, expand=True)
 
-    # Поле поиска
-    search_outer = tk.Frame(
+    # Единый контейнер с границей: поиск + разделитель + список чекбоксов
+    outer = tk.Frame(
         content, bg=theme.C["input_bg"],
         highlightthickness=1,
         highlightbackground=theme.C["input_border"],
         highlightcolor=theme.C["border_focus"],
     )
-    search_outer.pack(fill=tk.X, pady=(0, 4))
+    outer.pack(fill=tk.BOTH, expand=True)
 
     # Скроллируемый список чекбоксов
     _MAX_H = 260
-    list_canvas = tk.Canvas(content, bg=theme.C["input_bg"], highlightthickness=0, height=_MAX_H)
-    list_sb = tk.Scrollbar(content, orient=tk.VERTICAL, command=list_canvas.yview)
+    list_canvas = tk.Canvas(outer, bg=theme.C["input_bg"], highlightthickness=0, height=_MAX_H)
+    list_sb = tk.Scrollbar(outer, orient=tk.VERTICAL, command=list_canvas.yview)
     list_canvas.configure(yscrollcommand=list_sb.set)
 
     cb_frame = tk.Frame(list_canvas, bg=theme.C["input_bg"])
@@ -767,11 +775,14 @@ def ask_multi_dictionary(
 
     cb_frame.bind("<Configure>", _on_cb_configure)
     list_canvas.bind("<Configure>", _on_canvas_resize)
-    list_canvas.bind_all("<MouseWheel>",
-                         lambda e: list_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
-    list_sb.pack(side=tk.RIGHT, fill=tk.Y)
-    list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    # Локальный скролл — return "break" блокирует всплытие к bind_all родительского окна
+    def _canvas_scroll(e: tk.Event) -> str:
+        list_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        return "break"
+
+    list_canvas.bind("<MouseWheel>", _canvas_scroll)
+    cb_frame.bind("<MouseWheel>", _canvas_scroll)
 
     # Строки чекбоксов
     _OFF, _ON = "☐", "☑"
@@ -797,12 +808,8 @@ def ask_multi_dictionary(
             relief="flat", bd=0, anchor="w", cursor="hand2",
             command=_toggle,
         )
+        btn.bind("<MouseWheel>", _canvas_scroll)
         return btn
-
-    for i in range(len(items)):
-        btn = _make_toggle(i)
-        btn.pack(fill=tk.X, padx=6, pady=2)
-        row_btns.append(btn)
 
     def _filter(*_) -> None:
         q = search_var.get()
@@ -813,7 +820,16 @@ def ask_multi_dictionary(
             else:
                 btn.pack_forget()
 
-    search_var = _build_search_bar(search_outer, _filter)
+    search_var = _build_search_bar(outer, _filter)
+    tk.Frame(outer, bg=theme.C["border"], height=1).pack(fill=tk.X)
+
+    list_sb.pack(side=tk.RIGHT, fill=tk.Y, pady=4)
+    list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=4)
+
+    for i in range(len(items)):
+        btn = _make_toggle(i)
+        btn.pack(fill=tk.X, padx=6, pady=2)
+        row_btns.append(btn)
 
     def _confirm() -> None:
         result[0] = [values[i] for i, c in enumerate(checked) if c]

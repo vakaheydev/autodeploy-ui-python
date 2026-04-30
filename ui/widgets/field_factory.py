@@ -494,6 +494,8 @@ class _BlockWidget:
             fw = self._sub_widgets.get(key)
             if fw:
                 fw.set(value)
+        if any(f.condition for f in self._sub_fields):
+            self._refresh_conditions()
 
 
 class FieldWidget:
