@@ -597,25 +597,32 @@ def validate(self, form_data):
 
 ```python
 from forms.base_form import BaseForm, CustomButton
+from typing import Callable, Dict, Any, List
 
 class CreateApiForm(BaseForm):
 
     def get_custom_buttons(self) -> List[CustomButton]:
         return [
             CustomButton(
-                label="Проверить АПИ",
-                handler=self._on_check_api,
-                style="Secondary",   # "Primary" | "Secondary" | "Ghost" (по умолч. "Secondary")
+                label="Заполнить из Gravitee",
+                handler=self._on_fill_from_gravitee,
+                style="Secondary",   # "Primary" | "Secondary" (по умолч. "Secondary")
             ),
         ]
 
-    def _on_check_api(self, environment: str) -> None:
-        # environment — текущий ключ окружения, напр. "test_int"
-        # self.gravitee_service доступен здесь
-        result = self.gravitee_service.check_api(environment, ...)
-        # показать результат через диалог
-        from ui.dialogs import show_info
-        show_info(None, "Результат", str(result))
+    def _on_fill_from_gravitee(
+        self,
+        environment: str,
+        apply_form_data: Callable[[Dict[str, Any]], List[str]],
+    ) -> None:
+        # environment     — текущий ключ окружения, напр. "test_int"
+        # apply_form_data — метод FormScreen: заполняет поля из словаря
+        # self.gravitee_service / self.itsm_service доступны здесь
+        data = self.gravitee_service.get_api_defaults(environment)
+        apply_form_data({
+            "api_name":    data.get("name", ""),
+            "context_path": data.get("contextPath", ""),
+        })
 ```
 
 **Сигнатура `CustomButton`:**
@@ -623,14 +630,16 @@ class CreateApiForm(BaseForm):
 ```python
 @dataclass
 class CustomButton:
-    label:   str                         # текст кнопки
-    handler: Callable[[str], None]       # вызывается с текущим environment
-    style:   str = "Secondary"           # стиль кнопки
+    label:   str
+    handler: Callable[[str, Callable[[Dict[str, Any]], List[str]]], None]
+    style:   str = "Secondary"
 ```
 
-- Кнопки отображаются слева от кнопки «Отправить» в том порядке, в котором возвращены из `get_custom_buttons()`
-- В `handler` всегда передаётся текущее окружение (строка вида `"test_int"`)
-- `self.gravitee_service`, `self.itsm_service` и другие сервисы доступны внутри `handler` — они устанавливаются перед вызовом кнопки (см. раздел 11)
+`handler` вызывается с двумя аргументами:
+- `environment: str` — текущий ключ окружения (`"test_int"`, `"prod_ext"`, …)
+- `apply_form_data: Callable[[Dict[str, Any]], List[str]]` — метод предзаполнения формы (см. раздел ниже)
+
+Кнопки отображаются правее стандартных («Отправить», «Просмотр JSON», «Подтянуть из заявки») в том порядке, в котором возвращены из `get_custom_buttons()`.
 
 ---
 
@@ -1543,18 +1552,36 @@ def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
     # и покажет диалог со списком заполненных полей
 ```
 
-**Вызов из кастомной кнопки** (через `screen`, который передаётся в handler):
+**Вызов из кастомной кнопки:**
+
+`apply_form_data` передаётся вторым аргументом в `handler` каждой кастомной кнопки — вызывайте напрямую:
 
 ```python
-# Кастомная кнопка не имеет прямого доступа к FormScreen.
-# Передайте screen в замыкание при создании CustomButton или
-# используйте self.gravitee_service / self.itsm_service для запроса,
-# а FormScreen вызовет apply_form_data сам — через аналогичный механизм.
+def _on_fill(self, environment: str, apply_form_data) -> None:
+    data = self.gravitee_service.get_defaults(environment)
+    filled = apply_form_data({
+        "app_name": data["name"],
+        "replicas": data["replicaCount"],
+    })
+    # filled — список ключей, которые были применены
 ```
 
-> Если понадобится вызвать `apply_form_data` из нестандартного места —
-> храните ссылку на `FormScreen` в нужном объекте или добавьте
-> аналогичный callback в `CustomButton`.
+Для фоновых операций (HTTP-запрос внутри хендлера) — передайте `apply_form_data` в замыкание потока:
+
+```python
+import threading
+from ui.dialogs import show_error
+
+def _on_fill(self, environment: str, apply_form_data) -> None:
+    def _worker():
+        try:
+            data = self.gravitee_service.get_defaults(environment)
+            apply_form_data({"app_name": data["name"]})
+        except Exception as exc:
+            show_error(None, "Ошибка", str(exc))
+
+    threading.Thread(target=_worker, daemon=True).start()
+```
 
 ---
 

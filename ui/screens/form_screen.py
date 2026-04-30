@@ -348,7 +348,10 @@ class FormScreen(BaseScreen):
                 foot,
                 text=btn_def.label,
                 style=style,
-                command=lambda h=btn_def.handler: h(self.app.current_environment.get()),
+                command=lambda h=btn_def.handler: h(
+                    self.app.current_environment.get(),
+                    self.apply_form_data,
+                ),
             ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._status_var = tk.StringVar()

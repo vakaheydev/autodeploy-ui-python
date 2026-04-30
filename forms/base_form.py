@@ -26,11 +26,13 @@ class CustomButton:
     Декларация кастомной кнопки в футере формы.
 
     label   — текст на кнопке.
-    handler — вызывается на главном потоке: handler(environment: str) -> None.
+    handler — вызывается на главном потоке:
+              handler(environment: str, apply_form_data: Callable[[Dict], List[str]]) -> None
+              apply_form_data — метод FormScreen для предзаполнения полей формы.
     style   — "Primary" или "Secondary" (по умолчанию Secondary).
     """
     label: str
-    handler: Callable[[str], None]
+    handler: Callable[[str, Callable[[Dict[str, Any]], List[str]]], None]
     style: str = "Secondary"
 
 
@@ -327,15 +329,19 @@ class BaseForm(ABC):
         Возвращает список кастомных кнопок для футера формы.
         Кнопки отображаются правее стандартных (Отправить, Просмотр JSON, Подтянуть из заявки).
 
-        handler вызывается на главном потоке с одним аргументом — ключом текущего окружения.
+        handler вызывается на главном потоке с двумя аргументами:
+          - environment: str — ключ текущего окружения
+          - apply_form_data: Callable[[Dict], List[str]] — метод предзаполнения формы
+
         Для фоновых операций запускайте threading.Thread внутри handler.
 
         Пример:
             def get_custom_buttons(self):
-                return [CustomButton(label="Проверить", handler=self._on_check)]
+                return [CustomButton(label="Заполнить", handler=self._on_fill)]
 
-            def _on_check(self, environment: str) -> None:
-                ...
+            def _on_fill(self, environment: str, apply_form_data) -> None:
+                data = self.gravitee_service.get_defaults(environment)
+                apply_form_data({"field_key": data["value"]})
         """
         return []
 
