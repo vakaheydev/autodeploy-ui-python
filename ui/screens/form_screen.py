@@ -976,6 +976,14 @@ class FormScreen(BaseScreen):
                 continue
             fw.set(value)
             filled.append(key)
+
+        # SELECT-виджеты не генерируют событие изменения при программной установке,
+        # поэтому пересчитываем условные поля явно.
+        # _ready=False означает, что _setup_conditional_fields ещё не вызывался —
+        # он сам вызовет _refresh_conditional_fields после.
+        if self._ready and any(f.condition for f in self._form.fields):
+            self._refresh_conditional_fields()
+
         return filled
 
     # ------------------------------------------------------------------
