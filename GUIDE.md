@@ -8,6 +8,7 @@
 - [2. Модуль операций](#2-модуль-операций)
   - [Как устроен модуль](#как-устроен-модуль)
   - [Добавить новую операцию](#добавить-новую-операцию)
+  - [Строить поля через op_utils](#строить-поля-через-op_utils)
   - [Использовать справочник в операции](#использовать-справочник-в-операции)
 - [3. Модуль поиска](#3-модуль-поиска)
   - [Как работает поиск](#как-работает-поиск)
@@ -198,6 +199,91 @@ class MyOpScreen(BaseScreen):
 ```
 
 Экран получает стандартный back-button и навигацию через `self.app`. Больше ничего менять не нужно — карточка появится автоматически.
+
+---
+
+### Строить поля через op_utils
+
+`ui/screens/operations/op_utils.py` — фабричные функции для типовых блоков UI. Каждая создаёт карточку с заголовком и содержимым, пакует её в `parent` через `pack()` и возвращает виджет для чтения/обновления значения.
+
+| Функция | Возвращает | Чтение / обновление |
+|---|---|---|
+| `env_row(parent, app)` | — | только отображение |
+| `ref_field(parent, label, on_pick)` | `tk.Label` | `.config(text=id, fg=theme.C["text"])` |
+| `file_field(parent, label, file_type, height)` | `tk.Text` | `.get("1.0", tk.END).strip()` |
+| `text_field(parent, label)` | `tk.Entry` | `.get().strip()` |
+| `action_button(parent, text, command, state)` | `ttk.Button` | `.config(state=tk.NORMAL / tk.DISABLED)` |
+
+**`ref_field`** — поле со строкой «— не выбрано —» и кнопкой «Выбрать». При выборе обновить метку вручную:
+
+```python
+self._api_label = ref_field(self, "АПИ", self._pick_api)
+
+def _pick_api(self) -> None:
+    api_id = ask_dictionary(self, "Выбрать АПИ", reference=..., environment=..., app=self.app)
+    if api_id is not None:
+        self._api_label.config(text=api_id, fg=theme.C["text"])
+```
+
+**`file_field`** — заголовок + кнопка «📂 Выбрать файл» + textarea. Кнопка открывает диалог и загружает содержимое файла; пользователь может также вставить или написать текст вручную:
+
+```python
+self._cfg = file_field(self, "Конфигурация", file_type=".json", height=10)
+
+def _run(self) -> None:
+    raw = self._cfg.get("1.0", tk.END).strip()
+    payload = json.loads(raw) if raw else {}
+```
+
+**Полный пример экрана с op_utils** (именно так устроен `api_op_screen.py`):
+
+```python
+import tkinter as tk
+from typing import Optional
+import ui.theme as theme
+from forms.fields import ReferenceConfig
+from ui.dialogs import ask_dictionary, show_info
+from ui.screens.base_screen import BaseScreen
+from ui.screens.operations.op_utils import action_button, env_row, file_field, ref_field
+
+_API_REF = ReferenceConfig(
+    source="local",
+    resource="gravitee_apis.json",
+    value_key="id", label_key="name",
+    search_keys=("name", "context_path", "id"),
+)
+
+class MyOpScreen(BaseScreen):
+
+    def _build(self) -> None:
+        self._selected_api: Optional[str] = None
+
+        self._add_back_button()
+        self._add_title("Моя операция")
+        theme.separator(self, pady=8)
+
+        env_row(self, self.app)
+        self._api_label   = ref_field(self, "АПИ", self._pick_api)
+        self._config_text = file_field(self, "Конфигурация (JSON)", file_type=".json")
+        theme.separator(self, pady=10)
+        self._run_btn = action_button(self, "Выполнить", self._run, state=tk.DISABLED)
+
+    def _pick_api(self) -> None:
+        api_id = ask_dictionary(
+            self, "Выбрать АПИ",
+            reference=_API_REF,
+            environment=self.app.current_environment.get(),
+            app=self.app,
+        )
+        if api_id is not None:
+            self._selected_api = api_id
+            self._api_label.config(text=api_id, fg=theme.C["text"])
+            self._run_btn.config(state=tk.NORMAL)
+
+    def _run(self) -> None:
+        config = self._config_text.get("1.0", tk.END).strip()
+        show_info(self, "Готово", f"АПИ: {self._selected_api}\nКонфиг: {config[:80]}")
+```
 
 ---
 
@@ -1905,6 +1991,7 @@ autodeploy-ui-python/
         ├── search_detail_screen.py # ← поиск: строка + env picker + результаты
         ├── operations_screen.py   # ← список карточек операций (_OPERATIONS)
         ├── operations/            # ← экраны операций (наследники BaseScreen)
+        │   └── op_utils.py        # ← фабричные функции UI: env_row, ref_field, file_field, …
         ├── main_screen.py         # AutoDeploy UI: выбор окружения
         ├── category_screen.py     # выбор формы внутри категории
         ├── form_screen.py         # рендер полей, условная видимость, сабмит
