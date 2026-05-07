@@ -41,12 +41,16 @@ class HomeScreen(BaseScreen):
 
         theme.separator(self, pady=10)
 
-        # --- Карточки модулей ---
-        for icon, title, desc, module_key in _MODULES:
-            self._module_card(icon, title, desc, module_key)
+        # --- Центрированные карточки модулей ---
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=640)
 
-    def _module_card(self, icon: str, title: str, desc: str, key: str) -> None:
-        border = tk.Frame(self, bg=theme.C["border"])
+        for icon, title, desc, module_key in _MODULES:
+            self._module_card(col, icon, title, desc, module_key)
+
+    def _module_card(self, parent: tk.Frame, icon: str, title: str, desc: str, key: str) -> None:
+        border = tk.Frame(parent, bg=theme.C["border"])
         border.pack(fill=tk.X, pady=4, padx=2)
         row = tk.Frame(border, bg=theme.C["surface"], cursor="hand2")
         row.pack(fill=tk.BOTH, padx=1, pady=1)

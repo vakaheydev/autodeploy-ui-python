@@ -387,7 +387,7 @@ class SearchDetailScreen(BaseScreen):
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width - 8))
+        canvas.bind("<Configure>", self._centered_resize(canvas, win, max_width=960))
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -503,7 +503,7 @@ class SearchDetailScreen(BaseScreen):
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind("<Configure>", self._centered_resize(canvas, win_id, max_width=760, pad=0))
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         sb.pack(side=tk.RIGHT, fill=tk.Y)

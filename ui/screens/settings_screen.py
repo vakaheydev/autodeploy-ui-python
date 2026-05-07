@@ -56,7 +56,7 @@ class SettingsScreen(BaseScreen):
         sf = tk.Frame(canvas, bg=theme.C["bg"])
         sf.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         _win = canvas.create_window((0, 0), window=sf, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(_win, width=e.width - 2))
+        canvas.bind("<Configure>", self._centered_resize(canvas, _win, max_width=760))
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)

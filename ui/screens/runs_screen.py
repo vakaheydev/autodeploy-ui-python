@@ -67,7 +67,7 @@ class RunsScreen(BaseScreen):
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width - 8))
+        canvas.bind("<Configure>", self._centered_resize(canvas, win, max_width=960))
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.bind_all("<MouseWheel>",
                         lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))

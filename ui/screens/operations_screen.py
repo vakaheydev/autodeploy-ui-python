@@ -24,14 +24,15 @@ class OperationsScreen(BaseScreen):
         self._add_title("Операции")
         theme.separator(self, pady=8)
 
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=760)
+
         if not _OPERATIONS:
-            self._build_empty()
+            self._build_empty(col)
             return
 
-        center = tk.Frame(self, bg=theme.C["bg"])
-        center.pack(expand=True, fill=tk.BOTH)
-
-        cards_row = tk.Frame(center, bg=theme.C["bg"])
+        cards_row = tk.Frame(col, bg=theme.C["bg"])
         cards_row.place(relx=0.5, rely=0.45, anchor="center")
 
         for i, (icon, title, desc, key) in enumerate(_OPERATIONS):
@@ -39,19 +40,19 @@ class OperationsScreen(BaseScreen):
                 tk.Frame(cards_row, bg=theme.C["bg"], width=20).pack(side=tk.LEFT)
             self._op_card(cards_row, icon, title, desc, lambda k=key: self._open(k))
 
-    def _build_empty(self) -> None:
+    def _build_empty(self, parent: tk.Widget) -> None:
         tk.Label(
-            self, text="📋",
+            parent, text="📋",
             font=("Segoe UI Emoji", 40),
             bg=theme.C["bg"], fg=theme.C["text_muted"],
         ).pack(pady=(40, 8))
         tk.Label(
-            self, text="Раздел в разработке",
+            parent, text="Раздел в разработке",
             font=theme.F["h2"],
             bg=theme.C["bg"], fg=theme.C["text_muted"],
         ).pack()
         tk.Label(
-            self, text="Добавьте операции в _OPERATIONS в operations_screen.py",
+            parent, text="Добавьте операции в _OPERATIONS в operations_screen.py",
             font=theme.F["small"],
             bg=theme.C["bg"], fg=theme.C["text_muted"],
         ).pack(pady=(6, 0))

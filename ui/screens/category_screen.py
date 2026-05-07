@@ -24,8 +24,9 @@ class CategoryScreen(BaseScreen):
 
         self._title_lbl = self._add_title("Выберите категорию")
 
-        self._content = tk.Frame(self, bg=theme.C["bg"])
-        self._content.pack(fill=tk.BOTH, expand=True)
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        self._content = self._centered_col(_wrap, max_width=760)
 
         self._show_categories()
 

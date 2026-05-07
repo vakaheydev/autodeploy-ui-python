@@ -118,10 +118,7 @@ class FormScreen(BaseScreen):
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
         _win = canvas.create_window((0, 0), window=self._fields_frame, anchor="nw")
-        canvas.bind(
-            "<Configure>",
-            lambda e: canvas.itemconfig(_win, width=e.width - 8),
-        )
+        canvas.bind("<Configure>", self._centered_resize(canvas, _win, max_width=760))
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)

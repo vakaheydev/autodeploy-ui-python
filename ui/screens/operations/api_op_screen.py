@@ -29,11 +29,15 @@ class ApiOpScreen(BaseScreen):
         self._add_title("Операция с АПИ")
         theme.separator(self, pady=8)
 
-        env_row(self, self.app)
-        self._api_label   = ref_field(self, "АПИ", self._pick_api)
-        self._config_text = file_field(self, "Конфигурация (JSON)", file_type=".json")
-        theme.separator(self, pady=10)
-        self._run_btn = action_button(self, "Выполнить", self._run, state=tk.DISABLED)
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=760)
+
+        env_row(col, self.app)
+        self._api_label   = ref_field(col, "АПИ", self._pick_api)
+        self._config_text = file_field(col, "Конфигурация (JSON)", file_type=".json")
+        theme.separator(col, pady=10)
+        self._run_btn = action_button(col, "Выполнить", self._run, state=tk.DISABLED)
 
     def _pick_api(self) -> None:
         api_id = ask_dictionary(

@@ -65,8 +65,13 @@ class MainScreen(BaseScreen):
 
         theme.separator(self, pady=0)
 
+        # --- Центрированная колонка для контента ---
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=680)
+
         # --- Двухуровневый выбор окружения ---
-        env_card = theme.card(self, pady=12)
+        env_card = theme.card(col, pady=12)
 
         tk.Label(
             env_card, text="ОКРУЖЕНИЕ",
@@ -114,18 +119,18 @@ class MainScreen(BaseScreen):
         # Применяем начальное выделение
         self._refresh_segments()
 
-        theme.separator(self, pady=10)
+        theme.separator(col, pady=10)
 
         # --- Основная кнопка ---
         ttk.Button(
-            self,
+            col,
             text="  Выбрать форму  →",
             style="Primary.TButton",
             command=self._open_category,
         ).pack(pady=(0, 6))
 
         ttk.Button(
-            self,
+            col,
             text="🕑  Предыдущие запуски",
             style="Ghost.TButton",
             command=self._open_runs,
@@ -133,7 +138,7 @@ class MainScreen(BaseScreen):
 
         # --- Статус ---
         self._status_var = tk.StringVar(value=self._status_text())
-        ttk.Label(self, textvariable=self._status_var, style="Muted.TLabel").pack(pady=(6, 0))
+        ttk.Label(col, textvariable=self._status_var, style="Muted.TLabel").pack(pady=(6, 0))
 
     # ------------------------------------------------------------------
     # Сегментированные кнопки
