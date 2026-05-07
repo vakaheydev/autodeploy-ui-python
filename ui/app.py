@@ -82,6 +82,7 @@ class Application:
 
         # --- Запуск ---
         self.navigate_to(self._get_main_screen_class())
+        self._root.after(0, self._check_required_settings)
 
     # ------------------------------------------------------------------
     # Навигация
@@ -216,6 +217,16 @@ class Application:
         elif isinstance(w, tk.Text):
             w.delete("insert -1c wordstart", "insert")
             return "break"
+
+    def _check_required_settings(self) -> None:
+        """Проверяет обязательные настройки и открывает SettingsScreen при первом незаполненном поле."""
+        from config.environments import REQUIRED_SETTINGS
+        settings = self.env_manager.load()
+        for key, label in REQUIRED_SETTINGS:
+            if not settings.get(key, "").strip():
+                from ui.screens.settings_screen import SettingsScreen
+                self.navigate_to(SettingsScreen, missing_key=key, missing_label=label)
+                return
 
     def _get_main_screen_class(self) -> Type[BaseScreen]:
         from ui.screens.home_screen import HomeScreen

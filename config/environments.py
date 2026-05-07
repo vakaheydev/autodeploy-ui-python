@@ -3,7 +3,7 @@
 Каждое окружение имеет ключ для .env файла и отображаемое имя.
 """
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ def gravitee_token_key(env_key: str) -> str:
     return f"GRAVITEE_TOKEN_{env_key.upper()}"
 
 
+LOGIN_KEY     = "LOGIN"
 TFS_TOKEN_KEY = "TFS_TOKEN"
 
 ITSM_LOGIN_KEY    = "ITSM_LOGIN"
@@ -39,3 +40,10 @@ ITSM_PASSWORD_KEY = "ITSM_PASSWORD"
 GRAVITEE_REPO_PATH_KEY = "GRAVITEE_REPO_PATH"
 
 CERT_PATH_KEY = "CERT_PATH"
+
+# Обязательные поля настроек. Проверяются при каждом запуске.
+# Формат: (ключ .env, отображаемое название для пользователя)
+# Добавьте сюда любые поля, без которых приложение не может работать.
+REQUIRED_SETTINGS: List[Tuple[str, str]] = [
+    (LOGIN_KEY, "Логин"),
+]
