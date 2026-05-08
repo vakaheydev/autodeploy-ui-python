@@ -500,6 +500,19 @@ class _BlockWidget:
         if not changed:
             return
 
+        # Запоминаем зависимые поля, которые переходят из скрытого в видимое:
+        # после перепаковки сразу загрузим их элементы из родительского значения.
+        newly_visible: List[FieldDefinition] = []
+        for sf in self._sub_fields:
+            if sf.condition is None or not sf.depends_on:
+                continue
+            if sf.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
+                continue
+            outer = self._sub_containers.get(sf.key)
+            was_visible = bool(outer.winfo_manager()) if outer else False
+            if not was_visible and visibility.get(sf.key, False):
+                newly_visible.append(sf)
+
         # Перепакуем в порядке вставки (_sub_containers — ordered dict).
         # Plural-копии наследуют условие базового поля.
         for key, outer in self._sub_containers.items():
@@ -519,6 +532,20 @@ class _BlockWidget:
                 show = visibility.get(base_key, True)
             if show:
                 outer.pack(fill=tk.X, pady=2, padx=4)
+
+        # Загружаем элементы для зависимых полей, которые только что стали видимыми.
+        # Родитель может быть sub-полем того же BLOCK или верхнеуровневым (через _ref_loader).
+        for sf in newly_visible:
+            parent_fw = self._sub_widgets.get(sf.depends_on)
+            if parent_fw is None:
+                continue
+            val = (parent_fw.get_extra(sf.depends_on_field)
+                   if sf.depends_on_field else parent_fw.get())
+            if not val:
+                continue
+            ep = {sf.depends_on: val}
+            new_items = self._ref_loader(sf, ep)  # type: ignore[call-arg]
+            self.refresh_sub_ref(sf.key, new_items)
 
     def refresh_sub_ref(self, sub_key: str, new_items: List[Dict[str, Any]]) -> None:
         """Пересоздаёт SELECT/MULTISELECT sub-виджет с новым списком элементов (для depends_on)."""
