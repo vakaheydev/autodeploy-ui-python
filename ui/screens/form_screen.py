@@ -44,8 +44,10 @@ class FormScreen(BaseScreen):
         # Plural: последний созданный контейнер в группе (для pack after=)
         self._plural_last_containers: Dict[str, tk.Frame] = {}
         self._factory = FieldFactory()
-        # parent_key → [child_field_defs] для зависимых справочников
+        # parent_key → [child_field_defs] для зависимых справочников (верхний уровень)
         self._dependent_fields: Dict[str, List[FieldDefinition]] = {}
+        # parent_key → [(block_field_def, sub_field_def)] для зависимых sub-полей BLOCK
+        self._block_dependent_fields: Dict[str, List] = {}
         self._ready = False
         super().__init__(master, app, **kwargs)
 
@@ -516,23 +518,37 @@ class FormScreen(BaseScreen):
         self._subscribe_dependent_children(key, fw)
 
     def _subscribe_dependent_children(self, parent_key: str, fw: "FieldWidget") -> None:
-        """Подписывает fw на перезагрузку зависимых справочников при смене его значения."""
-        children = self._dependent_fields.get(parent_key)
-        if not children:
+        """Подписывает fw на перезагрузку зависимых справочников при смене его значения.
+        Обрабатывает как верхнеуровневые поля, так и sub-поля внутри BLOCK."""
+        children = self._dependent_fields.get(parent_key, [])
+        block_children = self._block_dependent_fields.get(parent_key, [])
+
+        if not children and not block_children:
             return
 
         def _on_change() -> None:
             pfw = self._field_widgets.get(parent_key)
             if pfw is None:
                 return
+            # Верхнеуровневые зависимые поля
             for child in children:
-                # depends_on_field: берём конкретное поле из item, а не value_key
                 if child.depends_on_field:
                     val = pfw.get_extra(child.depends_on_field)
                 else:
                     val = pfw.get()
                 ep = {parent_key: val} if val else None
                 self._rebuild_reference_widget(child, ep)
+            # Sub-поля BLOCK с зависимым справочником
+            for block_def, sub_def in block_children:
+                if sub_def.depends_on_field:
+                    val = pfw.get_extra(sub_def.depends_on_field)
+                else:
+                    val = pfw.get()
+                ep = {parent_key: val} if val else None
+                new_items = self._load_reference(sub_def, ep)
+                block_fw = self._field_widgets.get(block_def.key)
+                if block_fw:
+                    block_fw.refresh_sub_ref(sub_def.key, new_items)
 
         widget = fw.widget
         if isinstance(widget, ttk.Combobox):
@@ -544,20 +560,29 @@ class FormScreen(BaseScreen):
         """
         Строит таблицу зависимостей и подписывается на изменения родительских полей.
         Зависимое поле объявляется через depends_on="parent_key" в FieldDefinition.
+        Поддерживаются как верхнеуровневые поля, так и sub-поля внутри BLOCK.
         Вызывается один раз после рендера всех полей.
         """
         from collections import defaultdict
         dep_map: Dict[str, List[FieldDefinition]] = defaultdict(list)
+        block_dep_map: Dict[str, List] = defaultdict(list)
+
         for f in self._form.fields:
             if f.depends_on and f.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
                 dep_map[f.depends_on].append(f)
+            if f.field_type == FieldType.BLOCK:
+                for sf in f.block_fields:
+                    if sf.depends_on and sf.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
+                        block_dep_map[sf.depends_on].append((f, sf))
 
-        if not dep_map:
+        if not dep_map and not block_dep_map:
             return
 
         self._dependent_fields = dict(dep_map)
+        self._block_dependent_fields = dict(block_dep_map)
 
-        for parent_key, children in self._dependent_fields.items():
+        all_parents = set(list(dep_map.keys()) + list(block_dep_map.keys()))
+        for parent_key in all_parents:
             parent_fw = self._field_widgets.get(parent_key)
             if parent_fw is not None:
                 self._subscribe_dependent_children(parent_key, parent_fw)

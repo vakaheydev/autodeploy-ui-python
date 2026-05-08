@@ -279,6 +279,8 @@ class _BlockWidget:
         self._ref_loader = ref_loader
         self._on_refresh_cb = on_refresh
 
+        self._sub_inner_frames: Dict[str, tk.Frame] = {}
+
         self.frame = tk.Frame(
             parent,
             bg=theme.C["surface"],
@@ -292,6 +294,7 @@ class _BlockWidget:
             inner = tk.Frame(outer, bg=theme.C["surface"])
             inner.pack(fill=tk.BOTH, padx=1, pady=1)
             self._sub_containers[sub_field.key] = outer
+            self._sub_inner_frames[sub_field.key] = inner
 
             label_row = tk.Frame(inner, bg=theme.C["surface"])
             label_row.pack(fill=tk.X, padx=10, pady=(6, 2))
@@ -484,6 +487,23 @@ class _BlockWidget:
             if show:
                 outer.pack(fill=tk.X, pady=2, padx=4)
 
+    def refresh_sub_ref(self, sub_key: str, new_items: List[Dict[str, Any]]) -> None:
+        """Пересоздаёт SELECT/MULTISELECT sub-виджет с новым списком элементов (для depends_on)."""
+        sub_def = next((f for f in self._sub_fields if f.key == sub_key), None)
+        if sub_def is None:
+            return
+        old_fw = self._sub_widgets.get(sub_key)
+        if old_fw is not None:
+            old_fw.widget.destroy()
+        inner = self._sub_inner_frames.get(sub_key)
+        if inner is None:
+            return
+        new_fw = self._fac.create(inner, sub_def, new_items,
+                                   ref_loader=self._ref_loader,
+                                   on_refresh=self._on_refresh_cb)
+        new_fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self._sub_widgets[sub_key] = new_fw
+
     def get(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
         for key, fw in self._sub_widgets.items():
@@ -514,12 +534,14 @@ class FieldWidget:
         bind_change_fn: Optional[Callable[[Callable[[], None]], None]] = None,
         set_fn: Optional[Callable[[Any], None]] = None,
         get_extra_fn: Optional[Callable[[str], Any]] = None,
+        refresh_sub_ref_fn: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
     ) -> None:
         self.widget = widget
         self._get_fn = get_fn
         self._bind_change_fn = bind_change_fn
         self._set_fn = set_fn
         self._get_extra_fn = get_extra_fn
+        self._refresh_sub_ref_fn = refresh_sub_ref_fn
 
     def get(self) -> Any:
         return self._get_fn()
@@ -529,6 +551,11 @@ class FieldWidget:
         if self._get_extra_fn is not None:
             return self._get_extra_fn(field)
         return self.get()
+
+    def refresh_sub_ref(self, key: str, items: List[Dict[str, Any]]) -> None:
+        """Пересоздаёт sub-виджет BLOCK с новыми данными справочника."""
+        if self._refresh_sub_ref_fn is not None:
+            self._refresh_sub_ref_fn(key, items)
 
     def set(self, value: Any) -> None:
         """Программно устанавливает значение поля. Игнорируется если set_fn не задана."""
@@ -952,7 +979,8 @@ class FieldFactory:
         on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> FieldWidget:
         block = _BlockWidget(parent, field.block_fields, self, ref_loader, on_refresh)
-        return FieldWidget(block.frame, block.get, set_fn=block.set)
+        return FieldWidget(block.frame, block.get, set_fn=block.set,
+                           refresh_sub_ref_fn=block.refresh_sub_ref)
 
     def _create_file(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         """
