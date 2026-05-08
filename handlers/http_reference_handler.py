@@ -24,11 +24,15 @@ from handlers.base_reference_handler import BaseReferenceHandler
 # "itsm"     → Basic ITSM_LOGIN:ITSM_PASSWORD из .env
 # Ресурсы без записи запрашиваются без авторизации.
 _AUTH_MAP: Dict[str, str] = {
-    "gravitee_apis": "gravitee",
+    "gravitee_apis":          "gravitee",
+    "gravitee_api_methods":   "gravitee",
+    "gravitee_api_ingresses": "gravitee",
 }
 
 # TODO: заменить заглушки реальными URL для каждого окружения
 # Структура: resource_key → {env_key: url}
+# Для зависимых справочников URL может содержать шаблон {param_name},
+# который будет подставлен из extra_params при вызове ask_dictionary.
 _URL_MAP: Dict[str, Dict[str, str]] = {
     "gravitee_apis": {
         "test_int":    "https://api.test-int.example.com/management/v2/apis",
@@ -37,6 +41,23 @@ _URL_MAP: Dict[str, Dict[str, str]] = {
         "regress_ext": "https://api.regress-ext.example.com/management/v2/apis",
         "prod_int":    "https://api.prod-int.example.com/management/v2/apis",
         "prod_ext":    "https://api.prod-ext.example.com/management/v2/apis",
+    },
+    "gravitee_api_ingresses": {
+        "test_int":    "https://api.test-int.example.com/management/v2/apis/{apis}/ingresses",
+        "test_ext":    "https://api.test-ext.example.com/management/v2/apis/{apis}/ingresses",
+        "regress_int": "https://api.regress-int.example.com/management/v2/apis/{apis}/ingresses",
+        "regress_ext": "https://api.regress-ext.example.com/management/v2/apis/{apis}/ingresses",
+        "prod_int":    "https://api.prod-int.example.com/management/v2/apis/{apis}/ingresses",
+        "prod_ext":    "https://api.prod-ext.example.com/management/v2/apis/{apis}/ingresses",
+    },
+    # Зависимый справочник: {api_id} подставляется из extra_params
+    "gravitee_api_methods": {
+        "test_int":    "https://api.test-int.example.com/management/v2/apis/{api_id}/members",
+        "test_ext":    "https://api.test-ext.example.com/management/v2/apis/{api_id}/members",
+        "regress_int": "https://api.regress-int.example.com/management/v2/apis/{api_id}/members",
+        "regress_ext": "https://api.regress-ext.example.com/management/v2/apis/{api_id}/members",
+        "prod_int":    "https://api.prod-int.example.com/management/v2/apis/{api_id}/members",
+        "prod_ext":    "https://api.prod-ext.example.com/management/v2/apis/{api_id}/members",
     },
 }
 
@@ -79,13 +100,23 @@ class HttpReferenceHandler(BaseReferenceHandler):
         return config.source == "http"
 
     def load(
-        self, config: ReferenceConfig, environment: str = ""
+        self,
+        config: ReferenceConfig,
+        environment: str = "",
+        extra_params: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         resource = config.resource
+        params = extra_params or {}
         ttl = CACHE_TTL.get(resource)
 
+        # Ключ кеша включает extra_params, чтобы методы API A ≠ методы API B
+        cache_resource = resource
+        if params:
+            params_suffix = "_".join(f"{k}={v}" for k, v in sorted(params.items()))
+            cache_resource = f"{resource}__{params_suffix}"
+
         if ttl is not None:
-            cached = self._cache.get(resource, environment, ttl)
+            cached = self._cache.get(cache_resource, environment, ttl)
             if cached is not None:
                 return cached
 
@@ -99,6 +130,14 @@ class HttpReferenceHandler(BaseReferenceHandler):
             )
             return []
 
+        # Подставляем extra_params в URL-шаблон: /apis/{api_id}/members
+        if params:
+            try:
+                url = url.format_map(params)
+            except KeyError as exc:
+                print(f"[HttpReferenceHandler] Не хватает параметра {exc} для URL '{url}'")
+                return []
+
         try:
             raw = self._client.get(url)
         except Exception as exc:
@@ -109,7 +148,7 @@ class HttpReferenceHandler(BaseReferenceHandler):
         items = self._filter_items(resource, environment, items)
 
         if ttl is not None:
-            self._cache.set(resource, environment, items)
+            self._cache.set(cache_resource, environment, items)
 
         return items
 

@@ -36,12 +36,13 @@ class ReferenceConfig:
                  Если задан — все эти поля объединяются в отображаемую строку
                  и участвуют в live-фильтрации. Например: ("name", "azp").
     """
-    source:      str
-    resource:    str
-    value_key:   str             = "id"
-    label_key:   str             = "name"
-    search_keys: tuple[str, ...] = ()
-    detail_keys: tuple[str, ...] = ()   # поля для детальной карточки; () — показать все
+    source:          str
+    resource:        str
+    value_key:       str             = "id"
+    label_key:       str             = "name"
+    search_keys:     tuple[str, ...] = ()
+    detail_keys:     tuple[str, ...] = ()   # поля для детальной карточки; () — показать все
+    required_params: tuple[str, ...] = ()   # доп. параметры, без которых справочник не работает
 
 
 Condition = Callable[[Dict[str, Any]], bool]
@@ -69,3 +70,4 @@ class FieldDefinition:
     plural:      bool                      = False  # включить кнопку "+" для дублирования
     plural_max:  Optional[int]             = None   # макс. кол-во экземпляров (None = без лимита)
     block_fields: List['FieldDefinition']  = dc_field(default_factory=list)  # вложенные поля для BLOCK
+    depends_on:  str                       = ""    # ключ поля, чьё значение нужно как extra_params

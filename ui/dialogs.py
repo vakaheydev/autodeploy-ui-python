@@ -589,6 +589,7 @@ def ask_dictionary(
     environment: str,
     app: Any,
     confirm_text: str = "Выбрать",
+    extra_params: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """
     Диалог выбора одного элемента из справочника.
@@ -620,7 +621,7 @@ def ask_dictionary(
         if api_id:
             ...
     """
-    items = app.reference_resolver.resolve(reference, environment)
+    items = app.reference_resolver.resolve(reference, environment, extra_params)
     result: list[Optional[str]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()
@@ -712,6 +713,7 @@ def ask_multi_dictionary(
     environment: str,
     app: Any,
     confirm_text: str = "Выбрать",
+    extra_params: Optional[Dict[str, Any]] = None,
 ) -> Optional[List[str]]:
     """
     Диалог выбора нескольких элементов из справочника.
@@ -737,7 +739,7 @@ def ask_multi_dictionary(
         if services is not None:   # None = отмена, [] = подтверждено без выбора
             ...
     """
-    items = app.reference_resolver.resolve(reference, environment)
+    items = app.reference_resolver.resolve(reference, environment, extra_params)
     result: list[Optional[List[str]]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()

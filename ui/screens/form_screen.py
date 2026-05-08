@@ -44,6 +44,8 @@ class FormScreen(BaseScreen):
         # Plural: последний созданный контейнер в группе (для pack after=)
         self._plural_last_containers: Dict[str, tk.Frame] = {}
         self._factory = FieldFactory()
+        # parent_key → [child_field_defs] для зависимых справочников
+        self._dependent_fields: Dict[str, List[FieldDefinition]] = {}
         self._ready = False
         super().__init__(master, app, **kwargs)
 
@@ -144,6 +146,8 @@ class FormScreen(BaseScreen):
             if field.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
                 return
             if field.reference is None or field.reference.source != "http":
+                return
+            if field.depends_on:  # зависимые справочники загружаются лениво
                 return
             resource = field.reference.resource
             ttl = CACHE_TTL.get(resource)
@@ -311,8 +315,9 @@ class FormScreen(BaseScreen):
         if self._initial_data:
             self.apply_form_data(self._initial_data)
 
-        # Настраиваем условную видимость
+        # Настраиваем условную видимость и зависимые справочники
         self._setup_conditional_fields()
+        self._setup_dependent_fields()
         self._ready = True
 
     def _build_footer(self) -> None:
@@ -451,7 +456,16 @@ class FormScreen(BaseScreen):
                 for sf in f.block_fields
             )
         ]
-        all_to_rebuild = direct_http + block_with_http
+
+        # Зависимые поля перегружаем отдельно — только если родитель уже выбран.
+        # _rebuild_reference_widget автоматически подхватит текущее значение родителя.
+        for f in direct_http:
+            if f.depends_on:
+                parent_fw = self._field_widgets.get(f.depends_on)
+                if parent_fw and parent_fw.get():
+                    self._rebuild_reference_widget(f)
+
+        all_to_rebuild = [f for f in direct_http if not f.depends_on] + block_with_http
         if not all_to_rebuild:
             return
 
@@ -462,8 +476,21 @@ class FormScreen(BaseScreen):
             for field in all_to_rebuild:
                 self._rebuild_reference_widget(field)
 
-    def _rebuild_reference_widget(self, field_def: FieldDefinition) -> None:
+    def _rebuild_reference_widget(
+        self,
+        field_def: FieldDefinition,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Пересоздаёт виджет справочника (данные уже в кеше — без диалога)."""
+        # Зависимый справочник: если extra_params не передан явно,
+        # берём текущее значение родительского поля
+        if extra_params is None and field_def.depends_on:
+            parent_fw = self._field_widgets.get(field_def.depends_on)
+            if parent_fw:
+                val = parent_fw.get()
+                if val:
+                    extra_params = {field_def.depends_on: val}
+
         key = field_def.key
         old_fw = self._field_widgets.get(key)
         if old_fw is not None:
@@ -471,7 +498,7 @@ class FormScreen(BaseScreen):
         inner = self._field_inner_frames.get(key)
         if inner is None:
             return
-        new_items = self._load_reference(field_def)
+        new_items = self._load_reference(field_def, extra_params)
         fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
@@ -482,6 +509,49 @@ class FormScreen(BaseScreen):
                 widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditional_fields())
             else:
                 fw.bind_change(self._refresh_conditional_fields)
+        # Переподписываем зависимых детей, если этот виджет является родителем
+        self._subscribe_dependent_children(key, fw)
+
+    def _subscribe_dependent_children(self, parent_key: str, fw: "FieldWidget") -> None:
+        """Подписывает fw на перезагрузку зависимых справочников при смене его значения."""
+        children = self._dependent_fields.get(parent_key)
+        if not children:
+            return
+
+        def _on_change() -> None:
+            pfw = self._field_widgets.get(parent_key)
+            val = pfw.get() if pfw else ""
+            ep = {parent_key: val} if val else None
+            for child in children:
+                self._rebuild_reference_widget(child, ep)
+
+        widget = fw.widget
+        if isinstance(widget, ttk.Combobox):
+            widget.bind("<<ComboboxSelected>>", lambda *_: _on_change())
+        else:
+            fw.bind_change(_on_change)
+
+    def _setup_dependent_fields(self) -> None:
+        """
+        Строит таблицу зависимостей и подписывается на изменения родительских полей.
+        Зависимое поле объявляется через depends_on="parent_key" в FieldDefinition.
+        Вызывается один раз после рендера всех полей.
+        """
+        from collections import defaultdict
+        dep_map: Dict[str, List[FieldDefinition]] = defaultdict(list)
+        for f in self._form.fields:
+            if f.depends_on and f.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
+                dep_map[f.depends_on].append(f)
+
+        if not dep_map:
+            return
+
+        self._dependent_fields = dict(dep_map)
+
+        for parent_key, children in self._dependent_fields.items():
+            parent_fw = self._field_widgets.get(parent_key)
+            if parent_fw is not None:
+                self._subscribe_dependent_children(parent_key, parent_fw)
 
     def _reload_env_with_loading(
         self,
@@ -533,14 +603,22 @@ class FormScreen(BaseScreen):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _load_reference(self, field_def: FieldDefinition) -> List[Dict[str, Any]]:
+    def _load_reference(
+        self,
+        field_def: FieldDefinition,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         if field_def.field_type not in (FieldType.SELECT, FieldType.MULTISELECT):
             return []
         if field_def.reference is None:
             return []
+        # Зависимый справочник без значения родителя — возвращаем пустой список,
+        # не делаем запрос с незаполненным URL-шаблоном
+        if field_def.depends_on and not extra_params:
+            return []
         try:
             env = self.app.current_environment.get()
-            return self.app.reference_resolver.resolve(field_def.reference, env)
+            return self.app.reference_resolver.resolve(field_def.reference, env, extra_params)
         except Exception as exc:
             print(f"[FormScreen] Ошибка загрузки справочника '{field_def.key}': {exc}")
             return []
@@ -662,6 +740,8 @@ class FormScreen(BaseScreen):
                             lambda *_: self._refresh_conditional_fields())
             else:
                 fw.bind_change(self._refresh_conditional_fields)
+        # Переподписываем зависимых детей, если этот виджет является родителем
+        self._subscribe_dependent_children(key, fw)
 
         btn.config(state=tk.NORMAL, fg=theme.C["primary"])
 

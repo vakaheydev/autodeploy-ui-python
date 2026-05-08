@@ -10,6 +10,7 @@
   - [Добавить новую операцию](#добавить-новую-операцию)
   - [Строить поля через op_utils](#строить-поля-через-op_utils)
   - [Использовать справочник в операции](#использовать-справочник-в-операции)
+  - [Зависимый справочник](#зависимый-справочник)
 - [3. Модуль поиска](#3-модуль-поиска)
   - [Как работает поиск](#как-работает-поиск)
   - [Добавить новый раздел поиска](#добавить-новый-раздел-поиска)
@@ -23,6 +24,7 @@
   - [Поле типа BLOCK: группа вложенных полей](#поле-типа-block-группа-вложенных-полей)
   - [Plural-поле: дублирование по кнопке «+»](#plural-поле-дублирование-по-кнопке-)
   - [Условное поле](#условное-поле-показатьскрыть-при-выборе-другого)
+  - [Зависимый справочник (depends_on)](#зависимый-справочник-depends_on)
   - [Кастомные кнопки формы](#кастомные-кнопки-формы)
   - [Изменить существующую форму](#изменить-существующую-форму)
 - [5. Изменить обработку сабмита и конструирование JSON](#5-изменить-обработку-сабмита-и-конструирование-json)
@@ -120,19 +122,28 @@ class MyModuleScreen(BaseScreen):
         # ... контент
 ```
 
-**Шаг 2.** Добавить карточку модуля в `ui/screens/home_screen.py`:
+**Шаг 2.** Добавить запись в список `_MODULES` в `ui/screens/home_screen.py`:
 
 ```python
-self._module_card(
-    cards_wrap,
-    icon="🛠",
-    title="Мой модуль",
-    desc="Описание модуля",
-    screen_class=MyModuleScreen,
-)
+_MODULES: list[Tuple[str, str, str, str]] = [
+    ("🔍", "Поиск",         "Поиск по АПИ и приложениям",  "search"),
+    ("🚀", "AutoDeploy UI", "Деплой и управление АПИ",      "autodeploy"),
+    ("📋", "Операции",      "Прочие операции",               "operations"),
+    ("🛠", "Мой модуль",    "Описание модуля",               "my_module"),  # ← добавить
+]
 ```
 
-Карточка появится на главном экране автоматически — горизонтальный ряд подстраивается под количество карточек.
+**Шаг 3.** Добавить ветку в `_open_module()` в том же файле:
+
+```python
+def _open_module(self, key: str) -> None:
+    ...
+    elif key == "my_module":
+        from ui.screens.my_module_screen import MyModuleScreen
+        self.app.navigate_to(MyModuleScreen)
+```
+
+Карточка появится на главном экране автоматически — список `_MODULES` перебирается в `_build()`.
 
 ---
 
@@ -190,7 +201,6 @@ def _open(self, key: str) -> None:
 
 ```python
 import tkinter as tk
-from tkinter import ttk
 import ui.theme as theme
 from ui.screens.base_screen import BaseScreen
 
@@ -199,10 +209,15 @@ class MyOpScreen(BaseScreen):
         self._add_back_button()
         self._add_title("Моя операция")
         theme.separator(self, pady=8)
-        # ... контент
+
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=760)
+
+        # ... все поля и кнопки — в col, не в self
 ```
 
-Экран получает стандартный back-button и навигацию через `self.app`. Больше ничего менять не нужно — карточка появится автоматически.
+Экран получает стандартный back-button («← Назад» + «⌂ Домой») и навигацию через `self.app`. `_centered_col` обеспечивает ограничение ширины до 760 px на широких экранах. Больше ничего менять не нужно — карточка появится автоматически.
 
 ---
 
@@ -214,6 +229,7 @@ class MyOpScreen(BaseScreen):
 |---|---|---|
 | `env_row(parent, app)` | — | только отображение |
 | `ref_field(parent, label, on_pick)` | `tk.Label` | `.config(text=id, fg=theme.C["text"])` |
+| `dependent_ref_field(parent, label, on_pick)` | `(tk.Label, ttk.Button)` | label: `.config(text=id, ...)` / btn: `.config(state=tk.NORMAL)` |
 | `file_field(parent, label, file_type, height)` | `tk.Text` | `.get("1.0", tk.END).strip()` |
 | `text_field(parent, label)` | `tk.Entry` | `.get().strip()` |
 | `action_button(parent, text, command, state)` | `ttk.Button` | `.config(state=tk.NORMAL / tk.DISABLED)` |
@@ -221,7 +237,7 @@ class MyOpScreen(BaseScreen):
 **`ref_field`** — поле со строкой «— не выбрано —» и кнопкой «Выбрать». При выборе обновить метку вручную:
 
 ```python
-self._api_label = ref_field(self, "АПИ", self._pick_api)
+self._api_label = ref_field(col, "АПИ", self._pick_api)
 
 def _pick_api(self) -> None:
     api_id = ask_dictionary(self, "Выбрать АПИ", reference=..., environment=..., app=self.app)
@@ -232,7 +248,7 @@ def _pick_api(self) -> None:
 **`file_field`** — заголовок + кнопка «📂 Выбрать файл» + textarea. Кнопка открывает диалог и загружает содержимое файла; пользователь может также вставить или написать текст вручную:
 
 ```python
-self._cfg = file_field(self, "Конфигурация", file_type=".json", height=10)
+self._cfg = file_field(col, "Конфигурация", file_type=".json", height=10)
 
 def _run(self) -> None:
     raw = self._cfg.get("1.0", tk.END).strip()
@@ -266,11 +282,15 @@ class MyOpScreen(BaseScreen):
         self._add_title("Моя операция")
         theme.separator(self, pady=8)
 
-        env_row(self, self.app)
-        self._api_label   = ref_field(self, "АПИ", self._pick_api)
-        self._config_text = file_field(self, "Конфигурация (JSON)", file_type=".json")
-        theme.separator(self, pady=10)
-        self._run_btn = action_button(self, "Выполнить", self._run, state=tk.DISABLED)
+        _wrap = tk.Frame(self, bg=theme.C["bg"])
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        col = self._centered_col(_wrap, max_width=760)
+
+        env_row(col, self.app)
+        self._api_label   = ref_field(col, "АПИ", self._pick_api)
+        self._config_text = file_field(col, "Конфигурация (JSON)", file_type=".json")
+        theme.separator(col, pady=10)
+        self._run_btn = action_button(col, "Выполнить", self._run, state=tk.DISABLED)
 
     def _pick_api(self) -> None:
         api_id = ask_dictionary(
@@ -339,6 +359,116 @@ class MyOpScreen(BaseScreen):
 - Возвращают `None` при отмене / закрытии крестиком
 
 Пример готового экрана операции: `ui/screens/operations/api_op_screen.py`.
+
+---
+
+### Зависимый справочник
+
+Зависимый справочник — тот, который не может работать без дополнительного параметра. Классический пример: справочник методов АПИ требует `api_id` — только после выбора конкретного АПИ можно запросить его методы.
+
+#### Как устроено
+
+Три части:
+
+**1. `ReferenceConfig` с URL-шаблоном** (`handlers/http_reference_handler.py`):
+
+```python
+# В _URL_MAP используем {api_id} — плейсхолдер для подстановки
+"gravitee_api_methods": {
+    "test_int": "https://api.test-int.example.com/management/v2/apis/{api_id}/members",
+    "prod_int": "https://api.prod-int.example.com/management/v2/apis/{api_id}/members",
+    ...
+}
+```
+
+**2. `ReferenceConfig` с `required_params`** (документирует зависимость):
+
+```python
+_API_METHODS_REF = ReferenceConfig(
+    source="http",
+    resource="gravitee_api_methods",
+    value_key="id",
+    label_key="name",
+    required_params=("api_id",),  # документирует, что без этого параметра не работает
+)
+```
+
+**3. Передача `extra_params` при открытии диалога**:
+
+```python
+method_id = ask_dictionary(
+    self, "Выбрать метод",
+    reference=_API_METHODS_REF,
+    environment=self.app.current_environment.get(),
+    app=self.app,
+    extra_params={"api_id": self._selected_api},  # ← подставится в URL
+)
+```
+
+#### UI-паттерн: `dependent_ref_field`
+
+Для зависимого поля используйте `dependent_ref_field` вместо `ref_field`. Отличие одно: кнопка «Выбрать» изначально отключена. Функция возвращает кортеж `(label, button)`.
+
+```python
+from ui.screens.operations.op_utils import dependent_ref_field, ref_field
+
+def _build(self) -> None:
+    self._selected_api: Optional[str] = None
+    self._selected_method: Optional[str] = None
+    ...
+    self._api_label = ref_field(col, "АПИ", self._pick_api)
+
+    # Кнопка disabled — активируется после выбора АПИ
+    self._method_label, self._method_btn = dependent_ref_field(
+        col, "Метод АПИ", self._pick_method,
+    )
+
+def _pick_api(self) -> None:
+    api_id = ask_dictionary(self, "Выбрать АПИ", reference=_API_REF,
+                            environment=..., app=self.app)
+    if api_id is not None:
+        self._selected_api = api_id
+        self._api_label.config(text=api_id, fg=theme.C["text"])
+        # Сбрасываем зависимый выбор и разблокируем кнопку
+        self._selected_method = None
+        self._method_label.config(text="— не выбрано —", fg=theme.C["text_muted"])
+        self._method_btn.config(state=tk.NORMAL)
+
+def _pick_method(self) -> None:
+    method_id = ask_dictionary(
+        self, "Выбрать метод",
+        reference=_API_METHODS_REF,
+        environment=self.app.current_environment.get(),
+        app=self.app,
+        extra_params={"api_id": self._selected_api},
+    )
+    if method_id is not None:
+        self._selected_method = method_id
+        self._method_label.config(text=method_id, fg=theme.C["text"])
+```
+
+Полный рабочий пример: `ui/screens/operations/api_op_screen.py`.
+
+#### Кеширование зависимых справочников
+
+Кеш зависимого справочника хранит **отдельную запись для каждой комбинации параметров**. Ключ кеша формируется автоматически:
+
+```
+gravitee_api_methods__api_id=abc123  →  test_int  →  [методы АПИ abc123]
+gravitee_api_methods__api_id=abc123  →  prod_int  →  [методы АПИ abc123 в prod]
+gravitee_api_methods__api_id=xyz789  →  test_int  →  [методы АПИ xyz789]
+```
+
+По умолчанию кеш для зависимых справочников **отключён** (каждый раз делается HTTP-запрос). Включить — добавить запись в `config/reference_cache_config.py`:
+
+```python
+CACHE_TTL: Dict[str, int] = {
+    "gravitee_apis":        TTL_INFINITE,
+    "gravitee_api_methods": 300,   # ← кеш на 5 минут; TTL_INFINITE — бессрочно
+}
+```
+
+TTL задаётся для всего ресурса целиком (не для конкретного `api_id`).
 
 ---
 
@@ -550,6 +680,7 @@ FieldDefinition(
     default=None,             # начальное значение
     reference=None,           # ReferenceConfig для SELECT/MULTISELECT
     condition=None,           # lambda v: bool — предикат видимости поля
+    depends_on="",            # ключ поля-родителя для зависимого справочника
     file_type="",             # для FILE: расширение файла, напр. ".json"
     plural=False,             # включить кнопку "+" для дублирования поля
     plural_max=None,          # макс. кол-во экземпляров при plural=True
@@ -802,6 +933,84 @@ def validate(self, form_data):
             errors.append('"Тип канала" обязателен для platformeco')
     return errors
 ```
+
+---
+
+### Зависимый справочник (depends_on)
+
+`depends_on` связывает SELECT/MULTISELECT поле с другим полем формы: значение родителя передаётся как параметр при загрузке справочника. Типичный сценарий — сначала выбрать АПИ, затем загрузить список его ингрессов/методов/подписчиков.
+
+**Отличие от `condition`:** `condition` показывает или скрывает поле. `depends_on` управляет тем, *какие данные* загружаются в справочник — поле остаётся видимым всегда, просто пустым до выбора родителя.
+
+#### Как объявить
+
+```python
+# Родительское поле — обычный SELECT
+FieldDefinition(
+    key="api_id",
+    label="АПИ",
+    field_type=FieldType.SELECT,
+    reference=ReferenceConfig(
+        source="local",
+        resource="gravitee_apis.json",
+        value_key="id",
+        label_key="name",
+        search_keys=("name", "context_path", "id"),
+    ),
+),
+# Зависимое поле — загружается только после выбора родителя
+FieldDefinition(
+    key="ingresses",
+    label="Ингрессы",
+    field_type=FieldType.MULTISELECT,
+    reference=ReferenceConfig(
+        source="http",
+        resource="gravitee_api_ingresses",  # URL с {api_id}
+        value_key="id",
+        label_key="name",
+        required_params=("api_id",),        # документирует зависимость
+    ),
+    depends_on="api_id",                    # ← вся декларация зависимости
+),
+```
+
+`depends_on` содержит `key` родительского поля. Значение родителя (`value_key`) автоматически подставляется в URL-шаблон справочника при загрузке.
+
+#### URL-шаблон в http_reference_handler.py
+
+В `_URL_MAP` имя плейсхолдера должно совпадать с `depends_on`:
+
+```python
+"gravitee_api_ingresses": {
+    "test_int": "https://api.test-int.example.com/management/v2/apis/{api_id}/ingresses",
+    "prod_int": "https://api.prod-int.example.com/management/v2/apis/{api_id}/ingresses",
+    ...
+}
+```
+
+Если `depends_on="api_id"`, плейсхолдер — `{api_id}`.
+
+#### Поведение в UI
+
+| Состояние | Что происходит |
+|---|---|
+| Родитель не выбран | Поле «Ингрессы» пустое, запрос не делается |
+| Пользователь выбрал родителя | Автоматический HTTP-запрос с `api_id` в URL; список заполняется |
+| Пользователь сменил родителя | Список ингрессов сбрасывается и загружается заново |
+| Смена окружения, родитель выбран | Список перезагружается для нового окружения |
+| Смена окружения, родитель не выбран | Поле остаётся пустым |
+
+#### Кеширование
+
+По умолчанию не кешируется. Чтобы включить — добавить в `config/reference_cache_config.py`:
+
+```python
+CACHE_TTL: Dict[str, int] = {
+    "gravitee_api_ingresses": 120,  # секунды
+}
+```
+
+Кеш хранится отдельно для каждой пары `(api_id, environment)`.
 
 ---
 
@@ -1641,6 +1850,8 @@ MY_SERVICE_PASSWORD=secret
 | *(отсутствует)* | кеш отключён, каждый раз свежий HTTP-запрос |
 | `300` (любое число > 0) | кеш живёт N секунд, после — автоматически протухает |
 | `TTL_INFINITE` (`-1`) | кеш не протухает, обновляется только кнопкой ↻ |
+
+Для **зависимых справочников** (с `extra_params`) ключ кеша дополняется значениями параметров: `gravitee_api_methods__api_id=abc123`. TTL при этом задаётся одной записью для всего ресурса — подробнее см. [Зависимый справочник → Кеширование](#кеширование-зависимых-справочников).
 
 ---
 

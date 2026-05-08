@@ -37,8 +37,7 @@ class EnableIngressForm(BaseForm):
             FieldDefinition(
                 key="apis",
                 label="АПИ",
-                field_type=FieldType.MULTISELECT,
-                # TODO: заменить source на "http" когда будет готов эндпоинт
+                field_type=FieldType.SELECT,
                 reference=ReferenceConfig(
                     source="local",
                     resource="gravitee_apis.json",
@@ -46,6 +45,19 @@ class EnableIngressForm(BaseForm):
                     label_key="name",
                     search_keys=("name", "context_path", "id"),
                 ),
+            ),
+            FieldDefinition(
+                key="ingresses",
+                label="Ингрессы",
+                field_type=FieldType.MULTISELECT,
+                reference=ReferenceConfig(
+                    source="http",
+                    resource="gravitee_api_ingresses",
+                    value_key="id",
+                    label_key="name",
+                    required_params=("apis",),
+                ),
+                depends_on="apis",
             ),
             FieldDefinition(
                 key="ingress_type",
@@ -83,18 +95,17 @@ class EnableIngressForm(BaseForm):
 
     def validate(self, form_data: Dict[str, Any]) -> List[str]:
         errors = super().validate(form_data)
-        # Дополнительная валидация: тип канала обязателен для platformeco
         if form_data.get("ingress_type") == "platformeco":
             if not form_data.get("channel_type"):
                 errors.append('"Тип канала" обязателен для типа ингресса platformeco')
-        if not form_data.get("apis"):
-            errors.append('Необходимо выбрать хотя бы одно АПИ')
+        if not form_data.get("ingresses"):
+            errors.append('Необходимо выбрать хотя бы один ингресс')
         return errors
 
     def build_payload(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        # TODO: привести к формату реального API
         payload: Dict[str, Any] = {
-            "apis":        form_data.get("apis", []),
+            "apiId":       form_data.get("apis", ""),
+            "ingresses":   form_data.get("ingresses", []),
             "ingressType": form_data.get("ingress_type", ""),
         }
         if form_data.get("ingress_type") == "platformeco":

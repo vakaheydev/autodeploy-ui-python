@@ -5,14 +5,17 @@
 и пакует его в parent через pack(fill=X). Возвращает виджет для чтения значения.
 
 Публичное API:
-    env_row(parent, app)                       — строка текущего окружения (read-only)
-    ref_field(parent, label, on_pick) → Label  — поле выбора из справочника
-    file_field(parent, label, ...) → Text      — выбор файла + textarea для ручного ввода
-    text_field(parent, label) → Entry          — однострочный ввод
-    action_button(parent, text, command) → Button — кнопка основного действия
+    env_row(parent, app)                                — строка текущего окружения (read-only)
+    ref_field(parent, label, on_pick) → Label           — поле выбора из справочника
+    dependent_ref_field(parent, label, on_pick)
+        → (Label, Button)                               — поле справочника, зависимого от другого
+                                                          выбора; кнопка изначально отключена
+    file_field(parent, label, ...) → Text               — выбор файла + textarea для ручного ввода
+    text_field(parent, label) → Entry                   — однострочный ввод
+    action_button(parent, text, command) → Button       — кнопка основного действия
 """
 from tkinter import filedialog, ttk
-from typing import Callable
+from typing import Callable, Tuple
 import tkinter as tk
 
 import ui.theme as theme
@@ -65,6 +68,45 @@ def ref_field(
     ttk.Button(row, text="Выбрать", style="Ghost.TButton", command=on_pick).pack(side=tk.RIGHT)
 
     return value_label
+
+
+def dependent_ref_field(
+    parent: tk.Widget,
+    label: str,
+    on_pick: Callable[[], None],
+) -> Tuple[tk.Label, ttk.Button]:
+    """
+    Поле выбора из справочника, зависимого от другого значения (напр. методы конкретного АПИ).
+
+    Отличие от ref_field: кнопка «Выбрать» изначально отключена.
+    Включить после того, как значение зависимости будет выбрано:
+        btn.config(state=tk.NORMAL)
+    Сбросить при смене зависимости:
+        btn.config(state=tk.DISABLED)
+        lbl.config(text="— не выбрано —", fg=theme.C["text_muted"])
+
+    Возвращает (label, button).
+    """
+    card = theme.card(parent, pady=0)
+    tk.Label(
+        card, text=label,
+        font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["text_muted"],
+    ).pack(anchor=tk.W, padx=14, pady=(10, 4))
+
+    row = tk.Frame(card, bg=theme.C["surface"])
+    row.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+    value_label = tk.Label(
+        row, text="— не выбрано —",
+        font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_muted"],
+        anchor="w",
+    )
+    value_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    btn = ttk.Button(row, text="Выбрать", style="Ghost.TButton", command=on_pick, state=tk.DISABLED)
+    btn.pack(side=tk.RIGHT)
+
+    return value_label, btn
 
 
 def file_field(
