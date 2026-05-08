@@ -248,6 +248,12 @@ class _SearchableSelectWidget:
             return self._values[self._selected_idx]
         return ""
 
+    def get_item_field(self, field: str) -> str:
+        """Возвращает произвольное поле из выбранного элемента (для depends_on_field)."""
+        if self._selected_idx is None or not self._items:
+            return ""
+        return str(self._items[self._selected_idx].get(field, ""))
+
 
 class _BlockWidget:
     """
@@ -507,14 +513,22 @@ class FieldWidget:
         get_fn: Callable[[], Any],
         bind_change_fn: Optional[Callable[[Callable[[], None]], None]] = None,
         set_fn: Optional[Callable[[Any], None]] = None,
+        get_extra_fn: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self.widget = widget
         self._get_fn = get_fn
         self._bind_change_fn = bind_change_fn
         self._set_fn = set_fn
+        self._get_extra_fn = get_extra_fn
 
     def get(self) -> Any:
         return self._get_fn()
+
+    def get_extra(self, field: str) -> Any:
+        """Возвращает поле из выбранного item (для depends_on_field). Fallback — get()."""
+        if self._get_extra_fn is not None:
+            return self._get_extra_fn(field)
+        return self.get()
 
     def set(self, value: Any) -> None:
         """Программно устанавливает значение поля. Игнорируется если set_fn не задана."""
@@ -663,7 +677,8 @@ class FieldFactory:
         )
         if field.default is not None:
             w.set_value(str(field.default))
-        return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value)
+        return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value,
+                           get_extra_fn=w.get_item_field)
 
     def _create_multiselect(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]

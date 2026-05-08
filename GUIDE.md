@@ -449,6 +449,8 @@ def _pick_method(self) -> None:
 
 Полный рабочий пример: `ui/screens/operations/api_op_screen.py`.
 
+> **В формах** зависимый справочник объявляется декларативно через `depends_on` / `depends_on_field` в `FieldDefinition` — см. [раздел 4 → Зависимый справочник](#зависимый-справочник-depends_on).
+
 #### Кеширование зависимых справочников
 
 Кеш зависимого справочника хранит **отдельную запись для каждой комбинации параметров**. Ключ кеша формируется автоматически:
@@ -681,6 +683,7 @@ FieldDefinition(
     reference=None,           # ReferenceConfig для SELECT/MULTISELECT
     condition=None,           # lambda v: bool — предикат видимости поля
     depends_on="",            # ключ поля-родителя для зависимого справочника
+    depends_on_field="",      # поле из item родителя для URL (по умолч. — value_key родителя)
     file_type="",             # для FILE: расширение файла, напр. ".json"
     plural=False,             # включить кнопку "+" для дублирования поля
     plural_max=None,          # макс. кол-во экземпляров при plural=True
@@ -942,10 +945,10 @@ def validate(self, form_data):
 
 **Отличие от `condition`:** `condition` показывает или скрывает поле. `depends_on` управляет тем, *какие данные* загружаются в справочник — поле остаётся видимым всегда, просто пустым до выбора родителя.
 
-#### Как объявить
+#### Простой случай: value_key родителя совпадает с параметром URL
 
 ```python
-# Родительское поле — обычный SELECT
+# Родитель хранит id → тот же id нужен в URL
 FieldDefinition(
     key="api_id",
     label="АПИ",
@@ -953,32 +956,62 @@ FieldDefinition(
     reference=ReferenceConfig(
         source="local",
         resource="gravitee_apis.json",
-        value_key="id",
+        value_key="id",          # form_data["api_id"] = id
         label_key="name",
         search_keys=("name", "context_path", "id"),
     ),
 ),
-# Зависимое поле — загружается только после выбора родителя
 FieldDefinition(
     key="ingresses",
     label="Ингрессы",
     field_type=FieldType.MULTISELECT,
     reference=ReferenceConfig(
         source="http",
-        resource="gravitee_api_ingresses",  # URL с {api_id}
+        resource="gravitee_api_ingresses",
         value_key="id",
         label_key="name",
-        required_params=("api_id",),        # документирует зависимость
     ),
-    depends_on="api_id",                    # ← вся декларация зависимости
+    depends_on="api_id",   # в URL подставится form_data["api_id"] → id
 ),
 ```
 
-`depends_on` содержит `key` родительского поля. Значение родителя (`value_key`) автоматически подставляется в URL-шаблон справочника при загрузке.
+#### Когда value_key и параметр URL — разные поля
+
+Частый случай: родитель хранит `context_path` (это нужно в payload), но URL ингрессов требует числовой `id`. Используйте `depends_on_field`:
+
+```python
+FieldDefinition(
+    key="api_id",
+    label="АПИ",
+    field_type=FieldType.SELECT,
+    reference=ReferenceConfig(
+        source="local",
+        resource="gravitee_apis.json",
+        value_key="context_path",   # form_data["api_id"] = context_path (для payload)
+        label_key="name",
+        search_keys=("name", "context_path", "id"),
+    ),
+),
+FieldDefinition(
+    key="ingresses",
+    label="Ингрессы",
+    field_type=FieldType.MULTISELECT,
+    reference=ReferenceConfig(
+        source="http",
+        resource="gravitee_api_ingresses",
+        value_key="id",
+        label_key="name",
+    ),
+    depends_on="api_id",        # родительское поле
+    depends_on_field="id",      # ← в URL подставляется "id" из item, а не value_key
+),
+```
+
+`depends_on_field` — имя любого поля из объекта выбранного элемента. Если не задан — используется `value_key` родителя (поведение по умолчанию).
 
 #### URL-шаблон в http_reference_handler.py
 
-В `_URL_MAP` имя плейсхолдера должно совпадать с `depends_on`:
+Плейсхолдер в URL совпадает с `depends_on` (ключом родительского поля):
 
 ```python
 "gravitee_api_ingresses": {
@@ -988,15 +1021,15 @@ FieldDefinition(
 }
 ```
 
-Если `depends_on="api_id"`, плейсхолдер — `{api_id}`.
+Если `depends_on="api_id"` — плейсхолдер `{api_id}`. В него подставится либо `value_key`, либо значение поля из `depends_on_field`.
 
 #### Поведение в UI
 
 | Состояние | Что происходит |
 |---|---|
-| Родитель не выбран | Поле «Ингрессы» пустое, запрос не делается |
-| Пользователь выбрал родителя | Автоматический HTTP-запрос с `api_id` в URL; список заполняется |
-| Пользователь сменил родителя | Список ингрессов сбрасывается и загружается заново |
+| Родитель не выбран | Поле пустое, запрос не делается |
+| Пользователь выбрал родителя | HTTP-запрос с параметром в URL; список заполняется |
+| Пользователь сменил родителя | Список сбрасывается и загружается заново |
 | Смена окружения, родитель выбран | Список перезагружается для нового окружения |
 | Смена окружения, родитель не выбран | Поле остаётся пустым |
 
@@ -1010,7 +1043,7 @@ CACHE_TTL: Dict[str, int] = {
 }
 ```
 
-Кеш хранится отдельно для каждой пары `(api_id, environment)`.
+Кеш хранится отдельно для каждой пары `(значение_параметра, environment)`.
 
 ---
 

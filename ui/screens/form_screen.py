@@ -483,11 +483,14 @@ class FormScreen(BaseScreen):
     ) -> None:
         """Пересоздаёт виджет справочника (данные уже в кеше — без диалога)."""
         # Зависимый справочник: если extra_params не передан явно,
-        # берём текущее значение родительского поля
+        # берём нужное поле из текущего выбранного элемента родителя
         if extra_params is None and field_def.depends_on:
             parent_fw = self._field_widgets.get(field_def.depends_on)
             if parent_fw:
-                val = parent_fw.get()
+                if field_def.depends_on_field:
+                    val = parent_fw.get_extra(field_def.depends_on_field)
+                else:
+                    val = parent_fw.get()
                 if val:
                     extra_params = {field_def.depends_on: val}
 
@@ -520,9 +523,15 @@ class FormScreen(BaseScreen):
 
         def _on_change() -> None:
             pfw = self._field_widgets.get(parent_key)
-            val = pfw.get() if pfw else ""
-            ep = {parent_key: val} if val else None
+            if pfw is None:
+                return
             for child in children:
+                # depends_on_field: берём конкретное поле из item, а не value_key
+                if child.depends_on_field:
+                    val = pfw.get_extra(child.depends_on_field)
+                else:
+                    val = pfw.get()
+                ep = {parent_key: val} if val else None
                 self._rebuild_reference_widget(child, ep)
 
         widget = fw.widget

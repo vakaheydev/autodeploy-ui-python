@@ -70,4 +70,5 @@ class FieldDefinition:
     plural:      bool                      = False  # включить кнопку "+" для дублирования
     plural_max:  Optional[int]             = None   # макс. кол-во экземпляров (None = без лимита)
     block_fields: List['FieldDefinition']  = dc_field(default_factory=list)  # вложенные поля для BLOCK
-    depends_on:  str                       = ""    # ключ поля, чьё значение нужно как extra_params
+    depends_on:       str                   = ""    # ключ поля-родителя для зависимого справочника
+    depends_on_field: str                   = ""    # поле из item родителя (по умолч. — value_key)
