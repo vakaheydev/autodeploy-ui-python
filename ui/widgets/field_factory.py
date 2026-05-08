@@ -357,6 +357,39 @@ class _BlockWidget:
                 self._sub_plural_last[sub_field.key] = outer
 
         self._setup_conditions()
+        self._setup_internal_dependencies()
+
+    def _setup_internal_dependencies(self) -> None:
+        """Подписывает родительские sub-виджеты на перезагрузку зависимых sub-виджетов.
+        Обрабатывает только зависимости внутри одного BLOCK (родитель — sub-поле того же блока)."""
+        from collections import defaultdict
+        dep_map: Dict[str, List[FieldDefinition]] = defaultdict(list)
+        for sf in self._sub_fields:
+            if sf.depends_on and sf.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
+                if sf.depends_on in {s.key for s in self._sub_fields}:
+                    dep_map[sf.depends_on].append(sf)
+        if not dep_map:
+            return
+
+        for parent_key, children in dep_map.items():
+            parent_fw = self._sub_widgets.get(parent_key)
+            if parent_fw is None:
+                continue
+
+            def _make_handler(pk: str, clist: List[FieldDefinition]) -> Callable[[], None]:
+                def _on_change() -> None:
+                    pfw = self._sub_widgets.get(pk)
+                    if pfw is None:
+                        return
+                    for child in clist:
+                        val = (pfw.get_extra(child.depends_on_field)
+                               if child.depends_on_field else pfw.get())
+                        ep: Optional[Dict[str, Any]] = {pk: val} if val else None
+                        new_items = self._ref_loader(child, ep)  # type: ignore[call-arg]
+                        self.refresh_sub_ref(child.key, new_items)
+                return _on_change
+
+            parent_fw.bind_change(_make_handler(parent_key, children))
 
     def _add_sub_plural(self, base_key: str) -> None:
         base_def = next(f for f in self._sub_fields if f.key == base_key)
@@ -503,6 +536,12 @@ class _BlockWidget:
                                    on_refresh=self._on_refresh_cb)
         new_fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
         self._sub_widgets[sub_key] = new_fw
+        # Переподписываем новый виджет на пересчёт условий (если в BLOCK есть условные поля)
+        if any(f.condition for f in self._sub_fields):
+            if isinstance(new_fw.widget, ttk.Combobox):
+                new_fw.widget.bind("<<ComboboxSelected>>", lambda *_: self._refresh_conditions())
+            else:
+                new_fw.bind_change(self._refresh_conditions)
 
     def get(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
