@@ -166,11 +166,35 @@ class CategoryScreen(BaseScreen):
         search_entry.bind("<FocusIn>",  _on_focus_in)
         search_entry.bind("<FocusOut>", _on_focus_out)
 
+        # --- Прокручиваемый список форм ---
+        scroll_container = tk.Frame(self._content, bg=theme.C["bg"])
+        scroll_container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(scroll_container, bg=theme.C["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+
+        forms_frame = tk.Frame(canvas, bg=theme.C["bg"])
+        forms_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        _win = canvas.create_window((0, 0), window=forms_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(_win, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+        )
+
         # --- Карточки форм с фильтрацией ---
         form_rows: list[tuple] = []   # (border_frame, form)
 
         for form in forms:
-            border = self._form_row(form)
+            border = self._form_row(forms_frame, form)
             form_rows.append((border, form))
 
         def _apply_filter(*_):
@@ -186,8 +210,8 @@ class CategoryScreen(BaseScreen):
 
         search_var.trace_add("write", _apply_filter)
 
-    def _form_row(self, form) -> tk.Frame:
-        border = tk.Frame(self._content, bg=theme.C["border"])
+    def _form_row(self, parent: tk.Frame, form) -> tk.Frame:
+        border = tk.Frame(parent, bg=theme.C["border"])
         border.pack(fill=tk.X, pady=3, padx=2)
         row = tk.Frame(border, bg=theme.C["surface"], cursor="hand2")
         row.pack(fill=tk.BOTH, padx=1, pady=1)
