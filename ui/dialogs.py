@@ -910,6 +910,7 @@ def show_loading(parent: tk.Widget, text: str = "Загрузка...") -> Callab
 
     _center(dlg)
     dlg.deiconify()
+    dlg.update()
     dlg.grab_set()
 
     _idx = [0]

@@ -1,10 +1,13 @@
 """
 MainScreen — главный экран приложения.
 """
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from typing import List, Tuple
 
+from ui.dialogs import show_loading
 import ui.theme as theme
 from config.environments import GRAVITEE_REPO_PATH_KEY
 from ui.screens.base_screen import BaseScreen
@@ -139,6 +142,15 @@ class MainScreen(BaseScreen):
         # --- Статус ---
         self._status_var = tk.StringVar(value=self._status_text())
         ttk.Label(col, textvariable=self._status_var, style="Muted.TLabel").pack(pady=(6, 0))
+
+        close = show_loading(self, "Обновление веток...")
+
+        def _worker() -> None:
+            branch = self._get_branch_name()
+            time.sleep(3)
+            self.after(0, lambda: (self._branch_var.set(branch), close()))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Сегментированные кнопки

@@ -1550,22 +1550,51 @@ def ask_branch_name(parent: tk.Widget) -> Optional[str]:
 `show_loading` показывает немодальное окно с braille-спиннером (`⠋⠙⠹…`) и текстом.
 Возвращает функцию `close()`, безопасную для вызова из фонового потока.
 
+> **Важно:** спиннер анимируется через `after(80, ...)` — колбэки Tkinter.
+> Если главный поток заблокирован (например, `time.sleep` или синхронный HTTP-запрос),
+> event loop не работает и спиннер «замирает». Вся тяжёлая работа **обязана** выполняться
+> в `threading.Thread`.
+
+#### Базовый паттерн
+
 ```python
-from ui.dialogs import show_loading
 import threading
+from ui.dialogs import show_loading
 
-def _run(self) -> None:
-    close = show_loading(self, "Отправка запроса...")
+def _on_refresh(self) -> None:
+    close = show_loading(self, "Загрузка данных...")
 
-    def _work():
+    def _worker() -> None:
         try:
-            result = self._do_request()
+            result = self._fetch_data()       # блокирующий вызов — в потоке
+        except Exception as exc:
+            self.after(0, lambda: self._on_error(exc))
+            return
         finally:
-            close()          # можно вызывать из потока
-        self.after(0, lambda: self._on_done(result))
+            close()                           # закрывает окно из потока — безопасно
 
-    threading.Thread(target=_work, daemon=True).start()
+        self.after(0, lambda: self._on_done(result))  # обновление UI — в главном потоке
+
+    threading.Thread(target=_worker, daemon=True).start()
 ```
+
+#### Паттерн «обновить переменную и закрыть»
+
+Если нужно только обновить `StringVar` / метку и закрыть диалог — компактная форма:
+
+```python
+def _refresh_branch(self) -> None:
+    close = show_loading(self, "Обновление ветки...")
+
+    def _worker() -> None:
+        branch = self._get_branch_name()     # git-команда в потоке
+        self.after(0, lambda: (self._branch_var.set(branch), close()))
+
+    threading.Thread(target=_worker, daemon=True).start()
+```
+
+`lambda: (a, b)` — кортеж вычисляет оба выражения последовательно: сначала обновляет
+переменную, потом закрывает окно.
 
 | Параметр | Тип | По умолчанию | Описание |
 |---|---|---|---|
@@ -1575,6 +1604,7 @@ def _run(self) -> None:
 - Пользователь не может закрыть окно вручную — кнопка «×» отключена.
 - `close()` идемпотентна — повторный вызов безопасен.
 - Внутри использует `root.after(0, ...)` для уничтожения виджета на главном потоке.
+- **Никогда** не вызывайте `time.sleep` или синхронные сетевые запросы на главном потоке рядом с `show_loading` — спиннер остановится.
 
 ---
 
