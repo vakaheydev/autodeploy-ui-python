@@ -4,7 +4,6 @@ FormScreen — экран заполнения и отправки формы.
 в зависимости от предиката condition(values_dict) -> bool.
 """
 import json
-import threading
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -14,7 +13,7 @@ import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
-from ui.dialogs import ask_ticket_id, show_error, show_info, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
+from ui.dialogs import ask_ticket_id, show_error, show_info, show_loading, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -171,51 +170,19 @@ class FormScreen(BaseScreen):
         return result
 
     def _render_with_loading(self, env: str, to_load: List[FieldDefinition]) -> None:
-        """
-        Показывает окно загрузки, прогревает кеш в фоне для каждого
-        HTTP-справочника, затем рендерит поля на главном потоке.
-        """
-        loading = tk.Toplevel(self)
-        loading.withdraw()
-        loading.title("Загрузка данных")
-        loading.configure(bg=theme.C["bg"])
-        loading.resizable(False, False)
-        loading.transient(self.winfo_toplevel())
-
-        pad = tk.Frame(loading, bg=theme.C["bg"])
-        pad.pack(padx=28, pady=(18, 14))
-
-        tk.Label(
-            pad, text="Загрузка справочников…",
-            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
-        ).pack(pady=(0, 10))
-
-        _label_var = tk.StringVar(value="")
-        tk.Label(
-            pad, textvariable=_label_var,
-            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
-            width=36,
-        ).pack()
-
-        self._center_dialog(loading)
-
+        """Прогревает кеш HTTP-справочников в фоне, затем рендерит поля."""
         def _worker() -> None:
             for field in to_load:
-                self.after(0, lambda lbl=field.label: _label_var.set(lbl))
                 try:
                     self.app.reference_resolver.resolve(field.reference, env)  # type: ignore[arg-type]
                 except Exception as exc:
                     print(f"[FormScreen] Ошибка предзагрузки '{field.key}': {exc}")
-            self.after(0, _finish)
 
-        def _finish() -> None:
-            try:
-                loading.destroy()
-            except Exception:
-                pass
-            self._render_fields(self._fields_frame)
-
-        threading.Thread(target=_worker, daemon=True).start()
+        show_loading(
+            self, "Загрузка справочников…",
+            worker=_worker,
+            on_done=lambda _: self._render_fields(self._fields_frame),
+        )
 
     def _route_mousewheel(self, event: tk.Event) -> None:
         """
@@ -593,49 +560,19 @@ class FormScreen(BaseScreen):
         to_load: List[FieldDefinition],
         all_http: List[FieldDefinition],
     ) -> None:
-        """Показывает диалог загрузки, грузит промахи кеша, затем перестраивает все HTTP-поля."""
-        loading = tk.Toplevel(self)
-        loading.withdraw()
-        loading.title("Загрузка данных")
-        loading.configure(bg=theme.C["bg"])
-        loading.resizable(False, False)
-        loading.transient(self.winfo_toplevel())
-
-        pad = tk.Frame(loading, bg=theme.C["bg"])
-        pad.pack(padx=28, pady=(18, 14))
-
-        tk.Label(
-            pad, text="Загрузка справочников…",
-            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
-        ).pack(pady=(0, 10))
-
-        _label_var = tk.StringVar(value="")
-        tk.Label(
-            pad, textvariable=_label_var,
-            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
-            width=36,
-        ).pack()
-
-        self._center_dialog(loading)
-
+        """Грузит промахи кеша в фоне, затем перестраивает все HTTP-поля."""
         def _worker() -> None:
             for field in to_load:
-                self.after(0, lambda lbl=field.label: _label_var.set(lbl))
                 try:
                     self.app.reference_resolver.resolve(field.reference, env)  # type: ignore[arg-type]
                 except Exception as exc:
                     print(f"[FormScreen] Ошибка предзагрузки '{field.key}': {exc}")
-            self.after(0, _finish)
 
-        def _finish() -> None:
-            try:
-                loading.destroy()
-            except Exception:
-                pass
-            for field in all_http:
-                self._rebuild_reference_widget(field)
-
-        threading.Thread(target=_worker, daemon=True).start()
+        show_loading(
+            self, "Загрузка справочников…",
+            worker=_worker,
+            on_done=lambda _: [self._rebuild_reference_widget(f) for f in all_http],
+        )
 
     def _load_reference(
         self,
@@ -663,55 +600,33 @@ class FormScreen(BaseScreen):
         resource = field_def.reference.resource
         env = self.app.current_environment.get()
 
-        # Показываем дату последнего обновления и просим подтверждение
         cached_ts = self.app.reference_cache.get_timestamp(resource, env)
         if not show_refresh_confirm(self, field_def.label, {env: cached_ts}):
-            return  # пользователь отменил
+            return
 
         btn.config(state=tk.DISABLED, fg=theme.C["text_muted"])
 
-        # Окно «В процессе»
-        loading = tk.Toplevel(self)
-        loading.withdraw()
-        loading.title("Обновление справочника")
-        loading.configure(bg=theme.C["bg"])
-        loading.resizable(False, False)
-        loading.transient(self.winfo_toplevel())
+        def _worker() -> List[Dict[str, Any]]:
+            self.app.reference_cache.invalidate(resource, env)
+            ref = field_def.reference
+            assert ref is not None
+            return self.app.reference_resolver.resolve(ref, env)
 
-        tk.Label(
-            loading,
-            text=f"Обновляется справочник\n«{field_def.label}»…",
-            font=theme.F["body"],
-            bg=theme.C["bg"], fg=theme.C["text"],
-            padx=28, pady=20,
-        ).pack()
-        self._center_dialog(loading)
-
-        def _worker():
-            try:
-                self.app.reference_cache.invalidate(resource, env)
-                ref = field_def.reference
-                assert ref is not None
-                new_items = self.app.reference_resolver.resolve(ref, env)
-                error = None
-            except Exception as exc:
-                new_items = []
-                error = str(exc)
-            self.after(0, lambda: self._finish_reload(field_def, btn, new_items, loading, error))
-
-        threading.Thread(target=_worker, daemon=True).start()
+        show_loading(
+            self, f"Обновляется «{field_def.label}»…",
+            worker=_worker,
+            on_done=lambda items: self._finish_reload(field_def, btn, items, None),
+            on_error=lambda exc: self._finish_reload(field_def, btn, [], str(exc)),
+        )
 
     def _finish_reload(
         self,
         field_def: FieldDefinition,
         btn: tk.Button,
         new_items: List[Dict[str, Any]],
-        loading: tk.Toplevel,
         error: str | None,
     ) -> None:
-        """Вызывается в главном потоке: пересоздаёт виджет, закрывает окна."""
-        loading.destroy()
-
+        """Вызывается в главном потоке: пересоздаёт виджет справочника."""
         if error:
             btn.config(state=tk.NORMAL, fg=theme.C["primary"])
             show_error(
@@ -827,30 +742,39 @@ class FormScreen(BaseScreen):
                 self._set_status("", "muted")
                 return
 
-        self._set_status("Отправка...", "muted")
-        self.update_idletasks()
+        def _worker():
+            return self.app.submit_service.submit(self._form, form_data, environment)
 
-        result = self.app.submit_service.submit(self._form, form_data, environment)
+        def _done(result) -> None:
+            if result.success:
+                self._set_status(f"✓  {result.message}", "success")
+                fields_snapshot = {f.key: f.field_type.value for f in self._form.fields}
+                self.app.run_storage.save(
+                    form_id=self._form.form_id,
+                    environment=environment,
+                    form_data=form_data,
+                    fields_snapshot=fields_snapshot,
+                )
+                from ui.screens.result_screen import ResultScreen
+                self.app.navigate_to(
+                    ResultScreen,
+                    form=self._form,
+                    environment=environment,
+                    initial_response=result.raw_response,
+                )
+            else:
+                self._set_status(f"✗  {result.message.splitlines()[0]}", "error")
+                show_error(self, "Ошибка отправки", result.message)
 
-        if result.success:
-            self._set_status(f"✓  {result.message}", "success")
-            fields_snapshot = {f.key: f.field_type.value for f in self._form.fields}
-            self.app.run_storage.save(
-                form_id=self._form.form_id,
-                environment=environment,
-                form_data=form_data,
-                fields_snapshot=fields_snapshot,
-            )
-            from ui.screens.result_screen import ResultScreen
-            self.app.navigate_to(
-                ResultScreen,
-                form=self._form,
-                environment=environment,
-                initial_response=result.raw_response,
-            )
-        else:
-            self._set_status(f"✗  {result.message.splitlines()[0]}", "error")
-            show_error(self, "Ошибка отправки", result.message)
+        show_loading(
+            self, "Отправка…",
+            worker=_worker,
+            on_done=_done,
+            on_error=lambda exc: (
+                self._set_status(f"✗  {exc}", "error"),
+                show_error(self, "Ошибка отправки", str(exc)),
+            ),
+        )
 
     def _preview_payload(self) -> None:
         form_data = self._collect_form_data()
@@ -981,67 +905,26 @@ class FormScreen(BaseScreen):
 
         environment = self.app.current_environment.get()
 
-        # Диалог «В процессе»
-        progress = tk.Toplevel(self)
-        progress.withdraw()
-        progress.title("Подтягиваем данные")
-        progress.configure(bg=theme.C["bg"])
-        progress.resizable(False, False)
-        progress.transient(self.winfo_toplevel())
-        progress.protocol("WM_DELETE_WINDOW", lambda: None)  # запрет закрытия
+        def _worker():
+            return self._form.fetch_from_itsm(environment, ticket_id)
 
-        pad = tk.Frame(progress, bg=theme.C["bg"])
-        pad.pack(padx=32, pady=(20, 16))
-
-        tk.Label(
-            pad, text="⬇",
-            font=("Segoe UI", 24), bg=theme.C["bg"], fg=theme.C["primary"],
-        ).pack(pady=(0, 6))
-
-        tk.Label(
-            pad, text="Подтягиваем данные из заявки…",
-            font=theme.F["h3"], bg=theme.C["bg"], fg=theme.C["text"],
-        ).pack()
-
-        tk.Label(
-            pad, text="Пожалуйста, подождите",
-            font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
-        ).pack(pady=(4, 0))
-
-        self._center_dialog(progress)
-
-        def _worker() -> None:
-            try:
-                data = self._form.fetch_from_itsm(environment, ticket_id)
-                self.after(0, lambda: _finish(data, None))
-            except Exception as exc:
-                self.after(0, lambda: _finish(None, str(exc)))
-
-        def _finish(data, error: str | None) -> None:
-            try:
-                progress.destroy()
-            except Exception:
-                pass
-            if error:
-                show_error(self, "Ошибка получения данных", error)
-                return
+        def _done(data) -> None:
             filled = self.apply_form_data(data or {})
             if filled:
                 fields_text = "\n".join(f"  • {k}" for k in filled)
-                show_info(
-                    self,
-                    "Данные получены",
-                    f"Данные из заявки успешно подтянуты.\n\nЗаполнено полей: {len(filled)}\n{fields_text}",
-                )
+                show_info(self, "Данные получены",
+                          f"Данные из заявки успешно подтянуты.\n\nЗаполнено полей: {len(filled)}\n{fields_text}")
             else:
-                show_info(
-                    self,
-                    "Данные получены",
-                    "Ответ получен, но ни одно из полей формы не было обновлено.\n"
-                    "Проверьте, что ключи в ответе совпадают с ключами полей формы.",
-                )
+                show_info(self, "Данные получены",
+                          "Ответ получен, но ни одно из полей формы не было обновлено.\n"
+                          "Проверьте, что ключи в ответе совпадают с ключами полей формы.")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        show_loading(
+            self, "Подтягиваем данные из заявки…",
+            worker=_worker,
+            on_done=_done,
+            on_error=lambda exc: show_error(self, "Ошибка получения данных", str(exc)),
+        )
 
     def apply_form_data(self, data: Dict[str, Any]) -> List[str]:
         """
@@ -1102,16 +985,6 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Утилиты
     # ------------------------------------------------------------------
-
-    def _center_dialog(self, dlg: tk.Toplevel) -> None:
-        """Вычисляет размер диалога, центрирует его относительно главного окна и показывает."""
-        dlg.update_idletasks()
-        root = self.winfo_toplevel()
-        x = root.winfo_rootx() + (root.winfo_width()  - dlg.winfo_reqwidth())  // 2
-        y = root.winfo_rooty() + (root.winfo_height() - dlg.winfo_reqheight()) // 2
-        dlg.geometry(f"+{x}+{y}")
-        dlg.deiconify()
-        dlg.grab_set()
 
     def _set_status(self, text: str, kind: str = "muted") -> None:
         self._status_var.set(text)
