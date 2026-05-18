@@ -176,11 +176,11 @@ class FormScreen(BaseScreen):
         HTTP-справочника, затем рендерит поля на главном потоке.
         """
         loading = tk.Toplevel(self)
+        loading.withdraw()
         loading.title("Загрузка данных")
         loading.configure(bg=theme.C["bg"])
         loading.resizable(False, False)
         loading.transient(self.winfo_toplevel())
-        loading.grab_set()
 
         pad = tk.Frame(loading, bg=theme.C["bg"])
         pad.pack(padx=28, pady=(18, 14))
@@ -197,7 +197,7 @@ class FormScreen(BaseScreen):
             width=36,
         ).pack()
 
-        loading.update()
+        self._center_dialog(loading)
 
         def _worker() -> None:
             for field in to_load:
@@ -595,11 +595,11 @@ class FormScreen(BaseScreen):
     ) -> None:
         """Показывает диалог загрузки, грузит промахи кеша, затем перестраивает все HTTP-поля."""
         loading = tk.Toplevel(self)
+        loading.withdraw()
         loading.title("Загрузка данных")
         loading.configure(bg=theme.C["bg"])
         loading.resizable(False, False)
         loading.transient(self.winfo_toplevel())
-        loading.grab_set()
 
         pad = tk.Frame(loading, bg=theme.C["bg"])
         pad.pack(padx=28, pady=(18, 14))
@@ -616,7 +616,7 @@ class FormScreen(BaseScreen):
             width=36,
         ).pack()
 
-        loading.update()
+        self._center_dialog(loading)
 
         def _worker() -> None:
             for field in to_load:
@@ -672,18 +672,20 @@ class FormScreen(BaseScreen):
 
         # Окно «В процессе»
         loading = tk.Toplevel(self)
+        loading.withdraw()
         loading.title("Обновление справочника")
+        loading.configure(bg=theme.C["bg"])
         loading.resizable(False, False)
-        loading.grab_set()
         loading.transient(self.winfo_toplevel())
 
         tk.Label(
             loading,
             text=f"Обновляется справочник\n«{field_def.label}»…",
             font=theme.F["body"],
+            bg=theme.C["bg"], fg=theme.C["text"],
             padx=28, pady=20,
         ).pack()
-        loading.update()
+        self._center_dialog(loading)
 
         def _worker():
             try:
@@ -981,11 +983,11 @@ class FormScreen(BaseScreen):
 
         # Диалог «В процессе»
         progress = tk.Toplevel(self)
+        progress.withdraw()
         progress.title("Подтягиваем данные")
         progress.configure(bg=theme.C["bg"])
         progress.resizable(False, False)
         progress.transient(self.winfo_toplevel())
-        progress.grab_set()
         progress.protocol("WM_DELETE_WINDOW", lambda: None)  # запрет закрытия
 
         pad = tk.Frame(progress, bg=theme.C["bg"])
@@ -1006,7 +1008,7 @@ class FormScreen(BaseScreen):
             font=theme.F["small"], bg=theme.C["bg"], fg=theme.C["text_muted"],
         ).pack(pady=(4, 0))
 
-        progress.update()
+        self._center_dialog(progress)
 
         def _worker() -> None:
             try:
@@ -1100,6 +1102,16 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Утилиты
     # ------------------------------------------------------------------
+
+    def _center_dialog(self, dlg: tk.Toplevel) -> None:
+        """Вычисляет размер диалога, центрирует его относительно главного окна и показывает."""
+        dlg.update_idletasks()
+        root = self.winfo_toplevel()
+        x = root.winfo_rootx() + (root.winfo_width()  - dlg.winfo_reqwidth())  // 2
+        y = root.winfo_rooty() + (root.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{x}+{y}")
+        dlg.deiconify()
+        dlg.grab_set()
 
     def _set_status(self, text: str, kind: str = "muted") -> None:
         self._status_var.set(text)

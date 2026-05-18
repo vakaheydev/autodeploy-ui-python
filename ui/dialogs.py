@@ -47,17 +47,16 @@ def _make_dialog(
 
 
 def _center(dlg: tk.Toplevel) -> None:
-    """Центрирует окно относительно родительского."""
+    """Центрирует окно относительно родительского.
+    Работает корректно как для видимых, так и для withdraw()-скрытых окон."""
     dlg.update_idletasks()
     parent = dlg.master
     if parent is None:
         return
     root = parent.winfo_toplevel()
-    rx = root.winfo_x() + root.winfo_width() // 2
-    ry = root.winfo_y() + root.winfo_height() // 2
-    w = dlg.winfo_width()
-    h = dlg.winfo_height()
-    dlg.geometry(f"+{rx - w // 2}+{ry - h // 2}")
+    x = root.winfo_rootx() + (root.winfo_width()  - dlg.winfo_reqwidth())  // 2
+    y = root.winfo_rooty() + (root.winfo_height() - dlg.winfo_reqheight()) // 2
+    dlg.geometry(f"+{x}+{y}")
 
 
 def _icon_label(parent: tk.Widget, icon: str, color: str) -> tk.Label:
@@ -887,11 +886,11 @@ def show_loading(parent: tk.Widget, text: str = "Загрузка...") -> Callab
     _closed = [False]
 
     dlg = tk.Toplevel(parent)
+    dlg.withdraw()
     dlg.title("")
     dlg.configure(bg=theme.C["bg"])
     dlg.resizable(False, False)
     dlg.transient(parent.winfo_toplevel())
-    dlg.grab_set()
     dlg.protocol("WM_DELETE_WINDOW", lambda: None)
 
     content = tk.Frame(dlg, bg=theme.C["bg"])
@@ -910,6 +909,8 @@ def show_loading(parent: tk.Widget, text: str = "Загрузка...") -> Callab
     ).pack(pady=(10, 0))
 
     _center(dlg)
+    dlg.deiconify()
+    dlg.grab_set()
 
     _idx = [0]
 
