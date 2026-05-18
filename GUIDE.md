@@ -1548,14 +1548,35 @@ def ask_branch_name(parent: tk.Widget) -> Optional[str]:
 ### Окно загрузки
 
 `show_loading` показывает немодальное окно с braille-спиннером (`⠋⠙⠹…`) и текстом.
-Возвращает функцию `close()`, безопасную для вызова из фонового потока.
 
 > **Важно:** спиннер анимируется через `after(80, ...)` — колбэки Tkinter.
-> Если главный поток заблокирован (например, `time.sleep` или синхронный HTTP-запрос),
+> Если главный поток заблокирован (`time.sleep`, синхронный HTTP-запрос и т.п.),
 > event loop не работает и спиннер «замирает». Вся тяжёлая работа **обязана** выполняться
-> в `threading.Thread`.
+> в фоновом потоке.
 
-#### Базовый паттерн
+#### Рекомендуемый паттерн: параметр `worker`
+
+Передайте тяжёлую функцию напрямую — `show_loading` сам создаст поток, дождётся
+результата и вызовет `on_done` / `on_error` на главном потоке:
+
+```python
+from ui.dialogs import show_loading
+
+def _on_refresh(self) -> None:
+    show_loading(
+        self, "Загрузка данных...",
+        worker=self._fetch_data,          # вызывается в фоновом потоке
+        on_done=self._render,             # вызывается на главном потоке с результатом
+        on_error=lambda exc: show_error(self, "Ошибка", str(exc)),
+    )
+```
+
+`self.after` внутри больше не нужен — `show_loading` вызывает `on_done`/`on_error`
+через `root.after(0, ...)` автоматически.
+
+#### Паттерн с ручным управлением (когда нужен `close()`)
+
+Если поток запускается вручную или нужна более сложная логика:
 
 ```python
 import threading
@@ -1566,45 +1587,38 @@ def _on_refresh(self) -> None:
 
     def _worker() -> None:
         try:
-            result = self._fetch_data()       # блокирующий вызов — в потоке
+            result = self._fetch_data()
         except Exception as exc:
-            self.after(0, lambda: self._on_error(exc))
+            self.after(0, lambda e=exc: self._on_error(e))
             return
         finally:
-            close()                           # закрывает окно из потока — безопасно
+            close()                           # безопасен из потока
 
-        self.after(0, lambda: self._on_done(result))  # обновление UI — в главном потоке
-
-    threading.Thread(target=_worker, daemon=True).start()
-```
-
-#### Паттерн «обновить переменную и закрыть»
-
-Если нужно только обновить `StringVar` / метку и закрыть диалог — компактная форма:
-
-```python
-def _refresh_branch(self) -> None:
-    close = show_loading(self, "Обновление ветки...")
-
-    def _worker() -> None:
-        branch = self._get_branch_name()     # git-команда в потоке
-        self.after(0, lambda: (self._branch_var.set(branch), close()))
+        self.after(0, lambda r=result: self._on_done(r))
 
     threading.Thread(target=_worker, daemon=True).start()
 ```
 
-`lambda: (a, b)` — кортеж вычисляет оба выражения последовательно: сначала обновляет
-переменную, потом закрывает окно.
+#### Зачем `self.after`?
+
+`widget.after(delay_ms, callback)` ставит `callback` в очередь главного Tkinter-потока.
+Из фонового потока напрямую трогать виджеты нельзя (Tkinter не потокобезопасен).
+`after(0, cb)` — «выполни как можно скорее, но на главном потоке».
+
+При использовании `worker=` в `show_loading` вызывать `after` вручную **не нужно** —
+это уже сделано внутри.
 
 | Параметр | Тип | По умолчанию | Описание |
 |---|---|---|---|
 | `parent` | `tk.Widget` | — | родительский виджет |
 | `text` | `str` | `"Загрузка..."` | текст под спиннером |
+| `worker` | `Callable[[], Any]` | `None` | функция для фонового потока |
+| `on_done` | `Callable[[Any], None]` | `None` | колбэк на главном потоке с результатом |
+| `on_error` | `Callable[[Exception], None]` | `None` | колбэк на главном потоке при исключении |
 
 - Пользователь не может закрыть окно вручную — кнопка «×» отключена.
 - `close()` идемпотентна — повторный вызов безопасен.
-- Внутри использует `root.after(0, ...)` для уничтожения виджета на главном потоке.
-- **Никогда** не вызывайте `time.sleep` или синхронные сетевые запросы на главном потоке рядом с `show_loading` — спиннер остановится.
+- **Никогда** не вызывайте блокирующие операции на главном потоке — спиннер остановится.
 
 ---
 
