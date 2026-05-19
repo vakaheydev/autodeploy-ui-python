@@ -270,6 +270,10 @@ class BaseForm(ABC):
             environment — ключ выбранного окружения, например "prod_int" или "test_ext".
                           Совпадает со значениями Environment.key из config/environments.py.
 
+        Полный объект справочника (не только value_key):
+            item = self.screen.get_field_item("my_select_field")
+            # → {"id": "123", "name": "...", ...} или None если ничего не выбрано
+
         Переопределить для любых побочных действий:
           — запись в файл / git commit / git push
           — логирование, нотификации

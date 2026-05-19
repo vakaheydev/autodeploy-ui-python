@@ -1293,6 +1293,33 @@ def pre_submit(
 
 Если метод бросает исключение — **сабмит прерывается**, HTTP-запрос не отправляется, пользователю показывается диалог ошибки с текстом исключения.
 
+#### Получить полный объект из справочника
+
+`form_data` содержит только `value_key` выбранного элемента (строку). Если нужен полный словарь из справочника — используйте `self.screen`:
+
+| Метод | Поле | Возвращает |
+|---|---|---|
+| `self.screen.get_field_item("key")` | SELECT | `dict \| None` |
+| `self.screen.get_field_items("key")` | MULTISELECT | `list[dict]` |
+
+```python
+def pre_submit(self, form_data, payload, environment):
+    # SELECT — один объект
+    app = self.screen.get_field_item("application")
+    # → {"id": "app-123", "name": "My App", "owner": "team-a"} или None
+
+    if app:
+        payload["ownerTeam"] = app["owner"]
+
+    # MULTISELECT — список объектов
+    services = self.screen.get_field_items("services")
+    # → [{"id": "svc-1", "port": 8080}, {"id": "svc-2", "port": 9090}]
+
+    payload["ports"] = [s["port"] for s in services]
+```
+
+Оба метода доступны также из `build_payload()` и обработчиков кастомных кнопок через `self.screen`.
+
 > **Порядок выполнения:**
 > ```
 > validate() → get_submit_endpoint() → set_auth() → build_payload() → pre_submit() → HTTP-запрос

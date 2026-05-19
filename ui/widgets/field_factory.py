@@ -248,6 +248,12 @@ class _SearchableSelectWidget:
             return self._values[self._selected_idx]
         return ""
 
+    def get_item(self) -> Optional[Dict[str, Any]]:
+        """Возвращает полный словарь выбранного элемента справочника."""
+        if self._selected_idx is not None and self._items:
+            return self._items[self._selected_idx]
+        return None
+
     def get_item_field(self, field: str) -> str:
         """Возвращает произвольное поле из выбранного элемента (для depends_on_field)."""
         if self._selected_idx is None or not self._items:
@@ -601,6 +607,8 @@ class FieldWidget:
         set_fn: Optional[Callable[[Any], None]] = None,
         get_extra_fn: Optional[Callable[[str], Any]] = None,
         refresh_sub_ref_fn: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+        get_item_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+        get_items_fn: Optional[Callable[[], List[Dict[str, Any]]]] = None,
     ) -> None:
         self.widget = widget
         self._get_fn = get_fn
@@ -608,9 +616,23 @@ class FieldWidget:
         self._set_fn = set_fn
         self._get_extra_fn = get_extra_fn
         self._refresh_sub_ref_fn = refresh_sub_ref_fn
+        self._get_item_fn = get_item_fn
+        self._get_items_fn = get_items_fn
 
     def get(self) -> Any:
         return self._get_fn()
+
+    def get_item(self) -> Optional[Dict[str, Any]]:
+        """Возвращает полный словарь выбранного элемента (только для SELECT). Иначе None."""
+        if self._get_item_fn is not None:
+            return self._get_item_fn()
+        return None
+
+    def get_items(self) -> List[Dict[str, Any]]:
+        """Возвращает список полных словарей выбранных элементов (только для MULTISELECT)."""
+        if self._get_items_fn is not None:
+            return self._get_items_fn()
+        return []
 
     def get_extra(self, field: str) -> Any:
         """Возвращает поле из выбранного item (для depends_on_field). Fallback — get()."""
@@ -771,7 +793,7 @@ class FieldFactory:
         if field.default is not None:
             w.set_value(str(field.default))
         return FieldWidget(w.frame, w.get, bind_change_fn=w.on_change, set_fn=w.set_value,
-                           get_extra_fn=w.get_item_field)
+                           get_extra_fn=w.get_item_field, get_item_fn=w.get_item)
 
     def _create_multiselect(
         self, parent: tk.Widget, field: FieldDefinition, items: List[Dict[str, Any]]
@@ -959,6 +981,9 @@ class FieldFactory:
         def get_selected() -> List[str]:
             return [val for toggle, val, _ in rows if toggle.get()]
 
+        def get_selected_items() -> List[Dict[str, Any]]:
+            return [item for (toggle, _, _), item in zip(rows, items) if toggle.get()]
+
         def set_selected(values_to_set: Any) -> None:
             target = set(values_to_set) if values_to_set else set()
             for toggle, val, _ in rows:
@@ -968,7 +993,8 @@ class FieldFactory:
         if field.default is not None:
             set_selected(field.default)
 
-        return FieldWidget(frame, get_selected, set_fn=set_selected)
+        return FieldWidget(frame, get_selected, set_fn=set_selected,
+                           get_items_fn=get_selected_items)
 
     def _create_checkbox(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         var = tk.BooleanVar(value=bool(field.default))

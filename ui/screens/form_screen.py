@@ -986,6 +986,22 @@ class FormScreen(BaseScreen):
     # Утилиты
     # ------------------------------------------------------------------
 
+    def get_field_item(self, key: str) -> Optional[Dict[str, Any]]:
+        """
+        Возвращает полный словарь выбранного элемента для SELECT-поля.
+        None если поле не найдено, не является SELECT или ничего не выбрано.
+        """
+        fw = self._field_widgets.get(key)
+        return fw.get_item() if fw else None
+
+    def get_field_items(self, key: str) -> List[Dict[str, Any]]:
+        """
+        Возвращает список полных словарей выбранных элементов для MULTISELECT-поля.
+        Пустой список если поле не найдено, не является MULTISELECT или ничего не выбрано.
+        """
+        fw = self._field_widgets.get(key)
+        return fw.get_items() if fw else []
+
     def _set_status(self, text: str, kind: str = "muted") -> None:
         self._status_var.set(text)
         colors = {"muted": theme.C["text_muted"], "success": theme.C["success"],
