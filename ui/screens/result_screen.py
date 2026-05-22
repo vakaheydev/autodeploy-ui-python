@@ -198,6 +198,10 @@ class ResultScreen(BaseScreen):
             self._schedule_poll()
         else:
             self._stop_poll()
+            if self._form.show_info_after_polling:
+                from ui.dialogs import show_polling_info
+                info_text = self._form.build_info_after_polling(self._environment, response)
+                show_polling_info(self, self._form.title, info_text)
 
     # ------------------------------------------------------------------
     # Пауза / возобновление

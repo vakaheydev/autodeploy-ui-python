@@ -46,6 +46,7 @@
   - [Информационные диалоги](#информационные-диалоги)
   - [Диалог подтверждения](#диалог-подтверждения)
   - [Просмотрщик текста](#просмотрщик-текста)
+  - [Немодальное окно после опроса](#немодальное-окно-после-опроса)
   - [Диалог ввода строки](#диалог-ввода-строки)
   - [Специализированные диалоги ввода](#специализированные-диалоги-ввода)
   - [Окно загрузки](#окно-загрузки)
@@ -1473,6 +1474,49 @@ def should_continue_polling(self, environment: str, poll_response: Any) -> bool:
 
 ---
 
+### Показать окно с информацией после завершения опроса
+
+Если нужно автоматически вывести дополнительные данные когда поллинг завершился (`should_continue_polling()` вернул `False`) — включить `show_info_after_polling` и переопределить `build_info_after_polling()`.
+
+Окно независимое (немодальное): открывается поверх экрана результата, не блокирует его.
+Содержит прокручиваемый текст и кнопку «Скопировать» для копирования всего содержимого в буфер обмена.
+
+```python
+from typing import Any
+from forms.result_config import ResultScreenConfig, ResultStatus
+
+class DeployAppForm(BaseForm):
+
+    def get_result_config(self) -> ResultScreenConfig:
+        return ResultScreenConfig(poll_interval_ms=3000, title="Статус деплоя")
+
+    def should_continue_polling(self, environment: str, poll_response: Any) -> bool:
+        return (poll_response or {}).get("status") not in ("success", "error")
+
+    @property
+    def show_info_after_polling(self) -> bool:
+        return True
+
+    def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
+        # poll_response — последний ответ poll-запроса (тот, на котором остановились)
+        job_id  = (poll_response or {}).get("jobId", "—")
+        status  = (poll_response or {}).get("status", "—")
+        log_url = (poll_response or {}).get("logUrl", "")
+        return (
+            f"Job ID:   {job_id}\n"
+            f"Статус:   {status}\n"
+            f"Лог:      {log_url}"
+        )
+```
+
+`build_info_after_polling` получает:
+- `environment` — ключ окружения (`"test_int"`, `"prod_ext"`, …)
+- `poll_response` — последний успешный ответ poll-запроса (тот, при котором `should_continue_polling` вернул `False`)
+
+По умолчанию (`show_info_after_polling = False`) окно не показывается.
+
+---
+
 ## 7. UI-утилиты: диалоги
 
 Все утилиты находятся в `ui/dialogs.py` и используют тему приложения (цвета, шрифты).
@@ -1526,6 +1570,26 @@ show_text_viewer(self, "Лог выполнения", log_text, width=80, height
 ```
 
 Открывает модальное окно с прокручиваемым моноширинным текстом и кнопкой «Закрыть».
+
+---
+
+### Немодальное окно после опроса
+
+`show_polling_info` — независимое окно (не блокирует родительский экран), предназначенное для показа итоговой информации после завершения poll-цикла.
+
+```python
+from ui.dialogs import show_polling_info
+
+# Обычно вызывается автоматически из ResultScreen,
+# но можно использовать вручную в любом месте:
+show_polling_info(self, "Результат деплоя", "Job ID: abc123\nСтатус: success")
+```
+
+Отличия от `show_text_viewer`:
+- Нет `grab_set()` — пользователь работает с другими окнами одновременно
+- Кнопка «Скопировать» — копирует весь текст в буфер обмена (после нажатия 1.5 с показывает «Скопировано ✓»)
+
+Для автоматического показа после окончания опроса — использовать `show_info_after_polling` в форме (см. [раздел 6](#показать-окно-с-информацией-после-завершения-опроса)).
 
 ---
 

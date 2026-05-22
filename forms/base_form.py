@@ -233,6 +233,35 @@ class BaseForm(ABC):
         """
         return True
 
+    @property
+    def show_info_after_polling(self) -> bool:
+        """
+        Если True — после завершения опроса открывается независимое окно
+        с текстом, сгенерированным методом build_info_after_polling().
+        Окно не блокирует экран результата.
+        По умолчанию False.
+
+        Переопределить вместе с build_info_after_polling():
+            @property
+            def show_info_after_polling(self) -> bool:
+                return True
+        """
+        return False
+
+    def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
+        """
+        Формирует текст для окна, показываемого после завершения опроса.
+        Вызывается только если show_info_after_polling == True.
+
+        Переопределить для формирования нужного содержимого:
+            def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
+                job_id = (poll_response or {}).get("jobId", "—")
+                return f"Job ID: {job_id}"
+        """
+        if poll_response is None:
+            return ""
+        return json.dumps(poll_response, ensure_ascii=False, indent=2)
+
     def build_poll_content(self, environment: str, poll_response: Any) -> str:
         """
         Форматирует ответ опроса для отображения на экране результата.
