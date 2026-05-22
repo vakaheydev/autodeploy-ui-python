@@ -627,8 +627,15 @@ class FormScreen(BaseScreen):
         error: str | None,
     ) -> None:
         """Вызывается в главном потоке: пересоздаёт виджет справочника."""
+        def _restore_btn() -> None:
+            try:
+                if btn.winfo_exists():
+                    btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+            except tk.TclError:
+                pass
+
         if error:
-            btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+            _restore_btn()
             show_error(
                 self,
                 "Ошибка обновления",
@@ -663,7 +670,7 @@ class FormScreen(BaseScreen):
                     self._field_widgets[bkey] = new_block_fw
                     if saved:
                         new_block_fw.set(saved)
-            btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+            _restore_btn()
             show_info(
                 self,
                 "Обновление завершено",
@@ -694,7 +701,7 @@ class FormScreen(BaseScreen):
         # Переподписываем зависимых детей, если этот виджет является родителем
         self._subscribe_dependent_children(key, fw)
 
-        btn.config(state=tk.NORMAL, fg=theme.C["primary"])
+        _restore_btn()
 
         show_info(
             self,

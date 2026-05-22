@@ -959,9 +959,21 @@ def show_loading(
         def _thread_fn() -> None:
             try:
                 result = worker()
-                root.after(0, lambda r=result: (on_done(r) if on_done else None, close()))
+                def _done_on_main(r=result) -> None:
+                    try:
+                        if on_done:
+                            on_done(r)
+                    finally:
+                        close()
+                root.after(0, _done_on_main)
             except Exception as exc:  # noqa: BLE001
-                root.after(0, lambda e=exc: (on_error(e) if on_error else None, close()))
+                def _error_on_main(e=exc) -> None:
+                    try:
+                        if on_error:
+                            on_error(e)
+                    finally:
+                        close()
+                root.after(0, _error_on_main)
 
         threading.Thread(target=_thread_fn, daemon=True).start()
 
