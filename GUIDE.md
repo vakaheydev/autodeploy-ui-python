@@ -1497,21 +1497,19 @@ class DeployAppForm(BaseForm):
     def show_info_after_polling(self) -> bool:
         return True
 
-    def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
-        # poll_response — последний ответ poll-запроса (тот, на котором остановились)
-        job_id  = (poll_response or {}).get("jobId", "—")
-        status  = (poll_response or {}).get("status", "—")
-        log_url = (poll_response or {}).get("logUrl", "")
+    def build_info_after_polling(self, environment: str, payload: Any) -> str:
+        # payload — JSON-словарь, отправленный на сервер при сабмите формы
+        app_name = (payload or {}).get("appName", "—")
+        env_name = (payload or {}).get("env", environment)
         return (
-            f"Job ID:   {job_id}\n"
-            f"Статус:   {status}\n"
-            f"Лог:      {log_url}"
+            f"Приложение: {app_name}\n"
+            f"Окружение:  {env_name}"
         )
 ```
 
 `build_info_after_polling` получает:
 - `environment` — ключ окружения (`"test_int"`, `"prod_ext"`, …)
-- `poll_response` — последний успешный ответ poll-запроса (тот, при котором `should_continue_polling` вернул `False`)
+- `payload` — JSON-словарь, отправленный на сервер при сабмите формы (результат `build_payload()`)
 
 По умолчанию (`show_info_after_polling = False`) окно не показывается.
 

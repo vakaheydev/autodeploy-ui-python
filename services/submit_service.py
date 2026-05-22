@@ -12,10 +12,17 @@ from forms.base_form import BaseForm
 class SubmitResult:
     """Результат отправки формы."""
 
-    def __init__(self, success: bool, message: str, raw_response: Any = None) -> None:
+    def __init__(
+        self,
+        success: bool,
+        message: str,
+        raw_response: Any = None,
+        payload: Any = None,
+    ) -> None:
         self.success = success
         self.message = message
         self.raw_response = raw_response
+        self.payload = payload
 
     def __bool__(self) -> bool:
         return self.success
@@ -96,6 +103,7 @@ class SubmitService:
             True,
             f"Успешно отправлено в '{environment}'",
             raw_response=response,
+            payload=payload,
         )
 
     # ------------------------------------------------------------------

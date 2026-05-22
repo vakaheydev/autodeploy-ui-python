@@ -761,6 +761,7 @@ class FormScreen(BaseScreen):
                     form=self._form,
                     environment=environment,
                     initial_response=result.raw_response,
+                    submit_payload=result.payload,
                 )
             else:
                 self._set_status(f"✗  {result.message.splitlines()[0]}", "error")

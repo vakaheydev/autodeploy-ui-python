@@ -31,11 +31,13 @@ class ResultScreen(BaseScreen):
         form: BaseForm,
         environment: str,
         initial_response: Any,
+        submit_payload: Any = None,
         **kwargs,
     ) -> None:
         self._form = form
         self._environment = environment
         self._initial_response = initial_response
+        self._submit_payload = submit_payload
         self._poll_after_id: Optional[str] = None
         self._destroyed = False
         self._poll_running = False   # защита от параллельных запросов
@@ -200,7 +202,7 @@ class ResultScreen(BaseScreen):
             self._stop_poll()
             if self._form.show_info_after_polling:
                 from ui.dialogs import show_polling_info
-                info_text = self._form.build_info_after_polling(self._environment, response)
+                info_text = self._form.build_info_after_polling(self._environment, self._submit_payload)
                 show_polling_info(self, self._form.title, info_text)
 
     # ------------------------------------------------------------------

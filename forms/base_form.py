@@ -248,19 +248,19 @@ class BaseForm(ABC):
         """
         return False
 
-    def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
+    def build_info_after_polling(self, environment: str, payload: Any) -> str:
         """
         Формирует текст для окна, показываемого после завершения опроса.
         Вызывается только если show_info_after_polling == True.
 
         Переопределить для формирования нужного содержимого:
-            def build_info_after_polling(self, environment: str, poll_response: Any) -> str:
-                job_id = (poll_response or {}).get("jobId", "—")
+            def build_info_after_polling(self, environment: str, payload: Any) -> str:
+                job_id = (payload or {}).get("jobId", "—")
                 return f"Job ID: {job_id}"
         """
-        if poll_response is None:
+        if payload is None:
             return ""
-        return json.dumps(poll_response, ensure_ascii=False, indent=2)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     def build_poll_content(self, environment: str, poll_response: Any) -> str:
         """
