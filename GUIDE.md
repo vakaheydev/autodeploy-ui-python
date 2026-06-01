@@ -359,6 +359,30 @@ class MyOpScreen(BaseScreen):
 - Скролл внутри диалога не пробрасывается в родительский экран
 - Возвращают `None` при отмене / закрытии крестиком
 
+#### Кастомный набор элементов (без resolver)
+
+Если список элементов уже известен заранее — передайте его через параметр `items`. Resolver вызываться не будет, `reference` всё равно нужен (для `value_key` / `label_key`).
+
+```python
+from ui.dialogs import ask_dictionary
+from forms.reference_config import ReferenceConfig
+
+_LOCAL_REF = ReferenceConfig(source="local", resource="", value_key="id", label_key="name")
+
+option = ask_dictionary(
+    self.screen, "Выбрать режим",
+    reference=_LOCAL_REF,
+    items=[
+        {"id": "fast", "name": "Быстрый"},
+        {"id": "safe", "name": "Безопасный"},
+    ],
+)
+if option is not None:
+    ...  # option == "fast" или "safe"
+```
+
+Параметры `environment` и `app` в этом случае можно не передавать.
+
 Пример готового экрана операции: `ui/screens/operations/api_op_screen.py`.
 
 ---

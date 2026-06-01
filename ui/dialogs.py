@@ -13,7 +13,7 @@ ui/dialogs.py — типовые диалоговые окна и UI-утили�
     show_polling_info(parent, title, text)  — немодальное окно после завершения опроса с кнопкой «Скопировать»
     show_item_detail(parent, title, item, detail_keys) — карточка детали элемента справочника
     ask_string(parent, title, prompt, confirm_text) → Optional[str] — диалог ввода строки
-    ask_dictionary(parent, title, reference, environment, app, ...) → Optional[str] — выбор одного элемента справочника
+    ask_dictionary(parent, title, reference, environment, app, ..., items) → Optional[str] — выбор одного элемента справочника; items — кастомный набор вместо resolver
     ask_multi_dictionary(parent, title, reference, environment, app, ...) → Optional[List[str]] — выбор нескольких элементов справочника
     ask_ticket_id(parent) → Optional[str]  — диалог ввода номера ITSM-заявки
     show_loading(parent, text, worker?, on_done?, on_error?) → Callable — окно загрузки; при передаче worker запускает его в фоновом потоке автоматически
@@ -587,15 +587,15 @@ def ask_dictionary(
     parent: tk.Widget,
     title: str,
     reference: Any,
-    environment: str,
-    app: Any,
+    environment: str = "",
+    app: Any = None,
     confirm_text: str = "Выбрать",
     extra_params: Optional[Dict[str, Any]] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """
     Диалог выбора одного элемента из справочника.
 
-    Загружает данные через app.reference_resolver по правилам справочника (включая кеш).
     Параметры отображения (value_key, label_key, search_keys) берутся из reference.
 
     Параметры:
@@ -603,11 +603,12 @@ def ask_dictionary(
         environment  — ключ окружения ("test_int", "prod_ext", …)
         app          — экземпляр Application (для resolver и cache)
         confirm_text — текст кнопки подтверждения
+        items        — кастомный набор элементов; если передан, resolver не вызывается
 
     Возвращает value_key выбранного элемента или None (отмена / закрытие).
     Двойной клик подтверждает выбор.
 
-    Пример:
+    Пример — из справочника:
         from forms.fields import ReferenceConfig
         api_id = ask_dictionary(
             self.screen, "Выбрать АПИ",
@@ -619,10 +620,20 @@ def ask_dictionary(
             environment=environment,
             app=self.screen.app,
         )
-        if api_id:
-            ...
+
+    Пример — с кастомными элементами (resolver не нужен):
+        from forms.fields import ReferenceConfig
+        option = ask_dictionary(
+            self.screen, "Выбрать режим",
+            reference=ReferenceConfig(source="local", resource="", value_key="id", label_key="name"),
+            items=[
+                {"id": "fast", "name": "Быстрый"},
+                {"id": "safe", "name": "Безопасный"},
+            ],
+        )
     """
-    items = app.reference_resolver.resolve(reference, environment, extra_params)
+    if items is None:
+        items = app.reference_resolver.resolve(reference, environment, extra_params)
     result: list[Optional[str]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()
