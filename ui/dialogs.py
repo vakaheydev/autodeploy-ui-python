@@ -722,10 +722,11 @@ def ask_multi_dictionary(
     parent: tk.Widget,
     title: str,
     reference: Any,
-    environment: str,
-    app: Any,
+    environment: str = "",
+    app: Any = None,
     confirm_text: str = "Выбрать",
     extra_params: Optional[Dict[str, Any]] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[List[str]]:
     """
     Диалог выбора нескольких элементов из справочника.
@@ -751,7 +752,8 @@ def ask_multi_dictionary(
         if services is not None:   # None = отмена, [] = подтверждено без выбора
             ...
     """
-    items = app.reference_resolver.resolve(reference, environment, extra_params)
+    if items is None:
+        items = app.reference_resolver.resolve(reference, environment, extra_params)
     result: list[Optional[List[str]]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()

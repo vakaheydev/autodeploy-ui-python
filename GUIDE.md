@@ -364,11 +364,12 @@ class MyOpScreen(BaseScreen):
 Если список элементов уже известен заранее — передайте его через параметр `items`. Resolver вызываться не будет, `reference` всё равно нужен (для `value_key` / `label_key`).
 
 ```python
-from ui.dialogs import ask_dictionary
+from ui.dialogs import ask_dictionary, ask_multi_dictionary
 from forms.reference_config import ReferenceConfig
 
 _LOCAL_REF = ReferenceConfig(source="local", resource="", value_key="id", label_key="name")
 
+# Одиночный выбор
 option = ask_dictionary(
     self.screen, "Выбрать режим",
     reference=_LOCAL_REF,
@@ -379,6 +380,18 @@ option = ask_dictionary(
 )
 if option is not None:
     ...  # option == "fast" или "safe"
+
+# Множественный выбор
+options = ask_multi_dictionary(
+    self.screen, "Выбрать режимы",
+    reference=_LOCAL_REF,
+    items=[
+        {"id": "fast", "name": "Быстрый"},
+        {"id": "safe", "name": "Безопасный"},
+    ],
+)
+if options is not None:
+    ...  # options — список выбранных id, может быть пустым
 ```
 
 Параметры `environment` и `app` в этом случае можно не передавать.
