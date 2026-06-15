@@ -633,7 +633,20 @@ def ask_dictionary(
         )
     """
     if items is None:
-        items = app.reference_resolver.resolve(reference, environment, extra_params)
+        _loaded: list = [None]
+        _err:    list = [None]
+        _ready = tk.BooleanVar(parent.winfo_toplevel(), value=False)
+        show_loading(
+            parent, "Загрузка справочника…",
+            worker=lambda: app.reference_resolver.resolve(reference, environment, extra_params),
+            on_done=lambda r: (_loaded.__setitem__(0, r), _ready.set(True)),
+            on_error=lambda e: (_err.__setitem__(0, str(e)), _ready.set(True)),
+        )
+        parent.winfo_toplevel().wait_variable(_ready)
+        if _err[0]:
+            show_error(parent, "Ошибка загрузки справочника", _err[0])
+            return None
+        items = _loaded[0]
     result: list[Optional[str]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()
@@ -753,7 +766,20 @@ def ask_multi_dictionary(
             ...
     """
     if items is None:
-        items = app.reference_resolver.resolve(reference, environment, extra_params)
+        _loaded: list = [None]
+        _err:    list = [None]
+        _ready = tk.BooleanVar(parent.winfo_toplevel(), value=False)
+        show_loading(
+            parent, "Загрузка справочника…",
+            worker=lambda: app.reference_resolver.resolve(reference, environment, extra_params),
+            on_done=lambda r: (_loaded.__setitem__(0, r), _ready.set(True)),
+            on_error=lambda e: (_err.__setitem__(0, str(e)), _ready.set(True)),
+        )
+        parent.winfo_toplevel().wait_variable(_ready)
+        if _err[0]:
+            show_error(parent, "Ошибка загрузки справочника", _err[0])
+            return None
+        items = _loaded[0]
     result: list[Optional[List[str]]] = [None]
     values, labels, search_strings = _prep_items(
         items, reference.value_key, reference.label_key, reference.search_keys or ()

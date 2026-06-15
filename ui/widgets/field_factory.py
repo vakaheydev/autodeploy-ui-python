@@ -184,6 +184,11 @@ class _SearchableSelectWidget:
             self._listbox.bind("<Button-3>", self._on_double_click)
         self._search_var.trace_add("write", self._apply_filter)
 
+        # Маршрутизация скролла внутрь listbox — form_screen._route_mousewheel
+        # находит _scroll_target, идя вверх по дереву виджетов
+        self.frame._scroll_target = self._listbox  # type: ignore[attr-defined]
+        self._listbox._scroll_target = self._listbox  # type: ignore[attr-defined]
+
     def _on_focus_in(self, _) -> None:
         if self._search_var.get() == self._HINT:
             self._search_var.set("")
@@ -733,6 +738,7 @@ class FieldFactory:
 
     def _create_textarea(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         text = tk.Text(parent, height=4, wrap=tk.WORD, **_ENTRY_KWARGS, padx=6, pady=6)
+        text._scroll_target = text  # type: ignore[attr-defined]
         if field.default:
             text.insert("1.0", str(field.default))
 
@@ -909,10 +915,11 @@ class FieldFactory:
 
         list_canvas.bind("<Configure>", _on_canvas_resize)
 
-        # Помечаем canvas как цель скролла — form_screen._route_mousewheel
-        # обнаружит этот атрибут при движении колеса над любым дочерним виджетом
-        list_canvas._scroll_target = list_canvas  # type: ignore[attr-defined]
-        cb_container._scroll_target = list_canvas  # type: ignore[attr-defined]
+        # Маршрутизация скролла внутрь canvas — form_screen._route_mousewheel
+        # находит _scroll_target, идя вверх по дереву виджетов
+        frame._scroll_target = list_canvas          # type: ignore[attr-defined]
+        list_canvas._scroll_target = list_canvas    # type: ignore[attr-defined]
+        cb_container._scroll_target = list_canvas   # type: ignore[attr-defined]
 
         list_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=4)
         list_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
