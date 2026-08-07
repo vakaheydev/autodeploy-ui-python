@@ -1103,7 +1103,20 @@ class FieldFactory:
             ext = f".{ext}"
         btn_label = f"Выбрать файл  {ext}".strip() if ext else "Выбрать файл"
 
-        text_widget = tk.Text(frame, height=5, wrap=tk.WORD, **_ENTRY_KWARGS, padx=6, pady=6)
+        text_container = tk.Frame(frame, bg=theme.C["input_bg"])
+        # wrap=NONE — принципиально важно для больших файлов (сваггеры на тысячи строк):
+        # при wrap=WORD Tk пересчитывает перенос строк по словам для всего документа
+        # на каждой вставке/ресайзе, из-за чего UI начинает лагать и виснуть.
+        # Без переноса строка = строка документа, раскладка тривиальна и быстра.
+        text_widget = tk.Text(
+            text_container, height=5, wrap=tk.NONE, undo=False,
+            **_ENTRY_KWARGS, padx=6, pady=6,
+        )
+        v_scroll = tk.Scrollbar(text_container, orient=tk.VERTICAL, command=text_widget.yview)
+        h_scroll = tk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text_widget.xview)
+        text_widget.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        text_widget._scroll_target = text_widget  # type: ignore[attr-defined]
 
         def _browse() -> None:
             filetypes: list[tuple[str, str]] = []
@@ -1133,7 +1146,12 @@ class FieldFactory:
         ).pack(side=tk.LEFT)
 
         tk.Frame(frame, bg=theme.C["border"], height=1).pack(fill=tk.X, pady=(4, 0))
-        text_widget.pack(fill=tk.BOTH, padx=0, pady=0)
+        text_container.pack(fill=tk.BOTH, padx=0, pady=0)
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        text_container.grid_rowconfigure(0, weight=1)
+        text_container.grid_columnconfigure(0, weight=1)
+        h_scroll.pack(fill=tk.X, side=tk.BOTTOM)
 
         if field.default:
             text_widget.insert("1.0", str(field.default))
