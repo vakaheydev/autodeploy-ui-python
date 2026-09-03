@@ -2438,6 +2438,17 @@ REQUIRED_SETTINGS: List[Tuple[str, str]] = [
 ITSM/ADO-контекст получает Python, после чего открывается управляемая session с
 чатом, статусами, остановкой и подтверждением выбранных MCP-вызовов.
 
+При активном соединении на главной также появляется AI-чат: номер заявки
+передаётся отдельному `form-router`, который выбирает форму по закрытой JSON
+Schema. Консервативный порог разрешает автоматический переход только для
+однозначного результата; иначе пользователь выбирает один из трёх кандидатов с
+оценками. Затем запускается существующий `FormExtractorAgent` и тот же
+preview/apply flow, без повторного получения ITSM/ADO-контекста.
+
+Назначения всех зарегистрированных форм описаны в `config/form_routing.py`.
+При добавлении формы запись в этом каталоге обязательна. В каталог не включаются
+значения справочников: reference ID по-прежнему разрешаются локально.
+
 Полные справочники в prompt не отправляются. Агент предлагает смысловые названия,
 Python локально сопоставляет их с ID и только затем выполняет строгую schema- и
 domain-валидацию. Основная форма меняется исключительно через редактируемый
@@ -2454,11 +2465,14 @@ preview после ручного подтверждения.
 ```
 autodeploy-ui-python/
 ├── .opencode/
-│   └── agents/form-extractor.md   # primary agent: direct tools deny-by-default
+│   └── agents/
+│       ├── form-router.md          # primary agent: выбор формы без инструментов
+│       └── form-extractor.md       # primary agent: заполнение deny-by-default
 ├── opencode_integration/          # server/session/MCP, context, schema, local refs, validation
 ├── config/
 │   ├── categories.py              # названия категорий и их порядок
 │   ├── environments.py            # список окружений, ключи .env токенов, REQUIRED_SETTINGS
+│   ├── form_routing.py             # доверенные назначения форм для AI-router
 │   ├── reference_cache_config.py  # ← TTL кеша для каждого HTTP-справочника
 │   └── references/                # локальные JSON-справочники
 ├── core/
@@ -2490,6 +2504,7 @@ autodeploy-ui-python/
 ├── cached/                        # файловый кеш HTTP-справочников (авто, не коммитить)
 └── ui/
     ├── ai_assistant.py            # интерактивная OpenCode session и approvals
+    ├── ai_home_chat.py             # чат выбора формы по номеру заявки
     ├── ai_preview.py              # редактируемый diff перед применением
     ├── theme.py                   # цвета, шрифты, ttk-стили ← менять внешний вид здесь
     ├── app.py                     # DI-контейнер, навигация, Ctrl+A/C/V/X fix

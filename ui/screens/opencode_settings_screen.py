@@ -25,7 +25,7 @@ from config.environments import (
 from core.logging_setup import UI_LOG_BUFFER
 from opencode_integration.manager import (
     DEFAULT_SERVER_URL,
-    FORM_EXTRACTOR_AGENT,
+    REQUIRED_AGENTS,
     TARGET_OPENCODE_VERSION,
 )
 from ui.dialogs import show_error, show_info
@@ -452,7 +452,11 @@ class OpenCodeSettingsScreen(BaseScreen):
         )
         if status.pid is not None:
             detail.append(f"PID: {status.pid}")
-        detail.append(f"Агент {FORM_EXTRACTOR_AGENT}: {'загружен' if status.agent_loaded else 'не проверен'}")
+        agents = ", ".join(REQUIRED_AGENTS)
+        detail.append(
+            f"Агенты {agents}: "
+            f"{'загружены' if status.agent_loaded else 'не проверены'}"
+        )
         detail.append(f"Runtime: {status.runtime_dir}")
         self._detail_var.set("\n".join(detail))
         self._refresh_logs()

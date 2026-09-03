@@ -25,6 +25,8 @@ from opencode_integration.client import (
 OPENCODE_HOST = "127.0.0.1"
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 FORM_EXTRACTOR_AGENT = "form-extractor"
+FORM_ROUTER_AGENT = "form-router"
+REQUIRED_AGENTS = (FORM_EXTRACTOR_AGENT, FORM_ROUTER_AGENT)
 TARGET_OPENCODE_VERSION = "1.18.18"
 _log = logging.getLogger("opencode.manager")
 
@@ -73,6 +75,10 @@ class OpenCodeManager:
         self.project_dir = Path(project_dir).resolve()
         self.agent_source = (
             self.project_dir / ".opencode" / "agents" / "form-extractor.md"
+        )
+        self.agent_sources = tuple(
+            self.project_dir / ".opencode" / "agents" / f"{name}.md"
+            for name in REQUIRED_AGENTS
         )
         self.runtime_dir = Path(runtime_dir or default_runtime_dir()).resolve()
         self.command = command
@@ -208,15 +214,12 @@ class OpenCodeManager:
                     raise OpenCodeManagerError("health check вернул healthy=false")
                 self._set_status(
                     "connecting",
-                    f"Сервер отвечает. Проверяю агента {FORM_EXTRACTOR_AGENT}…",
+                    "Сервер отвечает. Проверяю AI-агентов…",
                     version=health.version,
                     address=target,
                     ownership="external",
                 )
-                client.require_agent(
-                    FORM_EXTRACTOR_AGENT,
-                    timeout=self._remaining(deadline),
-                )
+                self._require_agents(client, deadline=deadline)
                 if self._cancel.is_set():
                     raise OpenCodeManagerError("Подключение к OpenCode отменено")
             except Exception as exc:
@@ -306,14 +309,14 @@ class OpenCodeManager:
                     self._wait_until_ready(client, process)
                     self._set_status(
                         "starting",
-                        f"Сервер создан. Проверяю агента {FORM_EXTRACTOR_AGENT}…",
+                        "Сервер создан. Проверяю AI-агентов…",
                         version=version,
                         address=address,
                         pid=process.pid,
                         ownership="owned",
                     )
-                    client.require_agent(
-                        FORM_EXTRACTOR_AGENT,
+                    self._require_agents(
+                        client,
                         timeout=min(10.0, self.startup_timeout),
                     )
                     if self._cancel.is_set():
@@ -402,7 +405,11 @@ class OpenCodeManager:
                     if existing is not None
                     else self._status.address or self.server_url
                 )
-                ownership = self._ownership if existing is not None else "external"
+                ownership = (
+                    self._ownership
+                    if self._ownership in {"external", "owned"}
+                    else "external"
+                )
                 process = self._process
             self._set_status(
                 "checking",
@@ -417,8 +424,8 @@ class OpenCodeManager:
                 health = client.health(timeout=self.connect_timeout)
                 if not health.healthy:
                     raise OpenCodeManagerError("health check вернул healthy=false")
-                client.require_agent(
-                    FORM_EXTRACTOR_AGENT,
+                self._require_agents(
+                    client,
                     timeout=min(self.connect_timeout, 10.0),
                 )
             except Exception as exc:
@@ -442,6 +449,41 @@ class OpenCodeManager:
                 ownership=ownership,
                 pid=process.pid if process else None,
             )
+            return self.status
+
+    def probe_health(self, *, timeout: float = 3.0) -> ManagerStatus:
+        """Тихо перепроверяет активное соединение; предназначено для UI-monitor."""
+        with self._lifecycle_lock:
+            with self._lock:
+                client = self._client
+                previous = self._status
+                ownership = self._ownership
+                process = self._process
+            if client is None or previous.state != "ready":
+                return self.status
+            try:
+                effective_timeout = min(
+                    self._timeout_value(timeout),
+                    max(0.1, self.connect_timeout),
+                )
+                health = client.health(timeout=effective_timeout)
+                if not health.healthy:
+                    raise OpenCodeManagerError("health check вернул healthy=false")
+                self._require_agents(client, timeout=effective_timeout)
+            except Exception as exc:
+                with self._lock:
+                    # Сохраняем ownership: owned process всё равно должен быть
+                    # корректно завершён при закрытии приложения.
+                    self._client = None
+                self._set_status(
+                    "error",
+                    f"Соединение с OpenCode Server {previous.address} потеряно: {exc}",
+                    version=previous.version,
+                    address=previous.address,
+                    pid=process.pid if process else previous.pid,
+                    ownership=ownership,
+                )
+                raise OpenCodeManagerError(self._status.message) from exc
             return self.status
 
     def restart(self) -> OpenCodeClient:
@@ -470,9 +512,11 @@ class OpenCodeManager:
             self._clear_connection(terminate_owned=owned, set_stopped=True)
 
     def _prepare_runtime(self) -> None:
-        if not self.agent_source.is_file():
+        missing = [source for source in self.agent_sources if not source.is_file()]
+        if missing:
             raise OpenCodeManagerError(
-                f"Не найден файл агента: {self.agent_source}"
+                "Не найдены файлы AI-агентов: "
+                + ", ".join(str(source) for source in missing)
             )
         # Не позволяем случайно вернуть OpenCode в каталог репозитория.
         try:
@@ -491,15 +535,34 @@ class OpenCodeManager:
             raise OpenCodeManagerError(
                 "Каталог агентов OpenCode через symlink выходит за пределы runtime"
             ) from exc
-        destination = agent_dir / self.agent_source.name
-        if destination.is_symlink():
-            raise OpenCodeManagerError(
-                "Файл runtime-агента не должен быть symbolic link"
-            )
-        source_text = self.agent_source.read_text(encoding="utf-8")
-        if not destination.exists() or destination.read_text(encoding="utf-8") != source_text:
-            destination.write_text(source_text, encoding="utf-8")
+        for source in self.agent_sources:
+            destination = agent_dir / source.name
+            if destination.is_symlink():
+                raise OpenCodeManagerError(
+                    "Файл runtime-агента не должен быть symbolic link"
+                )
+            source_text = source.read_text(encoding="utf-8")
+            if (
+                not destination.exists()
+                or destination.read_text(encoding="utf-8") != source_text
+            ):
+                destination.write_text(source_text, encoding="utf-8")
         _log.info("runtime prepared directory=%s", self.runtime_dir)
+
+    @staticmethod
+    def _require_agents(
+        client: OpenCodeClient,
+        *,
+        deadline: Optional[float] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        for agent_name in REQUIRED_AGENTS:
+            effective_timeout = (
+                OpenCodeManager._remaining(deadline)
+                if deadline is not None
+                else timeout
+            )
+            client.require_agent(agent_name, timeout=effective_timeout)
 
     def _make_client(self, address: str) -> OpenCodeClient:
         return OpenCodeClient(

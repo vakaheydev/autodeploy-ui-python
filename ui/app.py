@@ -29,6 +29,7 @@ from services.tfs_service import TfsService
 from ui.screens.base_screen import BaseScreen
 from opencode_integration.manager import OpenCodeManager
 from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
+from opencode_integration.context_builder import BuiltContext
 from config.environments import (
     OPENCODE_CONNECT_TIMEOUT_KEY,
     OPENCODE_REQUEST_TIMEOUT_KEY,
@@ -108,6 +109,7 @@ class Application:
             password=opencode_settings.get(OPENCODE_SERVER_PASSWORD_KEY, ""),
         )
         self._closing = False
+        self._pending_ai_handoff: tuple[str, BuiltContext] | None = None
         self._opencode_events: "queue.Queue[tuple[str, object]]" = queue.Queue()
 
         # --- Состояние приложения ---
@@ -179,6 +181,30 @@ class Application:
         main_class = self._get_main_screen_class()
         self._current_screen = main_class(self._main_container, app=self)
         self._current_screen.pack(fill=tk.BOTH, expand=True)
+
+    def open_ai_routed_form(self, form_id: str, context: BuiltContext) -> None:
+        """Передаёт очищенный контекст выбранной форме ровно один раз."""
+        from forms.registry import FormRegistry
+        from ui.screens.form_screen import FormScreen
+
+        FormRegistry().get(form_id)  # fail closed до изменения навигации
+        self._pending_ai_handoff = (form_id, context)
+        try:
+            self.navigate_to(FormScreen, form_id=form_id, ai_autostart=True)
+        except Exception:
+            self._pending_ai_handoff = None
+            raise
+
+    def consume_ai_handoff(self, form_id: str) -> BuiltContext | None:
+        """Забирает handoff; повторный показ/Back уже не запустит AI автоматически."""
+        pending = self._pending_ai_handoff
+        self._pending_ai_handoff = None
+        if pending is None:
+            return None
+        expected_form_id, context = pending
+        if expected_form_id != form_id:
+            return None
+        return context
 
     # ------------------------------------------------------------------
     # Запуск
@@ -321,6 +347,7 @@ class Application:
         if self._closing:
             return
         self._closing = True
+        self._pending_ai_handoff = None
         ai_agent = None
         detach = getattr(self._current_screen, "detach_ai_for_shutdown", None)
         if callable(detach):

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
@@ -277,6 +277,90 @@ def build_form_schema(
                         },
                     },
                 },
+            },
+        },
+    }
+
+
+def build_routing_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
+    """Строгий контракт выбора формы и трёх запасных кандидатов."""
+    allowed = list(dict.fromkeys(str(item) for item in form_ids if str(item)))
+    if not allowed:
+        raise ValueError("Для routing schema нужен хотя бы один form_id")
+    candidate_count = min(3, len(allowed))
+    candidate = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["form_id", "score", "reason"],
+        "properties": {
+            "form_id": {
+                "type": "string",
+                "enum": allowed,
+                "description": "Registered form identifier from the trusted catalog.",
+            },
+            "score": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "How well the form matches explicit request evidence.",
+            },
+            "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+                "description": "Concise evidence-based reason for the score.",
+            },
+        },
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "AutoDeploy form routing result",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "decision",
+            "selected_form_id",
+            "confidence",
+            "reason",
+            "candidates",
+            "question",
+        ],
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["selected", "needs_user_choice"],
+                "description": "Whether the evidence supports an unambiguous selection.",
+            },
+            "selected_form_id": {
+                "anyOf": [
+                    {"type": "string", "enum": allowed},
+                    {"type": "null"},
+                ],
+                "description": "Selected form, or null when operator input is required.",
+            },
+            "confidence": {
+                "type": "string",
+                "enum": list(CONFIDENCE_VALUES),
+            },
+            "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1500,
+                "description": "Overall evidence and uncertainty behind the decision.",
+            },
+            "candidates": {
+                "type": "array",
+                "items": candidate,
+                "minItems": candidate_count,
+                "maxItems": candidate_count,
+                "description": "Best distinct candidates, ordered by descending score.",
+            },
+            "question": {
+                "anyOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 1000},
+                    {"type": "null"},
+                ],
+                "description": "Question to the operator when no form can be selected safely.",
             },
         },
     }

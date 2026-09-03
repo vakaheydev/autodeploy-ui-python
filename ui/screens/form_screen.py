@@ -22,6 +22,7 @@ from config.environments import (
     OPENCODE_PROVIDER_ID_KEY,
 )
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
+from opencode_integration.context_builder import BuiltContext
 from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeStructuredOutputError,
@@ -41,10 +42,15 @@ class FormScreen(BaseScreen):
         app,
         form_id: str,
         initial_data: Optional[Dict[str, Any]] = None,
+        ai_autostart: bool = False,
         **kwargs,
     ) -> None:
         self._form_id = form_id
         self._initial_data = initial_data
+        self._ai_prepared_context: Optional[BuiltContext] = (
+            app.consume_ai_handoff(form_id) if ai_autostart else None
+        )
+        self._ai_autostart_pending = self._ai_prepared_context is not None
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
         self._field_containers: Dict[str, tk.Frame] = {}
@@ -310,6 +316,9 @@ class FormScreen(BaseScreen):
         self._setup_conditional_fields()
         self._setup_dependent_fields()
         self._ready = True
+        if self._ai_autostart_pending:
+            self._ai_autostart_pending = False
+            self.after(100, self._start_routed_ai_autofill)
 
     def _build_footer(self) -> None:
         theme.separator(self, pady=6)
@@ -941,7 +950,20 @@ class FormScreen(BaseScreen):
     # AI ITSM + Azure DevOps интеграция
     # ------------------------------------------------------------------
 
-    def _on_ai_autofill(self) -> None:
+    def _start_routed_ai_autofill(self) -> None:
+        context = self._ai_prepared_context
+        self._ai_prepared_context = None
+        if context is not None:
+            self._on_ai_autofill(
+                ticket_id=context.ticket_id,
+                prepared_context=context,
+            )
+
+    def _on_ai_autofill(
+        self,
+        ticket_id: Optional[str] = None,
+        prepared_context: Optional[BuiltContext] = None,
+    ) -> None:
         """Открывает управляемую chat-session; форма пока не меняется."""
         if self._ai_agent is not None:
             show_warning(
@@ -963,9 +985,10 @@ class FormScreen(BaseScreen):
                 "Откройте OpenCode на главном экране и подключитесь к серверу.",
             )
             return
-        ticket_id = ask_ticket_id(self)
         if ticket_id is None:
-            return
+            ticket_id = ask_ticket_id(self)
+            if ticket_id is None:
+                return
 
         settings = self.app.env_manager.load()
         provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
@@ -1024,6 +1047,7 @@ class FormScreen(BaseScreen):
                 provider_id=provider_id,
                 model_id=model_id,
                 cancel_event=cancel_event,
+                prepared_context=prepared_context,
                 on_progress=progress,
                 on_event=conversation_event,
                 on_session=session_changed,

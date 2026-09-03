@@ -15,7 +15,7 @@ from opencode_integration.client import (
     OpenCodeClient,
     OpenCodeMessage,
 )
-from opencode_integration.context_builder import ContextBuilder, redact_text
+from opencode_integration.context_builder import BuiltContext, ContextBuilder, redact_text
 from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
 from opencode_integration.manager import FORM_EXTRACTOR_AGENT
 from opencode_integration.prompts import (
@@ -102,6 +102,7 @@ class FormExtractorAgent:
         provider_id: str = "",
         model_id: str = "",
         cancel_event: Optional[threading.Event] = None,
+        prepared_context: Optional[BuiltContext] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[ConversationEvent], None]] = None,
         on_session: Optional[Callable[[Optional[str]], None]] = None,
@@ -121,15 +122,23 @@ class FormExtractorAgent:
             self._on_event = on_event or (lambda _event: None)
             self._on_session = on_session or (lambda _session: None)
 
-            try:
-                context = self._context_builder.build(
-                    ticket_id=ticket_id,
-                    environment=environment,
-                    cancel_event=cancel_event,
-                    on_progress=self._on_progress,
-                )
-            except InterruptedError as exc:
-                raise OpenCodeCancelled("Операция отменена пользователем") from exc
+            if prepared_context is not None:
+                if prepared_context.ticket_id != self._ticket_id:
+                    raise ValueError(
+                        "Подготовленный контекст относится к другой ITSM-заявке"
+                    )
+                self._on_progress("Использую уже проверенный контекст заявки и PR…")
+                context = prepared_context
+            else:
+                try:
+                    context = self._context_builder.build(
+                        ticket_id=ticket_id,
+                        environment=environment,
+                        cancel_event=cancel_event,
+                        on_progress=self._on_progress,
+                    )
+                except InterruptedError as exc:
+                    raise OpenCodeCancelled("Операция отменена пользователем") from exc
             self._pr_id = context.pull_request_id
             self._ticket_id = context.ticket_id
             self._context_warnings = list(context.warnings)
