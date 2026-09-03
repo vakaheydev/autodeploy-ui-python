@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
-from typing import List, Type
+from typing import Any, List, Optional, Type
 
 from config.environments import ENVIRONMENTS
 from core.env_manager import EnvManager
@@ -30,6 +30,12 @@ from ui.screens.base_screen import BaseScreen
 from opencode_integration.manager import OpenCodeManager
 from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
 from opencode_integration.context_builder import BuiltContext
+from opencode_integration.context_builder import sanitize
+from opencode_integration.workflow import (
+    AIFormHandoff,
+    ExecutionPlanState,
+    PlannedFormStep,
+)
 from config.environments import (
     OPENCODE_CONNECT_TIMEOUT_KEY,
     OPENCODE_REQUEST_TIMEOUT_KEY,
@@ -109,7 +115,10 @@ class Application:
             password=opencode_settings.get(OPENCODE_SERVER_PASSWORD_KEY, ""),
         )
         self._closing = False
-        self._pending_ai_handoff: tuple[str, BuiltContext] | None = None
+        self._pending_ai_handoff: tuple[str, AIFormHandoff] | None = None
+        self.execution_plan: Optional[ExecutionPlanState] = None
+        self.copilot_history: list[tuple[str, str]] = []
+        self._pending_copilot_request: Optional[tuple[str, Any, Optional[str]]] = None
         self._opencode_events: "queue.Queue[tuple[str, object]]" = queue.Queue()
 
         # --- Состояние приложения ---
@@ -182,29 +191,165 @@ class Application:
         self._current_screen = main_class(self._main_container, app=self)
         self._current_screen.pack(fill=tk.BOTH, expand=True)
 
-    def open_ai_routed_form(self, form_id: str, context: BuiltContext) -> None:
+    def open_ai_routed_form(
+        self,
+        form_id: str,
+        context: BuiltContext,
+        *,
+        plan_id: str = "",
+        step_id: str = "",
+        guidance: str = "",
+    ) -> None:
         """Передаёт очищенный контекст выбранной форме ровно один раз."""
         from forms.registry import FormRegistry
         from ui.screens.form_screen import FormScreen
 
         FormRegistry().get(form_id)  # fail closed до изменения навигации
-        self._pending_ai_handoff = (form_id, context)
+        self._pending_ai_handoff = (
+            form_id,
+            AIFormHandoff(
+                context=context,
+                plan_id=plan_id,
+                step_id=step_id,
+                guidance=guidance,
+            ),
+        )
         try:
             self.navigate_to(FormScreen, form_id=form_id, ai_autostart=True)
         except Exception:
             self._pending_ai_handoff = None
             raise
 
-    def consume_ai_handoff(self, form_id: str) -> BuiltContext | None:
+    def consume_ai_handoff(self, form_id: str) -> AIFormHandoff | None:
         """Забирает handoff; повторный показ/Back уже не запустит AI автоматически."""
         pending = self._pending_ai_handoff
         self._pending_ai_handoff = None
         if pending is None:
             return None
-        expected_form_id, context = pending
+        expected_form_id, handoff = pending
         if expected_form_id != form_id:
             return None
-        return context
+        return handoff
+
+    def accept_execution_plan(
+        self,
+        *,
+        context: BuiltContext,
+        steps: tuple[PlannedFormStep, ...],
+        title: str,
+        shared_guidance: str = "",
+    ) -> ExecutionPlanState:
+        """Сохраняет только явно принятый пользователем план."""
+        self.execution_plan = ExecutionPlanState.from_specs(
+            context=context,
+            specs=steps,
+            title=title,
+            shared_guidance=shared_guidance,
+        )
+        return self.execution_plan
+
+    def open_execution_plan_step(self, step_id: str) -> None:
+        plan = self.execution_plan
+        if plan is None:
+            raise RuntimeError("Активный план отсутствует")
+        step = plan.get(step_id)
+        prepared_data = dict(step.form_data) if step.status == "prepared" else {}
+        handoff = plan.handoff(step_id)
+        if prepared_data:
+            from ui.screens.form_screen import FormScreen
+            self.navigate_to(
+                FormScreen,
+                form_id=step.spec.form_id,
+                initial_data=prepared_data,
+                plan_id=plan.plan_id,
+                plan_step_id=step_id,
+            )
+            return
+        self.open_ai_routed_form(
+            step.spec.form_id,
+            handoff.context,
+            plan_id=handoff.plan_id,
+            step_id=handoff.step_id,
+            guidance=handoff.guidance,
+        )
+
+    def mark_execution_plan_step(
+        self,
+        plan_id: str,
+        step_id: str,
+        status: str,
+        error: str = "",
+        form_data: Optional[dict] = None,
+    ) -> None:
+        plan = self.execution_plan
+        if plan is None or plan.plan_id != plan_id or not step_id:
+            return
+        plan.mark(step_id, status, error, form_data)
+
+    def clear_execution_plan(self, plan_id: str = "") -> bool:
+        """Удаляет только ожидаемый in-memory план, не затрагивая внешние системы."""
+        plan = self.execution_plan
+        if plan is None or (plan_id and plan.plan_id != plan_id):
+            return False
+        self.execution_plan = None
+        return True
+
+    def release_execution_plan_step(self, plan_id: str, step_id: str) -> None:
+        """Возвращает незавершённый открытый шаг в очередь при уходе с формы."""
+        plan = self.execution_plan
+        if plan is None or plan.plan_id != plan_id or not step_id:
+            return
+        step = plan.get(step_id)
+        if step.status == "in_progress":
+            plan.mark(step_id, "prepared" if step.form_data else "pending")
+
+    def add_copilot_history(self, role: str, text: str) -> None:
+        clean = str(text).strip()[:10_000]
+        if clean:
+            self.copilot_history.append((role, clean))
+            self.copilot_history = self.copilot_history[-100:]
+
+    def queue_copilot_request(
+        self,
+        message: str,
+        *,
+        diagnostic_data: Any = None,
+        ticket_id: Optional[str] = None,
+    ) -> None:
+        self._pending_copilot_request = (
+            str(message)[:20_000],
+            sanitize(diagnostic_data),
+            ticket_id,
+        )
+
+    def consume_copilot_request(self) -> Optional[tuple[str, Any, Optional[str]]]:
+        pending = self._pending_copilot_request
+        self._pending_copilot_request = None
+        return pending
+
+    def open_ai_diagnostics(
+        self,
+        *,
+        form_id: str,
+        environment: str,
+        error: Any,
+        response: Any = None,
+        payload: Any = None,
+    ) -> None:
+        """Передаёт очищенную ошибку в главный чат, без auth/сырого окружения."""
+        diagnostic_data = sanitize({
+            "form_id": form_id,
+            "environment": environment,
+            "error": error,
+            "response": response,
+            "submitted_payload": payload,
+        })
+        self.queue_copilot_request(
+            "Разбери ошибку последнего исполнения, найди связанные API/приложения "
+            "в Gravitee JSON Repository и предложи безопасные следующие действия.",
+            diagnostic_data=diagnostic_data,
+        )
+        self.go_home()
 
     # ------------------------------------------------------------------
     # Запуск
@@ -348,6 +493,7 @@ class Application:
             return
         self._closing = True
         self._pending_ai_handoff = None
+        self._pending_copilot_request = None
         ai_agent = None
         detach = getattr(self._current_screen, "detach_ai_for_shutdown", None)
         if callable(detach):

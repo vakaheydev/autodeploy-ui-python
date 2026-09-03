@@ -42,6 +42,8 @@ class ResultScreen(BaseScreen):
         self._destroyed = False
         self._poll_running = False   # защита от параллельных запросов
         self._paused = False
+        self._latest_response = initial_response
+        self._latest_error: Optional[str] = None
         super().__init__(master, app, **kwargs)
 
     # ------------------------------------------------------------------
@@ -127,6 +129,13 @@ class ResultScreen(BaseScreen):
             style="Ghost.TButton",
             command=self.app.go_home,
         ).pack(side=tk.RIGHT)
+        if hasattr(self.app, "opencode_manager"):
+            ttk.Button(
+                self._footer,
+                text="✨ Разобрать результат с AI",
+                style="Secondary.TButton",
+                command=self._open_ai_diagnostics,
+            ).pack(side=tk.RIGHT, padx=(0, 8))
 
         # Показать начальный контент и запустить опрос
         initial_content = self._form.build_result_content(
@@ -184,12 +193,15 @@ class ResultScreen(BaseScreen):
         self._poll_running = False
 
         if error:
+            self._latest_error = error
             self._set_content(f"[Ошибка опроса]\n{error}")
             self._set_status(ResultStatus.ERROR)
             self._update_timestamp()
             self._schedule_poll()
             return
 
+        self._latest_error = None
+        self._latest_response = response
         content = self._form.build_poll_content(self._environment, response)
         status = self._form.get_poll_status(self._environment, response)
         self._set_content(content)
@@ -204,6 +216,15 @@ class ResultScreen(BaseScreen):
                 from ui.dialogs import show_polling_info
                 info_text = self._form.build_info_after_polling(self._environment, self._submit_payload)
                 show_polling_info(self, self._form.title, info_text)
+
+    def _open_ai_diagnostics(self) -> None:
+        self.app.open_ai_diagnostics(
+            form_id=self._form.form_id,
+            environment=self._environment,
+            error=self._latest_error or "Проверь результат исполнения и возможные риски",
+            response=self._latest_response,
+            payload=self._submit_payload,
+        )
 
     # ------------------------------------------------------------------
     # Пауза / возобновление

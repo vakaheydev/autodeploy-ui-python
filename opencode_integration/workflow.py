@@ -1,0 +1,151 @@
+"""Состояние подтверждённого многоформового плана и AI handoff."""
+from __future__ import annotations
+
+import copy
+import threading
+import uuid
+from dataclasses import dataclass, field
+from typing import Optional
+
+from opencode_integration.context_builder import BuiltContext
+
+
+PLAN_STATUSES = ("pending", "in_progress", "prepared", "completed", "failed")
+
+
+@dataclass(frozen=True)
+class PlannedFormStep:
+    step_id: str
+    position: int
+    form_id: str
+    title: str
+    reason: str
+    depends_on: tuple[str, ...] = ()
+    confidence: str = "unknown"
+
+
+@dataclass
+class RuntimePlanStep:
+    spec: PlannedFormStep
+    status: str = "pending"
+    error: str = ""
+    form_data: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AIFormHandoff:
+    context: BuiltContext
+    plan_id: str = ""
+    step_id: str = ""
+    guidance: str = ""
+
+
+@dataclass
+class ExecutionPlanState:
+    """Потокобезопасный in-memory план; внешних действий сам не выполняет."""
+
+    ticket_id: str
+    context: BuiltContext
+    steps: list[RuntimePlanStep]
+    title: str = "План исполнения заявки"
+    shared_guidance: str = ""
+    plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        init=False,
+        repr=False,
+    )
+
+    @classmethod
+    def from_specs(
+        cls,
+        *,
+        context: BuiltContext,
+        specs: tuple[PlannedFormStep, ...],
+        title: str = "План исполнения заявки",
+        shared_guidance: str = "",
+    ) -> "ExecutionPlanState":
+        return cls(
+            ticket_id=context.ticket_id,
+            context=context,
+            steps=[RuntimePlanStep(spec=item) for item in specs],
+            title=title,
+            shared_guidance=str(shared_guidance)[:20_000],
+        )
+
+    def snapshot(self) -> tuple[RuntimePlanStep, ...]:
+        with self._lock:
+            return tuple(
+                RuntimePlanStep(
+                    item.spec,
+                    item.status,
+                    item.error,
+                    copy.deepcopy(item.form_data),
+                )
+                for item in self.steps
+            )
+
+    def get(self, step_id: str) -> RuntimePlanStep:
+        with self._lock:
+            for item in self.steps:
+                if item.spec.step_id == step_id:
+                    return item
+        raise KeyError(f"Шаг плана {step_id!r} не найден")
+
+    def can_open(self, step_id: str) -> bool:
+        with self._lock:
+            item = self.get(step_id)
+            completed = {
+                candidate.spec.step_id
+                for candidate in self.steps
+                if candidate.status == "completed"
+            }
+            return (
+                item.status != "completed"
+                and all(dependency in completed for dependency in item.spec.depends_on)
+            )
+
+    def mark(
+        self,
+        step_id: str,
+        status: str,
+        error: str = "",
+        form_data: Optional[dict] = None,
+    ) -> None:
+        if status not in PLAN_STATUSES:
+            raise ValueError(f"Неизвестный статус шага плана: {status}")
+        with self._lock:
+            item = self.get(step_id)
+            item.status = status
+            item.error = str(error)[:1000] if status == "failed" else ""
+            if form_data is not None:
+                item.form_data = copy.deepcopy(form_data)
+            if status == "completed":
+                item.form_data = {}
+
+    @property
+    def complete(self) -> bool:
+        with self._lock:
+            return bool(self.steps) and all(
+                item.status == "completed" for item in self.steps
+            )
+
+    def handoff(self, step_id: str) -> AIFormHandoff:
+        with self._lock:
+            item = self.get(step_id)
+            if not self.can_open(step_id):
+                raise ValueError("Сначала завершите зависимые шаги плана")
+            item.status = "in_progress"
+            guidance = (
+                f"Execution plan step {item.spec.position}: {item.spec.title}. "
+                f"Purpose: {item.spec.reason}. Fill only this form step; do not "
+                "perform actions belonging to other steps."
+                + (f"\nShared validated copilot context:\n{self.shared_guidance}"
+                   if self.shared_guidance else "")
+            )
+            return AIFormHandoff(
+                context=self.context,
+                plan_id=self.plan_id,
+                step_id=item.spec.step_id,
+                guidance=guidance,
+            )

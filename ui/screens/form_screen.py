@@ -4,6 +4,7 @@ FormScreen — экран заполнения и отправки формы.
 в зависимости от предиката condition(values_dict) -> bool.
 """
 import json
+import logging
 import queue
 import threading
 import time
@@ -20,7 +21,10 @@ from config.environments import (
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
+    OPENCODE_REPOSITORY_GIT_PULL_KEY,
+    OPENCODE_REPOSITORY_MCP_KEY,
 )
+from config.mcp_profiles import setting_enabled
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.context_builder import BuiltContext
 from opencode_integration.client import (
@@ -34,6 +38,9 @@ from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
 
+_log = logging.getLogger("opencode.form_ui")
+
+
 class FormScreen(BaseScreen):
 
     def __init__(
@@ -43,13 +50,21 @@ class FormScreen(BaseScreen):
         form_id: str,
         initial_data: Optional[Dict[str, Any]] = None,
         ai_autostart: bool = False,
+        plan_id: str = "",
+        plan_step_id: str = "",
         **kwargs,
     ) -> None:
         self._form_id = form_id
         self._initial_data = initial_data
+        self._ai_handoff = app.consume_ai_handoff(form_id) if ai_autostart else None
         self._ai_prepared_context: Optional[BuiltContext] = (
-            app.consume_ai_handoff(form_id) if ai_autostart else None
+            self._ai_handoff.context if self._ai_handoff is not None else None
         )
+        self._ai_plan_id = self._ai_handoff.plan_id if self._ai_handoff else plan_id
+        self._ai_plan_step_id = (
+            self._ai_handoff.step_id if self._ai_handoff else plan_step_id
+        )
+        self._ai_plan_guidance = self._ai_handoff.guidance if self._ai_handoff else ""
         self._ai_autostart_pending = self._ai_prepared_context is not None
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
@@ -76,6 +91,7 @@ class FormScreen(BaseScreen):
         self._ai_assistant: Optional[AIAssistantDialog] = None
         self._ai_agent: Optional[FormExtractorAgent] = None
         self._ai_busy = False
+        self._last_submit_failure: Optional[Dict[str, Any]] = None
         super().__init__(master, app, **kwargs)
 
     # ------------------------------------------------------------------
@@ -362,6 +378,13 @@ class FormScreen(BaseScreen):
                 ),
             ).pack(side=tk.LEFT, padx=(8, 0))
 
+        self._diagnose_submit_btn = ttk.Button(
+            foot,
+            text="✨ Разобрать ошибку с AI",
+            style="Secondary.TButton",
+            command=self._open_submit_diagnostics,
+        )
+
         self._status_var = tk.StringVar()
         self._status_lbl = ttk.Label(self, textvariable=self._status_var, style="Muted.TLabel")
         self._status_lbl.pack(anchor=tk.W, pady=(6, 0))
@@ -434,6 +457,10 @@ class FormScreen(BaseScreen):
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
             self._cancel_ai_operation()
+            self.app.release_execution_plan_step(
+                self._ai_plan_id,
+                self._ai_plan_step_id,
+            )
             if self._ai_poll_id is not None:
                 try:
                     self.after_cancel(self._ai_poll_id)
@@ -807,6 +834,11 @@ class FormScreen(BaseScreen):
                     form_data=form_data,
                     fields_snapshot=fields_snapshot,
                 )
+                self.app.mark_execution_plan_step(
+                    self._ai_plan_id,
+                    self._ai_plan_step_id,
+                    "completed",
+                )
                 from ui.screens.result_screen import ResultScreen
                 self.app.navigate_to(
                     ResultScreen,
@@ -816,6 +848,17 @@ class FormScreen(BaseScreen):
                     submit_payload=result.payload,
                 )
             else:
+                self._remember_submit_failure(
+                    error=result.message,
+                    response=result.raw_response,
+                    form_data=form_data,
+                )
+                self.app.mark_execution_plan_step(
+                    self._ai_plan_id,
+                    self._ai_plan_step_id,
+                    "failed",
+                    result.message,
+                )
                 self._set_status(f"✗  {result.message.splitlines()[0]}", "error")
                 show_error(self, "Ошибка отправки", result.message)
 
@@ -823,10 +866,52 @@ class FormScreen(BaseScreen):
             self, "Отправка…",
             worker=_worker,
             on_done=_done,
-            on_error=lambda exc: (
-                self._set_status(f"✗  {exc}", "error"),
-                show_error(self, "Ошибка отправки", str(exc)),
-            ),
+            on_error=self._handle_submit_exception,
+        )
+
+    def _remember_submit_failure(
+        self,
+        *,
+        error: Any,
+        response: Any,
+        form_data: Dict[str, Any],
+    ) -> None:
+        try:
+            payload = self._form.build_payload(form_data)
+        except Exception as exc:
+            payload = {"_payload_build_error": type(exc).__name__}
+        self._last_submit_failure = {
+            "error": error,
+            "response": response,
+            "payload": payload,
+        }
+        if hasattr(self, "_diagnose_submit_btn"):
+            self._diagnose_submit_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+    def _handle_submit_exception(self, exc: Exception) -> None:
+        form_data = self._collect_form_data()
+        self._remember_submit_failure(
+            error=str(exc), response=None, form_data=form_data
+        )
+        self.app.mark_execution_plan_step(
+            self._ai_plan_id,
+            self._ai_plan_step_id,
+            "failed",
+            str(exc),
+        )
+        self._set_status(f"✗  {exc}", "error")
+        show_error(self, "Ошибка отправки", str(exc))
+
+    def _open_submit_diagnostics(self) -> None:
+        failure = self._last_submit_failure
+        if not failure:
+            return
+        self.app.open_ai_diagnostics(
+            form_id=self._form.form_id,
+            environment=self.app.current_environment.get(),
+            error=failure["error"],
+            response=failure["response"],
+            payload=failure["payload"],
         )
 
     def _preview_payload(self) -> None:
@@ -1002,6 +1087,10 @@ class FormScreen(BaseScreen):
         allowed_mcp = self._parse_allowed_mcp(
             settings.get(OPENCODE_ALLOWED_MCP_KEY, "")
         )
+        repository_mcp = settings.get(OPENCODE_REPOSITORY_MCP_KEY, "").strip()
+        allow_repository_git_pull = setting_enabled(
+            settings.get(OPENCODE_REPOSITORY_GIT_PULL_KEY, "true")
+        )
         environment = self.app.current_environment.get()
         current_values = self._collect_form_data()
         cancel_event = threading.Event()
@@ -1044,6 +1133,9 @@ class FormScreen(BaseScreen):
                 environment=environment,
                 current_values=current_values,
                 allowed_mcp=allowed_mcp,
+                repository_mcp=repository_mcp,
+                allow_repository_git_pull=allow_repository_git_pull,
+                plan_guidance=self._ai_plan_guidance,
                 provider_id=provider_id,
                 model_id=model_id,
                 cancel_event=cancel_event,
@@ -1142,6 +1234,11 @@ class FormScreen(BaseScreen):
         if dialog is not None:
             dialog.close()
         self._set_status("AI-предложения не применены", "muted")
+        self.app.mark_execution_plan_step(
+            self._ai_plan_id,
+            self._ai_plan_step_id,
+            "pending",
+        )
         self._clear_ai_state()
 
         def cleanup() -> None:
@@ -1243,6 +1340,11 @@ class FormScreen(BaseScreen):
             dialog.set_status("Текущий запрос остановлен.")
             dialog.set_busy(False)
             return
+        _log.error(
+            "form assistant failed action=%s error_type=%s",
+            action,
+            type(error).__name__,
+        )
         if action == "begin" and (
             self._ai_agent is None or self._ai_agent.session_id is None
         ):
@@ -1283,9 +1385,20 @@ class FormScreen(BaseScreen):
             reference_values=reference_values,
         )
         if patch is None:
+            self.app.mark_execution_plan_step(
+                self._ai_plan_id,
+                self._ai_plan_step_id,
+                "pending",
+            )
             self._set_status("AI-предложения не применены", "muted")
             return
         filled = self.apply_form_data(patch)
+        self.app.mark_execution_plan_step(
+            self._ai_plan_id,
+            self._ai_plan_step_id,
+            "prepared",
+            form_data=self._collect_form_data(),
+        )
         self._set_status(
             f"✓  Применено AI-предложений: {len(filled)}",
             "success",

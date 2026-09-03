@@ -26,6 +26,51 @@ def redact_log_text(value: object) -> str:
     return _SECRET_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
 
 
+def sanitize_server_log_line(value: object) -> str:
+    """Фильтрует дочерний stdout OpenCode до terminal/file logging.
+
+    Lifecycle, provider names, tool names и типы ошибок полезны. Prompt, message
+    parts и structured output могут содержать ITSM/ADO/PII, поэтому целиком не
+    протоколируются даже после regexp-redaction.
+    """
+    text = str(value).replace("\x00", "").strip()
+    if not text:
+        return ""
+    lowered = text.casefold()
+    sensitive_markers = (
+        "begin_untrusted_",
+        "end_untrusted_",
+        "structured_output",
+        "structuredoutput",
+        "prompt=",
+        '"prompt"',
+        "parts=",
+        '"parts"',
+        "input=",
+        '"input"',
+        "output=",
+        '"output"',
+        "message=",
+        '"message"',
+        "content=",
+        '"content"',
+        "payload=",
+        '"payload"',
+        "body=",
+        '"body"',
+        "text=",
+        '"text"',
+        "system=",
+        '"system"',
+        "itsm_data",
+        "ado_data",
+    )
+    if any(marker in lowered for marker in sensitive_markers):
+        return "[CONTENT_REDACTED: possible prompt or model payload]"
+    clean = "".join(char if char >= " " or char == "\t" else " " for char in text)
+    return redact_log_text(clean)[:2000]
+
+
 class RedactingFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         return redact_log_text(super().format(record))

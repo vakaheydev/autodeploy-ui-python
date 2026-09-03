@@ -26,7 +26,12 @@ OPENCODE_HOST = "127.0.0.1"
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 FORM_EXTRACTOR_AGENT = "form-extractor"
 FORM_ROUTER_AGENT = "form-router"
-REQUIRED_AGENTS = (FORM_EXTRACTOR_AGENT, FORM_ROUTER_AGENT)
+AUTODEPLOY_COPILOT_AGENT = "autodeploy-copilot"
+REQUIRED_AGENTS = (
+    FORM_EXTRACTOR_AGENT,
+    FORM_ROUTER_AGENT,
+    AUTODEPLOY_COPILOT_AGENT,
+)
 TARGET_OPENCODE_VERSION = "1.18.18"
 _log = logging.getLogger("opencode.manager")
 
@@ -626,10 +631,10 @@ class OpenCodeManager:
         kwargs: dict[str, object] = {
             "cwd": str(self.runtime_dir),
             "stdin": subprocess.DEVNULL,
-            # Поток OpenCode может содержать provider diagnostics и контекст.
-            # HTTP lifecycle логируется отдельно, без body.
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            # Читаются отдельными daemon threads. Перед записью строки проходят
+            # фильтр контента и redaction в core.logging_setup.
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
@@ -650,8 +655,46 @@ class OpenCodeManager:
             ],
             **kwargs,  # type: ignore[arg-type]
         )
+        self._start_stream_loggers(process)
         _log.info("server process started pid=%s host=%s port=%s", process.pid, OPENCODE_HOST, port)
         return process
+
+    @staticmethod
+    def _start_stream_loggers(process: subprocess.Popen[str]) -> None:
+        """Дренирует stdout/stderr сервера, не допуская зависания PIPE."""
+        from core.logging_setup import sanitize_server_log_line
+
+        def reader(stream, level: int, channel: str) -> None:
+            if stream is None:
+                return
+            try:
+                for raw_line in iter(stream.readline, ""):
+                    safe = sanitize_server_log_line(raw_line)
+                    if safe:
+                        _log.log(level, "server[%s] %s", channel, safe)
+            except Exception:
+                _log.warning(
+                    "server log reader failed channel=%s pid=%s",
+                    channel,
+                    process.pid,
+                    exc_info=True,
+                )
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        for stream, level, channel in (
+            (process.stdout, logging.INFO, "stdout"),
+            (process.stderr, logging.WARNING, "stderr"),
+        ):
+            threading.Thread(
+                target=reader,
+                args=(stream, level, channel),
+                name=f"opencode-server-{channel}-{process.pid}",
+                daemon=True,
+            ).start()
 
     def _wait_until_ready(
         self,

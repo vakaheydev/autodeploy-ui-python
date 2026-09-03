@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 import ui.theme as theme
 from forms.base_form import BaseForm
+from forms.fields import FieldType
 from opencode_integration.response_validator import (
     ResponseValidator,
     ValidatedResponse,
@@ -225,7 +226,7 @@ class AIAutofillPreview:
                 caption = f"{label}  [{value}]" if label != value else value
                 menu.add_command(
                     label=caption,
-                    command=lambda v=value, k=row.key: self._set_entry(k, v, True),
+                    command=lambda v=value, k=row.key: self._apply_reference_candidate(k, v),
                 )
             candidate_button.config(menu=menu)
             candidate_button.pack(side=tk.LEFT, padx=(0, 5))
@@ -274,6 +275,21 @@ class AIAutofillPreview:
         entry.insert("1.0", display_value(value))
         self._selected[key].set(selected)
         self._validate_entries()
+
+    def _apply_reference_candidate(self, key: str, value: str) -> None:
+        """SELECT заменяет значение, MULTISELECT добавляет его в JSON-массив."""
+        if self._fields[key].field_type != FieldType.MULTISELECT:
+            self._set_entry(key, value, True)
+            return
+        raw = self._entries[key].get("1.0", "end-1c")
+        try:
+            current = parse_edited_value(raw, FieldType.MULTISELECT)
+        except ValueError:
+            current = []
+        values = list(current or []) if isinstance(current, list) else []
+        if value not in values:
+            values.append(value)
+        self._set_entry(key, values, True)
 
     def _schedule_validation(self, _event: tk.Event, key: str) -> None:
         # Ручное редактирование автоматически делает поле выбранным.

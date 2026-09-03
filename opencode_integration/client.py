@@ -90,8 +90,12 @@ def _unwrap_data(value: Any) -> Any:
     return value
 
 
-def build_session_permissions(mcp_names: Sequence[str]) -> list[Dict[str, str]]:
-    """Deny-by-default; выбранные MCP видимы, но каждый вызов требует согласия."""
+def build_session_permissions(
+    mcp_names: Sequence[str],
+    tool_allowlist: Optional[Mapping[str, Sequence[str]]] = None,
+    tool_asklist: Optional[Mapping[str, Sequence[str]]] = None,
+) -> list[Dict[str, str]]:
+    """Deny-by-default; известный read-only профиль разрешается точно."""
     rules: list[Dict[str, str]] = [
         {"permission": "*", "pattern": "*", "action": "deny"},
         {"permission": "StructuredOutput", "pattern": "*", "action": "allow"},
@@ -103,7 +107,31 @@ def build_session_permissions(mcp_names: Sequence[str]) -> list[Dict[str, str]]:
             "Некорректное имя MCP; разрешены A-Z, a-z, 0-9, '.', '_' и '-': "
             + ", ".join(invalid)
         )
+    exact = tool_allowlist or {}
+    confirm = tool_asklist or {}
     for name in sorted(names):
+        if name in exact or name in confirm:
+            for tool in dict.fromkeys(
+                str(item).strip() for item in exact.get(name, ())
+            ):
+                if not _MCP_NAME_RE.fullmatch(tool):
+                    raise ValueError(f"Некорректное имя MCP tool: {tool!r}")
+                rules.append({
+                    "permission": f"{name}_{tool}",
+                    "pattern": "*",
+                    "action": "allow",
+                })
+            for tool in dict.fromkeys(str(item).strip() for item in confirm.get(name, ())):
+                if not _MCP_NAME_RE.fullmatch(tool):
+                    raise ValueError(f"Некорректное имя MCP tool: {tool!r}")
+                rules.append({
+                    "permission": f"{name}_{tool}",
+                    "pattern": "*",
+                    "action": "ask",
+                })
+            # При наличии профиля никакие эвристические wildcard-разрешения
+            # для этого сервера не добавляются.
+            continue
         # OpenCode именует MCP tools как <server>_<tool>. Разрешаем запросить
         # согласие только для явно read-oriented имён. Неизвестные операции
         # остаются под общим deny. Мутационные маркеры идут последними и потому
@@ -259,6 +287,8 @@ class OpenCodeClient:
         provider_id: str = "",
         model_id: str = "",
         mcp_names: Sequence[str] = (),
+        mcp_tool_allowlist: Optional[Mapping[str, Sequence[str]]] = None,
+        mcp_tool_asklist: Optional[Mapping[str, Sequence[str]]] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> str:
         if bool(provider_id) != bool(model_id):
@@ -267,7 +297,11 @@ class OpenCodeClient:
             )
         body: Dict[str, Any] = {
             "title": title[:200],
-            "permission": build_session_permissions(mcp_names),
+            "permission": build_session_permissions(
+                mcp_names,
+                mcp_tool_allowlist,
+                mcp_tool_asklist,
+            ),
             "metadata": dict(metadata or {}),
         }
         if agent:
@@ -372,6 +406,7 @@ class OpenCodeClient:
         retry_count: int = 2,
         cancel_event: Optional[threading.Event] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_response: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         body = self._message_body(
             prompt=prompt,
@@ -391,6 +426,11 @@ class OpenCodeClient:
             cancel_event=cancel_event,
             on_event=on_event,
         )
+        if on_response is not None:
+            try:
+                on_response(response)
+            except Exception:
+                _log.warning("structured response observer failed", exc_info=True)
         info = response.get("info") or {}
         structured = None
         for container in (info, response):

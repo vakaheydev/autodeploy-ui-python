@@ -59,7 +59,7 @@ class HomeScreen(BaseScreen):
             lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
         )
         window = canvas.create_window((0, 0), window=col, anchor="nw")
-        canvas.bind("<Configure>", self._centered_resize(canvas, window, max_width=640))
+        canvas.bind("<Configure>", self._centered_resize(canvas, window, max_width=900))
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)

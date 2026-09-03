@@ -401,3 +401,137 @@ def describe_form(form: BaseForm, environment: str) -> Dict[str, Any]:
         "environment": environment,
         "fields": [describe_field(field) for field in form.fields],
     }
+
+
+def build_copilot_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
+    """Строгий контракт единой точки входа главного AI-чата."""
+    allowed = list(dict.fromkeys(str(item) for item in form_ids if str(item)))
+    if not allowed:
+        raise ValueError("Для copilot schema нужен хотя бы один form_id")
+
+    nullable_short = _nullable({
+        "type": "string", "minLength": 1, "maxLength": 1000,
+    })
+    candidate = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["form_id", "score", "reason"],
+        "properties": {
+            "form_id": {"type": "string", "enum": allowed},
+            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
+        },
+    }
+    plan_step = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "step_id", "position", "form_id", "title", "reason",
+            "depends_on", "confidence",
+        ],
+        "properties": {
+            "step_id": {
+                "type": "string", "pattern": r"^[a-z][a-z0-9_-]{0,39}$",
+            },
+            "position": {"type": "integer", "minimum": 1, "maximum": 20},
+            "form_id": {"type": "string", "enum": allowed},
+            "title": {"type": "string", "minLength": 1, "maxLength": 300},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
+            "depends_on": {
+                "type": "array",
+                "items": {
+                    "type": "string", "pattern": r"^[a-z][a-z0-9_-]{0,39}$",
+                },
+                "uniqueItems": True,
+                "maxItems": 19,
+            },
+            "confidence": {"type": "string", "enum": list(CONFIDENCE_VALUES)},
+        },
+    }
+    repository_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "entity_type", "identifier", "name", "scope", "path", "score", "reason",
+        ],
+        "properties": {
+            "entity_type": {
+                "type": "string",
+                "enum": ["api", "application", "json", "unknown"],
+            },
+            "identifier": nullable_short,
+            "name": nullable_short,
+            "scope": {"type": "string", "minLength": 1, "maxLength": 100},
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "pattern": r"^(?![\\/])(?![A-Za-z]:[\\/])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$)).+$",
+            },
+            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1500},
+        },
+    }
+    diagnostics = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "probable_causes", "evidence", "next_actions"],
+        "properties": {
+            "summary": {"type": "string", "minLength": 1, "maxLength": 3000},
+            "probable_causes": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1500},
+                "maxItems": 15,
+            },
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1500},
+                "maxItems": 30,
+            },
+            "next_actions": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1500},
+                "maxItems": 15,
+            },
+        },
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Gravitee AutoDeploy unified copilot response",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "intent", "answer", "question", "selected_form_id",
+            "form_candidates", "plan", "repository_items", "diagnostics", "warnings",
+        ],
+        "properties": {
+            "intent": {
+                "type": "string",
+                "enum": [
+                    "single_form", "execution_plan", "repository_search",
+                    "similar_objects", "diagnostics", "clarification", "conversation",
+                ],
+            },
+            "answer": {"type": "string", "minLength": 1, "maxLength": 6000},
+            "question": nullable_short,
+            "selected_form_id": {
+                "anyOf": [
+                    {"type": "string", "enum": allowed},
+                    {"type": "null"},
+                ],
+            },
+            "form_candidates": {
+                "type": "array", "items": candidate, "maxItems": min(3, len(allowed)),
+            },
+            "plan": {"type": "array", "items": plan_step, "maxItems": 20},
+            "repository_items": {
+                "type": "array", "items": repository_item, "maxItems": 30,
+            },
+            "diagnostics": {"anyOf": [diagnostics, {"type": "null"}]},
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "maxItems": 50,
+            },
+        },
+    }

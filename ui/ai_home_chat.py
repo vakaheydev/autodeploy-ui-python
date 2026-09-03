@@ -1,6 +1,7 @@
-"""Компактный AI-чат главного экрана для выбора формы по заявке."""
+"""Главный AI-чат: единая точка входа в формы и Gravitee repository."""
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -10,168 +11,187 @@ from typing import Any, Optional
 
 import ui.theme as theme
 from config.environments import (
+    OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
+    OPENCODE_REPOSITORY_GIT_PULL_KEY,
+    OPENCODE_REPOSITORY_MCP_KEY,
 )
+from config.mcp_profiles import setting_enabled
 from forms.registry import FormRegistry
+from opencode_integration.agent import ConversationEvent
 from opencode_integration.client import OpenCodeCancelled
-from opencode_integration.router import (
-    FormRouter,
-    RoutingOutcome,
-    extract_ticket_id,
-)
-from ui.dialogs import ask_ticket_id
+from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot
+from ui.dialogs import ask_ticket_id, show_confirm, show_error
 
 
 _log = logging.getLogger("opencode.home_chat")
 
 
 class AIHomeChat(tk.Frame):
-    """Ticket → route → existing FormScreen AI workflow."""
+    """Natural language → validated copilot outcome → explicit user action."""
 
     def __init__(self, master: tk.Widget, *, app) -> None:
         super().__init__(master, bg=theme.C["border"])
         self.app = app
         self._queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         self._cancel_event: Optional[threading.Event] = None
-        self._router: Optional[FormRouter] = None
-        self._outcome: Optional[RoutingOutcome] = None
+        self._copilot: Optional[UnifiedCopilot] = None
+        self._outcome: Optional[CopilotOutcome] = None
         self._poll_id: Optional[str] = None
         self._busy = False
         self._destroying = False
         self._connected_address = ""
+        self._permission_rows: dict[str, tk.Frame] = {}
+        self._pending_checked = False
         self._build()
 
     def _build(self) -> None:
         surface = tk.Frame(self, bg=theme.C["surface"])
         surface.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-
         heading = tk.Frame(surface, bg=theme.C["surface"])
         heading.pack(fill=tk.X, padx=16, pady=(14, 3))
         tk.Label(
-            heading,
-            text="✦  AI-помощник по заявкам",
-            font=theme.F["h2"],
-            bg=theme.C["surface"],
-            fg=theme.C["text"],
+            heading, text="✦  Gravitee AI", font=theme.F["h2"],
+            bg=theme.C["surface"], fg=theme.C["text"],
         ).pack(side=tk.LEFT)
         self._connection_label = tk.Label(
-            heading,
-            text="● OpenCode",
-            font=theme.F["small"],
-            bg=theme.C["surface"],
-            fg=theme.C["success"],
+            heading, text="● OpenCode", font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["success"],
         )
         self._connection_label.pack(side=tk.RIGHT)
-
         tk.Label(
             surface,
             text=(
-                "Отправьте номер заявки. Помощник выберет форму и запустит "
-                "существующий сценарий AI-заполнения."
+                "Единая точка входа: заявка → форма или план, поиск API/приложений, "
+                "похожие шаблоны и диагностика исполнения."
             ),
-            wraplength=590,
-            justify=tk.LEFT,
-            font=theme.F["small"],
-            bg=theme.C["surface"],
-            fg=theme.C["text_muted"],
-        ).pack(fill=tk.X, padx=16, pady=(0, 8))
+            wraplength=820, justify=tk.LEFT, font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(fill=tk.X, padx=16, pady=(0, 7))
+
+        quick = tk.Frame(surface, bg=theme.C["surface"])
+        quick.pack(fill=tk.X, padx=16, pady=(0, 7))
+        for label, prompt in (
+            ("Найти API", "Найди API по имени, пути или backend URL: "),
+            ("Найти приложение", "Найди приложение по имени, ID или client_id: "),
+            ("Похожие шаблоны", "Найди похожие API или приложения для шаблона: "),
+            ("План заявки", "Построй полный многошаговый план исполнения заявки "),
+        ):
+            ttk.Button(
+                quick, text=label, style="Ghost.TButton",
+                command=lambda value=prompt: self._set_input(value),
+            ).pack(side=tk.LEFT, padx=(0, 4))
 
         self._transcript = tk.Text(
-            surface,
-            height=7,
-            wrap=tk.WORD,
-            font=theme.F["small"],
-            bg=theme.C["surface_alt"],
-            fg=theme.C["text"],
-            relief="flat",
-            bd=0,
-            padx=10,
-            pady=8,
-            state=tk.DISABLED,
-            cursor="arrow",
+            surface, height=12, wrap=tk.WORD, font=theme.F["small"],
+            bg=theme.C["surface_alt"], fg=theme.C["text"], relief="flat", bd=0,
+            padx=10, pady=8, state=tk.DISABLED, cursor="arrow",
         )
-        self._transcript.pack(fill=tk.X, padx=16)
-        self._transcript.tag_configure(
-            "assistant", foreground=theme.C["text"], spacing1=3, spacing3=5
-        )
-        self._transcript.tag_configure(
-            "user", foreground=theme.C["primary"], spacing1=3, spacing3=5
-        )
-        self._transcript.tag_configure(
-            "error", foreground=theme.C["error"], spacing1=3, spacing3=5
-        )
-        self._append("assistant", "Готов определить форму. Пришлите номер заявки.")
+        self._transcript.pack(fill=tk.BOTH, expand=True, padx=16)
+        self._transcript.tag_configure("assistant", foreground=theme.C["text"], spacing3=5)
+        self._transcript.tag_configure("user", foreground=theme.C["primary"], spacing3=5)
+        self._transcript.tag_configure("error", foreground=theme.C["error"], spacing3=5)
+        self._transcript.tag_configure("activity", foreground=theme.C["text_muted"], spacing3=3)
+        for role, message in self.app.copilot_history:
+            self._append(role, message, remember=False)
+        if not self.app.copilot_history:
+            self._append(
+                "assistant",
+                "Опишите задачу обычным текстом или пришлите номер заявки. "
+                "Репозиторные факты я ищу только через проверенные read-only MCP-вызовы.",
+            )
 
-        self._candidate_frame = tk.Frame(surface, bg=theme.C["surface"])
-        self._candidate_frame.pack(fill=tk.X, padx=16, pady=(6, 0))
+        self._permission_frame = tk.Frame(surface, bg=theme.C["surface"])
+        self._permission_frame.pack(fill=tk.X, padx=16, pady=(5, 0))
+        self._plan_frame = tk.Frame(surface, bg=theme.C["surface"])
+        self._plan_frame.pack(fill=tk.X, padx=16, pady=(5, 0))
+        self._action_frame = tk.Frame(surface, bg=theme.C["surface"])
+        self._action_frame.pack(fill=tk.X, padx=16, pady=(5, 0))
+        self._render_active_plan()
 
         self._status_var = tk.StringVar(value="")
         self._status_label = tk.Label(
-            surface,
-            textvariable=self._status_var,
-            font=theme.F["small"],
-            bg=theme.C["surface"],
-            fg=theme.C["text_muted"],
-            anchor="w",
+            surface, textvariable=self._status_var, font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["text_muted"], anchor="w",
         )
         self._status_label.pack(fill=tk.X, padx=16, pady=(6, 2))
         self._progress = ttk.Progressbar(surface, mode="indeterminate")
 
         self._input_row = tk.Frame(surface, bg=theme.C["surface"])
         self._input_row.pack(fill=tk.X, padx=16, pady=(5, 14))
-        self._input = ttk.Entry(self._input_row, font=theme.F["body"])
-        self._input.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
-        self._input.bind("<Return>", lambda _event: self._send())
+        self._input = tk.Text(
+            self._input_row, height=2, wrap=tk.WORD, font=theme.F["body"],
+            bg=theme.C["input_bg"], fg=theme.C["text"], relief="solid", bd=1,
+            padx=7, pady=5,
+        )
+        self._input.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._input.bind("<Return>", self._on_enter)
         self._pick_button = ttk.Button(
-            self._input_row,
-            text="Выбрать заявку",
-            style="Secondary.TButton",
+            self._input_row, text="Заявка", style="Secondary.TButton",
             command=self._pick_ticket,
         )
         self._pick_button.pack(side=tk.LEFT, padx=(8, 0))
         self._send_button = ttk.Button(
-            self._input_row,
-            text="Отправить",
-            style="Primary.TButton",
-            command=self._send,
+            self._input_row, text="Отправить", style="Primary.TButton", command=self._send,
         )
         self._send_button.pack(side=tk.LEFT, padx=(8, 0))
         self._cancel_button = ttk.Button(
-            self._input_row,
-            text="Остановить",
-            style="Secondary.TButton",
+            self._input_row, text="Остановить", style="Secondary.TButton",
             command=self._cancel_request,
         )
 
     def connected(self, address: str) -> None:
         self._connected_address = address
         self._connection_label.config(text=f"● {address or 'OpenCode'}")
+        if not self._pending_checked:
+            self._pending_checked = True
+            self.after(120, self._consume_pending_request)
 
     def disconnected(self) -> None:
         self._connected_address = ""
         if self._busy:
             self._cancel_request()
 
+    def _consume_pending_request(self) -> None:
+        if self._destroying or not self._connected_address:
+            self._pending_checked = False
+            return
+        pending = self.app.consume_copilot_request()
+        if pending is not None:
+            message, diagnostics, ticket_id = pending
+            self._start(message, ticket_id=ticket_id, diagnostic_data=diagnostics)
+
     def _pick_ticket(self) -> None:
         ticket_id = ask_ticket_id(self)
         if ticket_id:
-            self._start(ticket_id)
+            self._start(
+                f"Проанализируй заявку {ticket_id}: выбери одну форму или построй "
+                "многошаговый план, если операций несколько.",
+                ticket_id=ticket_id,
+            )
+
+    def _on_enter(self, event: tk.Event) -> Optional[str]:
+        if event.state & 0x0001:
+            return None
+        self._send()
+        return "break"
 
     def _send(self) -> None:
         if self._busy:
             return
-        try:
-            ticket_id = extract_ticket_id(self._input.get())
-        except Exception as exc:
-            self._append("error", str(exc))
-            self._status("Укажите один номер заявки.", error=True)
+        message = self._input.get("1.0", "end-1c").strip()
+        if not message:
+            self._status("Введите вопрос, задачу или номер заявки.", error=True)
             return
-        self._input.delete(0, tk.END)
-        self._start(ticket_id)
+        self._input.delete("1.0", tk.END)
+        self._start(message)
 
-    def _start(self, ticket_id: str) -> None:
+    def _start(
+        self, message: str, *, ticket_id: Optional[str] = None,
+        diagnostic_data: Any = None,
+    ) -> None:
         if self._busy:
             return
         client = self.app.opencode_manager.client
@@ -179,63 +199,60 @@ class AIHomeChat(tk.Frame):
             self._append("error", "Соединение с OpenCode потеряно.")
             self._status("Подключитесь к OpenCode Server.", error=True)
             return
-
-        self._clear_candidates()
+        self._clear_actions()
+        self._clear_permissions()
         self._outcome = None
-        self._append("user", ticket_id)
+        self._append("user", message)
         settings = self.app.env_manager.load()
         provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
         model_id = settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
+        allowed_mcp = self._parse_mcp(settings.get(OPENCODE_ALLOWED_MCP_KEY, ""))
+        repository_mcp = settings.get(OPENCODE_REPOSITORY_MCP_KEY, "").strip()
+        allow_repository_git_pull = setting_enabled(
+            settings.get(OPENCODE_REPOSITORY_GIT_PULL_KEY, "true")
+        )
         try:
-            max_context_chars = int(
-                settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000")
-            )
+            max_context_chars = int(settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000"))
         except (TypeError, ValueError):
             max_context_chars = 120_000
-        environment = self.app.current_environment.get()
+        if self._copilot is None:
+            self._copilot = UnifiedCopilot(
+                client, self.app.itsm_service, self.app.tfs_service,
+                forms=FormRegistry().all_forms(), allowed_mcp=allowed_mcp,
+                repository_mcp=repository_mcp,
+                allow_repository_git_pull=allow_repository_git_pull,
+                max_context_chars=max_context_chars,
+            )
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         self._set_busy(True)
 
-        def progress(message: str) -> None:
-            self._queue.put(("progress", message))
+        def progress(value: str) -> None:
+            self._queue.put(("progress", value))
+
+        def conversation(event: ConversationEvent) -> None:
+            self._queue.put(("conversation", event))
 
         def session_changed(session_id: Optional[str]) -> None:
             self._queue.put(("session", session_id))
 
+        copilot = self._copilot
+
         def worker() -> None:
-            router: Optional[FormRouter] = None
             try:
-                router = FormRouter(
-                    client,
-                    self.app.itsm_service,
-                    self.app.tfs_service,
-                    forms=FormRegistry().all_forms(),
-                    max_context_chars=max_context_chars,
-                )
-                self._router = router
-                outcome = router.route(
-                    ticket_id=ticket_id,
-                    environment=environment,
-                    provider_id=provider_id,
-                    model_id=model_id,
-                    cancel_event=cancel_event,
-                    on_progress=progress,
-                    on_session=session_changed,
+                outcome = copilot.ask(
+                    message, environment=self.app.current_environment.get(),
+                    ticket_id=ticket_id, diagnostic_data=diagnostic_data,
+                    provider_id=provider_id, model_id=model_id,
+                    cancel_event=cancel_event, on_progress=progress,
+                    on_event=conversation, on_session=session_changed,
                 )
             except Exception as exc:
                 self._queue.put(("error", exc))
             else:
                 self._queue.put(("result", outcome))
-            finally:
-                if router is not None:
-                    router.close(on_session=session_changed)
 
-        threading.Thread(
-            target=worker,
-            name="opencode-form-router",
-            daemon=True,
-        ).start()
+        threading.Thread(target=worker, name="opencode-unified-copilot", daemon=True).start()
         self._schedule_poll()
 
     def _schedule_poll(self) -> None:
@@ -249,8 +266,12 @@ class AIHomeChat(tk.Frame):
                 event, payload = self._queue.get_nowait()
                 if event == "progress":
                     self._status(str(payload))
+                elif event == "conversation":
+                    self._handle_conversation_event(payload)
                 elif event == "session" and payload:
-                    _log.info("home routing session=%s", payload)
+                    _log.info("home copilot session=%s", payload)
+                elif event == "permission_answered":
+                    self._permission_answered(*payload)
                 elif event == "result":
                     self._finish(payload)
                 elif event == "error":
@@ -260,95 +281,377 @@ class AIHomeChat(tk.Frame):
         if self._busy and not self._destroying:
             self._schedule_poll()
 
-    def _finish(self, outcome: RoutingOutcome) -> None:
-        self._router = None
+    def _handle_conversation_event(self, event: ConversationEvent) -> None:
+        if event.kind == "permission":
+            self._render_permission(event)
+            return
+        detail = f" — {event.detail}" if event.detail else ""
+        role = "error" if event.kind == "error" else "activity"
+        self._append(role, event.title + detail, remember=False)
+
+    def _render_permission(self, event: ConversationEvent) -> None:
+        permission_id = event.permission_id
+        if not permission_id or permission_id in self._permission_rows:
+            return
+        row = tk.Frame(self._permission_frame, bg="#FEF3C7")
+        row.pack(fill=tk.X, pady=2)
+        self._permission_rows[permission_id] = row
+        tk.Label(
+            row,
+            text=f"MCP просит разрешение на один вызов: {event.permission_name}\n{event.detail}",
+            wraplength=540, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+            bg="#FEF3C7", fg=theme.C["text"],
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8, pady=6)
+        ttk.Button(
+            row, text="Разрешить один раз", style="Primary.TButton",
+            command=lambda: self._answer_permission(permission_id, True),
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            row, text="Отклонить", style="Secondary.TButton",
+            command=lambda: self._answer_permission(permission_id, False),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+    def _answer_permission(self, permission_id: str, allow: bool) -> None:
+        copilot = self._copilot
+        row = self._permission_rows.get(permission_id)
+        if copilot is None:
+            return
+        if row is not None:
+            for child in row.winfo_children():
+                try:
+                    child.config(state=tk.DISABLED)
+                except tk.TclError:
+                    pass
+
+        def worker() -> None:
+            try:
+                copilot.approve_permission(permission_id, allow=allow)
+            except Exception as exc:
+                self._queue.put(("permission_answered", (permission_id, allow, exc)))
+            else:
+                self._queue.put(("permission_answered", (permission_id, allow, None)))
+
+        threading.Thread(target=worker, name="opencode-copilot-permission", daemon=True).start()
+
+    def _permission_answered(
+        self, permission_id: str, allow: bool, error: Optional[Exception],
+    ) -> None:
+        row = self._permission_rows.pop(permission_id, None)
+        if row is not None:
+            row.destroy()
+        if error:
+            self._append("error", f"Не удалось ответить на MCP permission: {error}", remember=False)
+        else:
+            action = "разрешён один раз" if allow else "отклонён"
+            self._append("activity", f"MCP-вызов {action}.", remember=False)
+
+    def _finish(self, outcome: CopilotOutcome) -> None:
         self._cancel_event = None
         self._outcome = outcome
-        if not self._connected_address:
-            self._fail(OpenCodeCancelled("Соединение с OpenCode потеряно"))
-            return
-        decision = outcome.decision
-        if decision.selected_form_id:
-            candidate = next(
-                item for item in decision.candidates
-                if item.form_id == decision.selected_form_id
-            )
-            form = FormRegistry().get(candidate.form_id)
-            self._append(
-                "assistant",
-                f"Выбрана форма «{form.title}» — {candidate.score}/100. "
-                f"{decision.reason}",
-            )
-            self._status("Открываю форму и запускаю AI-заполнение…")
-            self._set_busy(False)
-            self._input.config(state=tk.DISABLED)
-            self._pick_button.config(state=tk.DISABLED)
-            self._send_button.config(state=tk.DISABLED)
-            self.after(180, lambda: self._open_form(candidate.form_id))
-            return
-
-        self._append("assistant", f"{decision.question}\n{decision.reason}")
-        self._render_candidates(outcome)
-        self._status("Нужен ваш выбор. Основная форма пока не изменена.")
         self._set_busy(False)
+        self._clear_permissions()
+        text = outcome.answer
+        if outcome.question:
+            text += "\n\nУточнение: " + outcome.question
+        if outcome.warnings:
+            text += "\n\nПредупреждения:\n• " + "\n• ".join(outcome.warnings)
+        self._append("assistant", text)
+        self._render_outcome(outcome)
+        if (
+            outcome.intent == "single_form"
+            and outcome.selected_form_id is not None
+            and outcome.context is not None
+        ):
+            form = FormRegistry().get(outcome.selected_form_id)
+            self._status(
+                f"Однозначно выбрана форма «{form.title}». Готовлю AI-заполнение…"
+            )
+            self.after(250, lambda: self._open_form(outcome.selected_form_id or ""))
+        else:
+            self._status("Готово. Любое действие ниже требует вашего явного выбора.")
 
-    def _render_candidates(self, outcome: RoutingOutcome) -> None:
-        self._clear_candidates()
-        for candidate in outcome.decision.candidates:
+    def _render_outcome(self, outcome: CopilotOutcome) -> None:
+        self._clear_actions()
+        if outcome.intent == "single_form":
+            self._render_form_candidates(outcome)
+        elif outcome.intent == "execution_plan":
+            self._render_proposed_plan(outcome)
+        elif outcome.intent in {"repository_search", "similar_objects"}:
+            self._render_repository_items(outcome)
+        elif outcome.intent == "diagnostics" and outcome.diagnostics is not None:
+            self._render_diagnostics(outcome)
+
+    def _render_form_candidates(self, outcome: CopilotOutcome) -> None:
+        for candidate in outcome.form_candidates:
             form = FormRegistry().get(candidate.form_id)
-            row = tk.Frame(self._candidate_frame, bg=theme.C["surface_alt"])
-            row.pack(fill=tk.X, pady=2)
-            label = tk.Label(
+            row = self._card(self._action_frame)
+            tk.Label(
                 row,
                 text=f"{form.title}  ·  {candidate.score}/100\n{candidate.reason}",
-                wraplength=440,
-                justify=tk.LEFT,
-                anchor="w",
-                font=theme.F["small"],
-                bg=theme.C["surface_alt"],
-                fg=theme.C["text"],
-            )
-            label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=7)
+                wraplength=570, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+                bg=theme.C["surface_alt"], fg=theme.C["text"],
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=7)
+            button_text = "Открыть и заполнить" if outcome.context else "Открыть форму"
             ttk.Button(
-                row,
-                text="Использовать",
-                style="Secondary.TButton",
+                row, text=button_text,
+                style=(
+                    "Primary.TButton"
+                    if candidate.form_id == outcome.selected_form_id
+                    else "Secondary.TButton"
+                ),
                 command=lambda form_id=candidate.form_id: self._open_form(form_id),
             ).pack(side=tk.RIGHT, padx=8, pady=6)
+
+    def _render_proposed_plan(self, outcome: CopilotOutcome) -> None:
+        for step in outcome.plan:
+            form = FormRegistry().get(step.form_id)
+            deps = f" · после: {', '.join(step.depends_on)}" if step.depends_on else ""
+            row = self._card(self._action_frame)
+            tk.Label(
+                row,
+                text=(f"{step.position}. {step.title} — {form.title}\n"
+                      f"{step.reason}{deps} · confidence: {step.confidence}"),
+                wraplength=720, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+                bg=theme.C["surface_alt"], fg=theme.C["text"],
+            ).pack(fill=tk.X, padx=10, pady=7)
+        button = ttk.Button(
+            self._action_frame, text="Принять план", style="Primary.TButton",
+            command=self._accept_plan,
+        )
+        button.pack(anchor=tk.E, pady=(5, 0))
+        if outcome.context is None:
+            button.config(state=tk.DISABLED)
+            tk.Label(
+                self._action_frame,
+                text="Для запуска плана сначала укажите номер ITSM-заявки.",
+                font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["warning"],
+            ).pack(anchor=tk.E, pady=(2, 0))
+
+    def _accept_plan(self) -> None:
+        outcome = self._outcome
+        if outcome is None or outcome.context is None or not outcome.plan:
+            return
+        current = self.app.execution_plan
+        if current is not None and not show_confirm(
+            self,
+            "Заменить активный план",
+            "Заменить текущий план новым? Подготовленные, но не отправленные "
+            "данные старого плана будут потеряны.",
+        ):
+            return
+        self.app.accept_execution_plan(
+            context=outcome.context, steps=outcome.plan,
+            title=f"Заявка {outcome.context.ticket_id}",
+            shared_guidance=self._outcome_guidance(outcome),
+        )
+        self._clear_actions()
+        self._render_active_plan()
+        self._append(
+            "assistant",
+            "План принят. Шаги открываются по очереди; каждый использует обычный "
+            "AI-preview и требует ручной отправки формы.",
+        )
+
+    def _render_active_plan(self) -> None:
+        for child in self._plan_frame.winfo_children():
+            child.destroy()
+        plan = self.app.execution_plan
+        if plan is None:
+            return
+        head = tk.Frame(self._plan_frame, bg=theme.C["surface"])
+        head.pack(fill=tk.X, pady=(2, 3))
+        tk.Label(
+            head, text=f"АКТИВНЫЙ ПЛАН · {plan.title}", font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["success"] if plan.complete else theme.C["primary"],
+        ).pack(side=tk.LEFT)
+        if plan.complete:
+            tk.Label(
+                head, text="✓ завершён", font=theme.F["small"],
+                bg=theme.C["surface"], fg=theme.C["success"],
+            ).pack(side=tk.RIGHT)
+        ttk.Button(
+            head,
+            text="Закрыть план" if plan.complete else "Отменить план",
+            style="Ghost.TButton",
+            command=lambda plan_id=plan.plan_id: self._clear_plan(plan_id),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        labels = {
+            "pending": "ожидает", "in_progress": "открыт",
+            "prepared": "данные подготовлены", "completed": "выполнен", "failed": "ошибка",
+        }
+        for runtime in plan.snapshot():
+            row = self._card(self._plan_frame)
+            spec = runtime.spec
+            tk.Label(
+                row,
+                text=(f"{spec.position}. {spec.title}\n{labels.get(runtime.status, runtime.status)}"
+                      + (f" · {runtime.error}" if runtime.error else "")),
+                wraplength=580, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+                bg=theme.C["surface_alt"],
+                fg=theme.C["error"] if runtime.status == "failed" else theme.C["text"],
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=6)
+            button = ttk.Button(
+                row,
+                text="Открыть шаг" if runtime.status != "prepared" else "Вернуться к шагу",
+                style="Secondary.TButton",
+                command=lambda step_id=spec.step_id: self._open_plan_step(step_id),
+            )
+            button.pack(side=tk.RIGHT, padx=8, pady=6)
+            if not plan.can_open(spec.step_id):
+                button.config(state=tk.DISABLED)
+
+    def _open_plan_step(self, step_id: str) -> None:
+        try:
+            self.app.open_execution_plan_step(step_id)
+        except Exception as exc:
+            show_error(self, "План исполнения", str(exc))
+
+    def _clear_plan(self, plan_id: str) -> None:
+        plan = self.app.execution_plan
+        if plan is None or plan.plan_id != plan_id:
+            self._render_active_plan()
+            return
+        if not show_confirm(
+            self,
+            "План исполнения",
+            "Закрыть завершённый план?"
+            if plan.complete
+            else "Отменить план? Подготовленные, но не отправленные данные будут потеряны.",
+        ):
+            return
+        self.app.clear_execution_plan(plan_id)
+        self._render_active_plan()
+        self._append(
+            "assistant",
+            "План закрыт. Внешние системы не изменялись этим действием.",
+        )
+
+    def _render_repository_items(self, outcome: CopilotOutcome) -> None:
+        for item in outcome.repository_items:
+            row = self._card(self._action_frame)
+            title = item.name or item.identifier or item.path
+            identity = (
+                f" [{item.identifier}]"
+                if item.identifier and item.identifier != title
+                else ""
+            )
+            tk.Label(
+                row,
+                text=(f"{item.entity_type.upper()} · {title}{identity} · {item.score}/100\n"
+                      f"{item.reason}\nИсточник: {item.scope} · {item.path}"),
+                wraplength=620, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+                bg=theme.C["surface_alt"], fg=theme.C["text"],
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=7)
+            ttk.Button(
+                row,
+                text=(
+                    "Использовать как шаблон"
+                    if outcome.intent == "similar_objects"
+                    else "Продолжить с объектом"
+                ),
+                style="Secondary.TButton",
+                command=lambda value=item: self._continue_with_repository_item(value),
+            ).pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+
+    def _render_diagnostics(self, outcome: CopilotOutcome) -> None:
+        report = outcome.diagnostics
+        if report is None:
+            return
+        for title, values in (
+            ("Вероятные причины", report.probable_causes),
+            ("Подтверждающие факты", report.evidence),
+            ("Следующие действия", report.next_actions),
+        ):
+            if not values:
+                continue
+            row = self._card(self._action_frame)
+            tk.Label(
+                row, text=title + "\n• " + "\n• ".join(values),
+                wraplength=750, justify=tk.LEFT, anchor="w", font=theme.F["small"],
+                bg=theme.C["surface_alt"], fg=theme.C["text"],
+            ).pack(fill=tk.X, padx=10, pady=7)
+        if outcome.repository_items:
+            self._render_repository_items(outcome)
 
     def _open_form(self, form_id: str) -> None:
         outcome = self._outcome
         if outcome is None or self._destroying:
             return
-        context = outcome.context
-        self._outcome = None
-        _log.info("home routing accepted ticket=%s form=%s", context.ticket_id, form_id)
-        self.app.open_ai_routed_form(form_id, context)
+        if outcome.context is not None:
+            self.app.open_ai_routed_form(
+                form_id,
+                outcome.context,
+                guidance=self._outcome_guidance(outcome),
+            )
+            return
+        from ui.screens.form_screen import FormScreen
+        self.app.navigate_to(FormScreen, form_id=form_id)
+
+    def _continue_with_repository_item(self, item) -> None:
+        title = item.name or item.identifier or item.path
+        action = (
+            "Используй этот объект как проверяемый шаблон для заявки и выбери "
+            "подходящую форму или план"
+            if self._outcome is not None and self._outcome.intent == "similar_objects"
+            else "Продолжи задачу с этим объектом и уточни требуемое действие"
+        )
+        self._start(
+            f"{action}: {item.entity_type} {title}; scope={item.scope}; "
+            f"x-filepath={item.path}. Не выполняй изменений без формы и подтверждения."
+        )
+
+    @staticmethod
+    def _outcome_guidance(outcome: CopilotOutcome) -> str:
+        """Передаёт extractor только валидированный итог, а не сырые MCP outputs."""
+        payload = {
+            "answer": outcome.answer,
+            "selected_form_id": outcome.selected_form_id,
+            "repository_items": [
+                {
+                    "entity_type": item.entity_type,
+                    "identifier": item.identifier,
+                    "name": item.name,
+                    "scope": item.scope,
+                    "path": item.path,
+                    "reason": item.reason,
+                }
+                for item in outcome.repository_items
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:20_000]
 
     def _fail(self, error: Exception) -> None:
-        self._router = None
         self._cancel_event = None
-        self._outcome = None
         self._set_busy(False)
+        self._clear_permissions()
+        copilot = self._copilot
+        self._copilot = None
         if isinstance(error, OpenCodeCancelled):
-            self._append("assistant", "Операция остановлена. Никакая форма не изменена.")
-            self._status("Операция отменена.")
+            self._append("assistant", "Текущий запрос остановлен. Внешние системы не изменялись.")
+            self._status("Запрос отменён.")
         else:
-            self._append("error", f"Не удалось выбрать форму: {error}")
-            self._status("Ошибка выбора формы. Можно повторить запрос.", error=True)
+            _log.error(
+                "unified copilot request failed error_type=%s",
+                type(error).__name__,
+            )
+            self._append("error", f"Не удалось обработать запрос: {error}")
+            self._status("Ошибка AI-помощника. Можно повторить запрос.", error=True)
+        if copilot is not None:
+            threading.Thread(
+                target=copilot.close,
+                name="opencode-copilot-error-cleanup",
+                daemon=True,
+            ).start()
 
     def _cancel_request(self) -> None:
         if not self._busy:
             return
         if self._cancel_event is not None:
             self._cancel_event.set()
-        router = self._router
         self._status("Останавливаю запрос…")
-        if router is not None:
+        if self._copilot is not None:
             threading.Thread(
-                target=router.cancel,
-                name="opencode-form-router-abort",
-                daemon=True,
+                target=self._copilot.cancel, name="opencode-copilot-abort", daemon=True,
             ).start()
 
     def _set_busy(self, busy: bool) -> None:
@@ -359,12 +662,7 @@ class AIHomeChat(tk.Frame):
         self._send_button.config(state=state)
         if busy:
             self._cancel_button.pack(side=tk.LEFT, padx=(8, 0))
-            self._progress.pack(
-                fill=tk.X,
-                padx=16,
-                pady=(0, 2),
-                before=self._input_row,
-            )
+            self._progress.pack(fill=tk.X, padx=16, pady=(0, 2), before=self._input_row)
             self._progress.start(10)
         else:
             self._cancel_button.pack_forget()
@@ -373,46 +671,78 @@ class AIHomeChat(tk.Frame):
 
     def _status(self, message: str, *, error: bool = False) -> None:
         self._status_var.set(message)
-        self._status_label.config(
-            fg=theme.C["error"] if error else theme.C["text_muted"]
-        )
+        self._status_label.config(fg=theme.C["error"] if error else theme.C["text_muted"])
 
-    def _append(self, role: str, message: str) -> None:
-        prefixes = {"assistant": "AI", "user": "Вы", "error": "Ошибка"}
+    def _append(self, role: str, message: str, *, remember: bool = True) -> None:
+        prefixes = {"assistant": "AI", "user": "Вы", "error": "Ошибка", "activity": "Процесс"}
+        clean = str(message).strip()
+        if not clean:
+            return
         self._transcript.config(state=tk.NORMAL)
         if self._transcript.index("end-1c") != "1.0":
             self._transcript.insert(tk.END, "\n")
-        self._transcript.insert(
-            tk.END,
-            f"{prefixes.get(role, role)}: {str(message).strip()}\n",
-            role,
-        )
+        self._transcript.insert(tk.END, f"{prefixes.get(role, role)}: {clean}\n", role)
         self._transcript.config(state=tk.DISABLED)
         self._transcript.see(tk.END)
+        if remember and role in {"assistant", "user", "error"}:
+            self.app.add_copilot_history(role, clean)
 
-    def _clear_candidates(self) -> None:
-        for child in self._candidate_frame.winfo_children():
+    def _clear_actions(self) -> None:
+        for child in self._action_frame.winfo_children():
             child.destroy()
 
-    def detach_for_shutdown(self) -> Optional[FormRouter]:
+    def _clear_permissions(self) -> None:
+        for row in self._permission_rows.values():
+            try:
+                row.destroy()
+            except tk.TclError:
+                pass
+        self._permission_rows.clear()
+
+    @staticmethod
+    def _card(parent: tk.Widget) -> tk.Frame:
+        row = tk.Frame(parent, bg=theme.C["surface_alt"])
+        row.pack(fill=tk.X, pady=2)
+        return row
+
+    def _set_input(self, value: str) -> None:
+        if self._busy:
+            return
+        self._input.delete("1.0", tk.END)
+        self._input.insert("1.0", value)
+        self._input.focus_set()
+        self._input.mark_set(tk.INSERT, tk.END)
+
+    @staticmethod
+    def _parse_mcp(value: str) -> list[str]:
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            parsed = value.split(",")
+        if not isinstance(parsed, list):
+            return []
+        return list(dict.fromkeys(str(item).strip() for item in parsed if str(item).strip()))
+
+    def detach_for_shutdown(self) -> Optional[UnifiedCopilot]:
         self._destroying = True
         if self._cancel_event is not None:
             self._cancel_event.set()
-        router = self._router
-        self._router = None
+        copilot = self._copilot
+        self._copilot = None
         if self._poll_id is not None:
             try:
                 self.after_cancel(self._poll_id)
             except tk.TclError:
                 pass
             self._poll_id = None
-        return router
+        return copilot
 
     def shutdown(self) -> None:
-        router = self.detach_for_shutdown()
-        if router is not None:
+        copilot = self.detach_for_shutdown()
+        if copilot is not None:
+            def cleanup() -> None:
+                copilot.cancel()
+                copilot.close()
             threading.Thread(
-                target=router.cancel,
-                name="opencode-home-chat-cleanup",
-                daemon=True,
+                target=cleanup, name="opencode-home-chat-cleanup", daemon=True,
             ).start()

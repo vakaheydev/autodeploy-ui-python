@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from forms.base_form import BaseForm
+from config.mcp_profiles import (
+    choose_repository_mcp,
+    repository_tool_allowlist,
+    repository_tool_asklist,
+)
 from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeClient,
@@ -99,6 +104,9 @@ class FormExtractorAgent:
         environment: str,
         current_values: Mapping[str, Any],
         allowed_mcp: Sequence[str] = (),
+        repository_mcp: str = "",
+        allow_repository_git_pull: bool = True,
+        plan_guidance: str = "",
         provider_id: str = "",
         model_id: str = "",
         cancel_event: Optional[threading.Event] = None,
@@ -149,6 +157,11 @@ class FormExtractorAgent:
             self._client.require_provider(provider_id, timeout=timeout)
 
             enabled_mcp = self._available_mcp(allowed_mcp, timeout)
+            active_repository_mcp = choose_repository_mcp(
+                repository_mcp,
+                enabled_mcp,
+                {name: {"status": "connected"} for name in enabled_mcp},
+            )
             self._check_cancel()
             self._session_id = self._client.create_session(
                 f"AutoDeploy form assistant: {context.ticket_id}",
@@ -156,6 +169,11 @@ class FormExtractorAgent:
                 provider_id=provider_id,
                 model_id=model_id,
                 mcp_names=enabled_mcp,
+                mcp_tool_allowlist=repository_tool_allowlist(active_repository_mcp),
+                mcp_tool_asklist=repository_tool_asklist(
+                    active_repository_mcp,
+                    allow_git_pull=allow_repository_git_pull,
+                ),
                 metadata={
                     "source": "gravitee-autodeploy-ui",
                     "ticket_id": _log_identifier(context.ticket_id),
@@ -176,6 +194,9 @@ class FormExtractorAgent:
                 ado_data=context.ado,
                 context_warnings=self._context_warnings,
                 enabled_mcp=enabled_mcp,
+                repository_mcp=active_repository_mcp,
+                allow_repository_git_pull=allow_repository_git_pull,
+                plan_guidance=plan_guidance,
             )
             self._on_progress("Агент анализирует заявку и PR…")
             try:
@@ -436,7 +457,7 @@ class FormExtractorAgent:
             detail_value = (
                 state.get("error")
                 if status == "error"
-                else state.get("input", state.get("output", ""))
+                else state.get("input", "")
             )
             self._emit(ConversationEvent(
                 "tool" if status != "error" else "error",

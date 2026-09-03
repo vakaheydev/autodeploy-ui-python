@@ -17,11 +17,14 @@ from config.environments import (
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
     OPENCODE_REQUEST_TIMEOUT_KEY,
+    OPENCODE_REPOSITORY_GIT_PULL_KEY,
+    OPENCODE_REPOSITORY_MCP_KEY,
     OPENCODE_SERVER_PASSWORD_KEY,
     OPENCODE_SERVER_URL_KEY,
     OPENCODE_SERVER_USERNAME_KEY,
     OPENCODE_STARTUP_TIMEOUT_KEY,
 )
+from config.mcp_profiles import setting_enabled
 from core.logging_setup import UI_LOG_BUFFER
 from opencode_integration.manager import (
     DEFAULT_SERVER_URL,
@@ -36,6 +39,7 @@ class OpenCodeSettingsScreen(BaseScreen):
     def __init__(self, master, app, **kwargs) -> None:
         self._vars: Dict[str, tk.StringVar] = {}
         self._mcp_vars: Dict[str, tk.BooleanVar] = {}
+        self._repository_git_pull_var: Optional[tk.BooleanVar] = None
         self._saved_mcp: set[str] = set()
         self._busy = False
         self._poll_id: Optional[str] = None
@@ -318,7 +322,7 @@ class OpenCodeSettingsScreen(BaseScreen):
         head.pack(fill=tk.X, padx=16, pady=(10, 5))
         tk.Label(
             head,
-            text="MCP ДЛЯ АГЕНТА ФОРМЫ",
+            text="MCP ДЛЯ AI-ПОМОЩНИКОВ",
             font=theme.F["small"],
             bg=theme.C["surface"],
             fg=theme.C["text_muted"],
@@ -344,7 +348,58 @@ class OpenCodeSettingsScreen(BaseScreen):
             fg=theme.C["text_muted"],
         ).pack(fill=tk.X, padx=16, pady=(0, 5))
         self._mcp_frame = tk.Frame(card, bg=theme.C["surface"])
-        self._mcp_frame.pack(fill=tk.X, padx=16, pady=(0, 12))
+        self._mcp_frame.pack(fill=tk.X, padx=16, pady=(0, 6))
+
+        repository_row = tk.Frame(card, bg=theme.C["surface"])
+        repository_row.pack(fill=tk.X, padx=16, pady=(0, 8))
+        tk.Label(
+            repository_row,
+            text="JSON Repository MCP",
+            width=24,
+            anchor="w",
+            font=theme.F["body"],
+            bg=theme.C["surface"],
+            fg=theme.C["text_label"],
+        ).pack(side=tk.LEFT)
+        repository_var = tk.StringVar(
+            value=saved.get(OPENCODE_REPOSITORY_MCP_KEY, "")
+        )
+        self._vars[OPENCODE_REPOSITORY_MCP_KEY] = repository_var
+        self._repository_mcp_combo = ttk.Combobox(
+            repository_row,
+            textvariable=repository_var,
+            values=(),
+            state="readonly",
+        )
+        self._repository_mcp_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        self._repository_git_pull_var = tk.BooleanVar(
+            value=setting_enabled(
+                saved.get(OPENCODE_REPOSITORY_GIT_PULL_KEY, "true")
+            )
+        )
+        git_pull_row = tk.Frame(card, bg=theme.C["surface"])
+        git_pull_row.pack(fill=tk.X, padx=16, pady=(0, 5))
+        ttk.Checkbutton(
+            git_pull_row,
+            text="Разрешать агенту запрашивать git pull",
+            variable=self._repository_git_pull_var,
+        ).pack(anchor=tk.W)
+        tk.Label(
+            card,
+            text=(
+                "Главный чат и разрешение API/приложений используют только точный "
+                "read-only allowlist local-json-repo-mcp без лишних подтверждений. "
+                "Все вызовы видны. git_pull никогда не запускается автоматически: "
+                "при включённой настройке он спрашивает разрешение перед каждым "
+                "вызовом; diagnose_search всегда запрещён."
+            ),
+            wraplength=820,
+            justify=tk.LEFT,
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["text_muted"],
+        ).pack(fill=tk.X, padx=16, pady=(0, 12))
 
     def _build_terminal(self, parent: tk.Widget) -> None:
         card = theme.card(parent, pady=8)
@@ -585,13 +640,17 @@ class OpenCodeSettingsScreen(BaseScreen):
         self._mcp_vars.clear()
         if not statuses:
             self._mcp_info.set("Глобальные MCP не настроены для runtime формы.")
+            self._repository_mcp_combo.config(values=())
             return
         connected = 0
+        connected_names = []
         for name in sorted(statuses):
             status_obj = statuses[name] if isinstance(statuses[name], dict) else {}
             status = str(status_obj.get("status", "unknown"))
             enabled = status == "connected"
             connected += int(enabled)
+            if enabled:
+                connected_names.append(name)
             var = tk.BooleanVar(value=enabled and name in self._saved_mcp)
             self._mcp_vars[name] = var
             checkbox = ttk.Checkbutton(
@@ -605,8 +664,20 @@ class OpenCodeSettingsScreen(BaseScreen):
                 checkbox.config(state=tk.DISABLED)
         self._mcp_info.set(
             f"Найдено MCP: {len(statuses)}, подключено: {connected}. "
-            "Read-only вызовы потребуют подтверждения; изменяющие операции запрещены."
+            "JSON Repository reads выполняются автоматически и видны в чате; "
+            "git_pull требует отдельного подтверждения на каждый вызов; "
+            "прочие изменяющие операции запрещены."
         )
+        self._repository_mcp_combo.config(values=("", *connected_names))
+        current_repository = self._vars[OPENCODE_REPOSITORY_MCP_KEY].get().strip()
+        if current_repository not in connected_names:
+            self._vars[OPENCODE_REPOSITORY_MCP_KEY].set("")
+        if not current_repository and len(
+            [name for name in connected_names if name in self._saved_mcp]
+        ) == 1:
+            self._vars[OPENCODE_REPOSITORY_MCP_KEY].set(
+                next(name for name in connected_names if name in self._saved_mcp)
+            )
 
     def _sync_mcp_selection(self) -> None:
         # До первого GET /mcp виджеты ещё не созданы: в этот момент connect/save
@@ -668,12 +739,23 @@ class OpenCodeSettingsScreen(BaseScreen):
         )
         if save:
             self._sync_mcp_selection()
+            repository_mcp = self._vars[OPENCODE_REPOSITORY_MCP_KEY].get().strip()
+            if repository_mcp and repository_mcp not in self._saved_mcp:
+                raise ValueError(
+                    "JSON Repository MCP должен быть отмечен в списке разрешённых MCP."
+                )
             values = {key: variable.get().strip() for key, variable in self._vars.items()}
             # У password пробелы могут быть значимы.
             values[OPENCODE_SERVER_PASSWORD_KEY] = password
             values[OPENCODE_ALLOWED_MCP_KEY] = json.dumps(
                 sorted(self._saved_mcp),
                 ensure_ascii=False,
+            )
+            values[OPENCODE_REPOSITORY_GIT_PULL_KEY] = (
+                "true"
+                if self._repository_git_pull_var is None
+                or self._repository_git_pull_var.get()
+                else "false"
             )
             self.app.env_manager.save(values)
 
