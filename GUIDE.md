@@ -80,6 +80,7 @@
 - [14. Настройки: обязательные поля](#14-настройки-обязательные-поля)
   - [Как объявить обязательное поле](#как-объявить-обязательное-поле)
   - [Как работает проверка](#как-работает-проверка)
+- [15. AI-автозаполнение через OpenCode](#15-ai-автозаполнение-через-opencode)
 - [Структура проекта](#структура-проекта-справка)
 
 
@@ -90,13 +91,14 @@
 
 ### Структура навигации
 
-Приложение **Gravitee Admin UI** состоит из трёх модулей, доступных с главного экрана (`HomeScreen`):
+Приложение **Gravitee Admin UI** состоит из четырёх модулей, доступных с главного экрана (`HomeScreen`):
 
 ```
 HomeScreen
 ├── 🔍 Поиск       → SearchScreen → SearchDetailScreen
 ├── 🚀 AutoDeploy UI → MainScreen → CategoryScreen → FormScreen
-└── 📋 Операции    → OperationsScreen → (карточки операций)
+├── 📋 Операции    → OperationsScreen → (карточки операций)
+└── ✨ OpenCode    → OpenCodeSettingsScreen
 ```
 
 Навигацией управляет `Application` (`ui/app.py`) через стек экранов:
@@ -2428,10 +2430,27 @@ REQUIRED_SETTINGS: List[Tuple[str, str]] = [
 
 ---
 
+## 15. AI-автозаполнение через OpenCode
+
+Приложение запускает OpenCode `1.18.18` на случайном локальном порту, получает
+ITSM/ADO-контекст в Python и передаёт его изолированному агенту
+`form-extractor`. Результат проходит строгую JSON Schema и повторную
+Python-валидацию, после чего открывается редактируемый preview. Основная форма
+меняется только после ручного подтверждения.
+
+Настройки и диагностика вынесены отдельной четвёртой карточкой **OpenCode** на
+самый главный экран. Подробная инструкция по настройке, контракту API,
+безопасности и тестированию находится в [OPENCODE_AUTOFILL.md](OPENCODE_AUTOFILL.md).
+
+---
+
 ## Структура проекта (справка)
 
 ```
 autodeploy-ui-python/
+├── .opencode/
+│   └── agents/form-extractor.md   # primary agent без внешних инструментов
+├── opencode_integration/          # manager, client, agent, schema, prompt и validation
 ├── config/
 │   ├── categories.py              # названия категорий и их порядок
 │   ├── environments.py            # список окружений, ключи .env токенов, REQUIRED_SETTINGS
@@ -2464,6 +2483,8 @@ autodeploy-ui-python/
 │   └── tfs_service.py             # ← сервис TFS/Azure DevOps (доступен в формах)
 ├── cached/                        # файловый кеш HTTP-справочников (авто, не коммитить)
 └── ui/
+    ├── ai_progress.py             # прогресс и отмена AI-flow
+    ├── ai_preview.py              # редактируемый diff перед применением
     ├── theme.py                   # цвета, шрифты, ttk-стили ← менять внешний вид здесь
     ├── app.py                     # DI-контейнер, навигация, Ctrl+A/C/V/X fix
     ├── dialogs.py                 # ← UI-утилиты: show_info/error/warning/confirm/text_viewer/ask_string/show_loading + обёртки
@@ -2480,6 +2501,7 @@ autodeploy-ui-python/
         ├── main_screen.py         # AutoDeploy UI: выбор окружения
         ├── category_screen.py     # выбор формы внутри категории
         ├── form_screen.py         # рендер полей, условная видимость, сабмит
+        ├── opencode_settings_screen.py # четвёртая карточка: настройки и диагностика
         ├── runs_screen.py         # ← экран истории запусков
         ├── result_screen.py       # ← экран результата: контент + автоопрос
         └── settings_screen.py     # токены и креды (.env)

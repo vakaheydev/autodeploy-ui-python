@@ -4,6 +4,8 @@ FormScreen — экран заполнения и отправки формы.
 в зависимости от предиката condition(values_dict) -> bool.
 """
 import json
+import queue
+import threading
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -13,6 +15,18 @@ import ui.theme as theme
 from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
+from config.environments import (
+    OPENCODE_MAX_CONTEXT_CHARS_KEY,
+    OPENCODE_MODEL_ID_KEY,
+    OPENCODE_PROVIDER_ID_KEY,
+)
+from opencode_integration.agent import FormExtractorAgent
+from opencode_integration.client import (
+    OpenCodeCancelled,
+    OpenCodeStructuredOutputError,
+)
+from ui.ai_preview import show_ai_preview
+from ui.ai_progress import AIProgressDialog
 from ui.dialogs import ask_ticket_id, show_error, show_info, show_loading, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
@@ -48,6 +62,11 @@ class FormScreen(BaseScreen):
         # parent_key → [(block_field_def, sub_field_def)] для зависимых sub-полей BLOCK
         self._block_dependent_fields: Dict[str, List] = {}
         self._ready = False
+        self._ai_cancel_event: Optional[threading.Event] = None
+        self._ai_session_id: Optional[str] = None
+        self._ai_queue: Optional["queue.Queue[tuple[str, Any]]"] = None
+        self._ai_poll_id: Optional[str] = None
+        self._ai_progress: Optional[AIProgressDialog] = None
         super().__init__(master, app, **kwargs)
 
     # ------------------------------------------------------------------
@@ -307,10 +326,16 @@ class FormScreen(BaseScreen):
             command=self._preview_payload,
         ).pack(side=tk.LEFT)
 
-        if self._form.itsm_support:
+        if hasattr(self.app, "opencode_manager"):
             ttk.Button(
-                foot, text="⬇ Подтянуть из заявки",
+                foot, text="✨ Подтянуть данные из заявки",
                 style="Secondary.TButton",
+                command=self._on_ai_autofill,
+            ).pack(side=tk.LEFT, padx=(8, 0))
+        elif self._form.itsm_support:
+            # Совместимость для встраиваний, которые ещё не создают OpenCodeManager.
+            ttk.Button(
+                foot, text="⬇ Подтянуть из заявки", style="Secondary.TButton",
                 command=self._on_fetch_from_itsm,
             ).pack(side=tk.LEFT, padx=(8, 0))
 
@@ -396,6 +421,14 @@ class FormScreen(BaseScreen):
 
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
+            self._cancel_ai_operation()
+            if self._ai_poll_id is not None:
+                try:
+                    self.after_cancel(self._ai_poll_id)
+                except tk.TclError:
+                    pass
+            if self._ai_progress is not None:
+                self._ai_progress.close()
             try:
                 self.app.current_environment.trace_remove("write", self._env_trace_id)
             except Exception:
@@ -902,8 +935,220 @@ class FormScreen(BaseScreen):
                     _ = current  # подавить предупреждение
 
     # ------------------------------------------------------------------
-    # ITSM-интеграция
+    # AI ITSM + Azure DevOps интеграция
     # ------------------------------------------------------------------
+
+    def _on_ai_autofill(self) -> None:
+        if self._ai_cancel_event is not None:
+            show_warning(self, "AI-автозаполнение", "Предыдущая операция ещё выполняется.")
+            return
+        if not self._ready:
+            show_warning(self, "AI-автозаполнение", "Дождитесь загрузки полей формы.")
+            return
+        client = self.app.opencode_manager.client
+        if client is None:
+            status = self.app.opencode_manager.status
+            show_error(
+                self,
+                "OpenCode недоступен",
+                f"AI-автозаполнение сейчас отключено.\n\n{status.message}\n\n"
+                "Откройте кнопку OpenCode на главном экране для диагностики.",
+            )
+            return
+        ticket_id = ask_ticket_id(self)
+        if ticket_id is None:
+            return
+
+        environment = self.app.current_environment.get()
+        current_values = self._collect_form_data()
+        settings = self.app.env_manager.load()
+        provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
+        model_id = settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
+        try:
+            max_context = int(settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000"))
+        except ValueError:
+            max_context = 120_000
+
+        cancel_event = threading.Event()
+        result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        self._ai_cancel_event = cancel_event
+        self._ai_queue = result_queue
+        self._ai_session_id = None
+        self._ai_progress = AIProgressDialog(self, self._cancel_ai_operation)
+
+        def progress(message: str) -> None:
+            result_queue.put(("progress", message))
+
+        def session_changed(session_id: Optional[str]) -> None:
+            self._ai_session_id = session_id
+            if session_id is not None and cancel_event.is_set():
+                try:
+                    client.abort_session(session_id)
+                except Exception:
+                    pass
+
+        def worker() -> None:
+            try:
+                progress("Подготавливаю справочные данные...")
+                reference_data, reference_values = self._collect_ai_references(
+                    environment, current_values, cancel_event
+                )
+                extractor = FormExtractorAgent(
+                    client,
+                    self.app.itsm_service,
+                    self.app.tfs_service,
+                    max_context_chars=max_context,
+                )
+                result = extractor.extract(
+                    form=self._form,
+                    ticket_id=ticket_id,
+                    environment=environment,
+                    current_values=current_values,
+                    reference_data=reference_data,
+                    reference_values=reference_values,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    cancel_event=cancel_event,
+                    on_progress=progress,
+                    on_session=session_changed,
+                )
+                result_queue.put(("done", (result, reference_values)))
+            except Exception as exc:
+                result_queue.put(("error", exc))
+
+        threading.Thread(target=worker, name="ai-form-autofill", daemon=True).start()
+        self._poll_ai_queue()
+
+    def _collect_ai_references(
+        self,
+        environment: str,
+        current_values: Dict[str, Any],
+        cancel_event: threading.Event,
+    ) -> tuple[Dict[str, Any], Dict[str, List[str]]]:
+        """Загружает разрешённые значения в worker thread, без Tk-вызовов."""
+        context: Dict[str, Any] = {}
+        allowed_values: Dict[str, List[str]] = {}
+        warnings: List[str] = []
+
+        def collect(field_def: FieldDefinition, context_key: str) -> None:
+            if cancel_event.is_set():
+                raise OpenCodeCancelled("Операция отменена пользователем")
+            if field_def.reference is None:
+                return
+            extra_params = None
+            if field_def.depends_on:
+                parent_value = current_values.get(field_def.depends_on)
+                if parent_value:
+                    extra_params = {field_def.depends_on: parent_value}
+                else:
+                    return
+            try:
+                items = self.app.reference_resolver.resolve(
+                    field_def.reference, environment, extra_params
+                )
+            except Exception as exc:
+                warnings.append(f"{context_key}:{type(exc).__name__}")
+                return
+            ref = field_def.reference
+            keep_keys = {ref.value_key, ref.label_key, *ref.search_keys}
+            slim_items = [
+                {key: item.get(key) for key in keep_keys if key in item}
+                for item in items[:200]
+                if isinstance(item, dict)
+            ]
+            context[context_key] = slim_items
+            allowed: List[str] = []
+            for item in slim_items:
+                raw_value = item.get(ref.value_key)
+                if raw_value is None:
+                    continue
+                value = str(raw_value)
+                if 0 < len(value) <= 4000:
+                    allowed.append(value)
+                else:
+                    warnings.append(f"{context_key}:invalid_reference_value")
+            allowed_values[field_def.key] = allowed
+
+        for field_def in self._form.fields:
+            collect(field_def, field_def.key)
+            if field_def.field_type == FieldType.BLOCK:
+                for sub_field in field_def.block_fields:
+                    collect(sub_field, f"{field_def.key}.{sub_field.key}")
+        if warnings:
+            context["_collection_warnings"] = warnings
+        return context, allowed_values
+
+    def _cancel_ai_operation(self) -> None:
+        cancel_event = self._ai_cancel_event
+        if cancel_event is None:
+            return
+        cancel_event.set()
+        session_id = self._ai_session_id
+        client = self.app.opencode_manager.client
+        if session_id and client is not None:
+            def abort() -> None:
+                try:
+                    client.abort_session(session_id)
+                except Exception:
+                    pass
+
+            threading.Thread(target=abort, name="opencode-abort", daemon=True).start()
+
+    def _poll_ai_queue(self) -> None:
+        result_queue = self._ai_queue
+        if result_queue is None:
+            return
+        terminal: Optional[tuple[str, Any]] = None
+        try:
+            while True:
+                event, payload = result_queue.get_nowait()
+                if event == "progress":
+                    if self._ai_progress is not None:
+                        self._ai_progress.update_status(str(payload))
+                else:
+                    terminal = (event, payload)
+        except queue.Empty:
+            pass
+
+        if terminal is None:
+            try:
+                self._ai_poll_id = self.after(100, self._poll_ai_queue)
+            except tk.TclError:
+                pass
+            return
+
+        self._ai_poll_id = None
+        if self._ai_progress is not None:
+            self._ai_progress.close()
+        self._ai_progress = None
+        self._ai_cancel_event = None
+        self._ai_session_id = None
+        self._ai_queue = None
+
+        event, payload = terminal
+        if event == "error":
+            if isinstance(payload, OpenCodeCancelled):
+                self._set_status("Операция AI-автозаполнения отменена", "muted")
+                return
+            if isinstance(payload, OpenCodeStructuredOutputError):
+                show_error(self, "Ошибка Structured Output", str(payload))
+            else:
+                show_error(self, "Ошибка AI-автозаполнения", str(payload))
+            self._set_status(f"✗  {str(payload).splitlines()[0]}", "error")
+            return
+
+        result, reference_values = payload
+        patch = show_ai_preview(
+            self,
+            response=result,
+            form=self._form,
+            reference_values=reference_values,
+        )
+        if patch is None:
+            self._set_status("AI-предложения не применены", "muted")
+            return
+        filled = self.apply_form_data(patch)
+        self._set_status(f"✓  Применено AI-предложений: {len(filled)}", "success")
 
     def _on_fetch_from_itsm(self) -> None:
         """Запрашивает номер заявки, затем запускает fetch_from_itsm() в фоне."""

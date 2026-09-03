@@ -1,6 +1,6 @@
 """
 HomeScreen — главная страница Gravitee Admin UI.
-Три модуля: Поиск, AutoDeploy UI, Операции.
+Четыре модуля: Поиск, AutoDeploy UI, Операции, OpenCode.
 """
 import tkinter as tk
 from tkinter import ttk
@@ -13,6 +13,7 @@ _MODULES: list[Tuple[str, str, str, str]] = [
     ("🔍", "Поиск",         "Поиск по АПИ и приложениям",     "search"),
     ("🚀", "AutoDeploy UI", "Деплой и управление АПИ",         "autodeploy"),
     ("📋", "Операции",      "Прочие операции",       "operations"),
+    ("✨", "OpenCode",       "AI-автозаполнение и состояние сервера", "opencode"),
 ]
 
 
@@ -99,6 +100,9 @@ class HomeScreen(BaseScreen):
         elif key == "operations":
             from ui.screens.operations_screen import OperationsScreen
             self.app.navigate_to(OperationsScreen)
+        elif key == "opencode":
+            from ui.screens.opencode_settings_screen import OpenCodeSettingsScreen
+            self.app.navigate_to(OpenCodeSettingsScreen)
 
     def _open_settings(self) -> None:
         from ui.screens.settings_screen import SettingsScreen

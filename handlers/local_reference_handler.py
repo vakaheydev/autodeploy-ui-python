@@ -51,13 +51,14 @@ class LocalReferenceHandler(BaseReferenceHandler):
     ) -> List[Dict[str, Any]]:
         """Отфильтровывает объекты, у которых нет нужных ключей."""
         valid = []
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
             if config.value_key not in item or config.label_key not in item:
                 print(
                     f"[LocalReferenceHandler] Пропущен элемент без ключей "
-                    f"'{config.value_key}'/'{config.label_key}': {item}"
+                    f"'{config.value_key}'/'{config.label_key}' "
+                    f"в resource='{config.resource}', index={index}"
                 )
                 continue
             valid.append(item)

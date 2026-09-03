@@ -4,6 +4,11 @@ Application — корень приложения.
 Создаёт и связывает все сервисы, управляет навигацией между экранами.
 """
 import tkinter as tk
+import queue
+import threading
+import time
+from pathlib import Path
+from tkinter import messagebox
 from typing import List, Type
 
 from config.environments import ENVIRONMENTS
@@ -20,6 +25,11 @@ from services.itsm_service import ITSMService
 from services.submit_service import SubmitService
 from services.tfs_service import TfsService
 from ui.screens.base_screen import BaseScreen
+from opencode_integration.manager import OpenCodeManager
+from config.environments import (
+    OPENCODE_REQUEST_TIMEOUT_KEY,
+    OPENCODE_STARTUP_TIMEOUT_KEY,
+)
 
 
 class Application:
@@ -62,6 +72,19 @@ class Application:
         self.gravitee_service  = GraviteeService(self.env_manager, self.http_client)
         self.run_storage       = RunStorage()
 
+        opencode_settings = self.env_manager.load()
+        self.opencode_manager = OpenCodeManager(
+            Path(__file__).resolve().parent.parent,
+            startup_timeout=self._float_setting(
+                opencode_settings.get(OPENCODE_STARTUP_TIMEOUT_KEY), 20.0
+            ),
+            request_timeout=self._float_setting(
+                opencode_settings.get(OPENCODE_REQUEST_TIMEOUT_KEY), 120.0
+            ),
+        )
+        self._closing = False
+        self._opencode_events: "queue.Queue[tuple[str, object]]" = queue.Queue()
+
         # --- Состояние приложения ---
         default_env = ENVIRONMENTS[0].key
         self.current_environment = tk.StringVar(value=default_env)
@@ -79,10 +102,13 @@ class Application:
         # --- Глобальные биндинги ---
         self._root.bind_all("<Control-KeyPress>", self._on_ctrl_key)
         self._root.bind_all("<Control-BackSpace>", self._on_ctrl_backspace)
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # --- Запуск ---
         self.navigate_to(self._get_main_screen_class())
         self._root.after(0, self._check_required_settings)
+        self._root.after(25, self._start_opencode)
+        self._root.after(100, self._poll_opencode_events)
 
     # ------------------------------------------------------------------
     # Навигация
@@ -231,3 +257,69 @@ class Application:
     def _get_main_screen_class(self) -> Type[BaseScreen]:
         from ui.screens.home_screen import HomeScreen
         return HomeScreen
+
+    def _start_opencode(self) -> None:
+        """Стартует OpenCode вне Tk thread; ошибка не останавливает приложение."""
+        if self._closing:
+            return
+
+        def on_error(exc: Exception) -> None:
+            if self._closing:
+                return
+            self._opencode_events.put(("error", exc))
+
+        self.opencode_manager.start_async(on_error=on_error)
+
+    def _poll_opencode_events(self) -> None:
+        """Передаёт результат фонового startup в UI через queue + Tk.after."""
+        if self._closing:
+            return
+        try:
+            while True:
+                event, payload = self._opencode_events.get_nowait()
+                if event == "error":
+                    messagebox.showwarning(
+                        "OpenCode недоступен",
+                        f"AI-автозаполнение отключено.\n\n{payload}\n\n"
+                        "Остальные функции приложения продолжают работать.",
+                        parent=self._root,
+                    )
+        except queue.Empty:
+            pass
+        try:
+            self._root.after(100, self._poll_opencode_events)
+        except tk.TclError:
+            pass
+
+    def _on_close(self) -> None:
+        """Отменяет AI-запросы через остановку сервера и корректно закрывает Tk."""
+        if self._closing:
+            return
+        self._closing = True
+        self._root.withdraw()
+        finished = threading.Event()
+
+        def worker() -> None:
+            try:
+                self.opencode_manager.stop()
+            finally:
+                finished.set()
+
+        threading.Thread(target=worker, name="opencode-shutdown", daemon=True).start()
+        deadline = time.monotonic() + 8.0
+
+        def poll() -> None:
+            if finished.is_set() or time.monotonic() >= deadline:
+                self._root.destroy()
+                return
+            self._root.after(50, poll)
+
+        poll()
+
+    @staticmethod
+    def _float_setting(value: str | None, default: float) -> float:
+        try:
+            parsed = float(value) if value else default
+            return parsed if parsed > 0 else default
+        except (TypeError, ValueError):
+            return default

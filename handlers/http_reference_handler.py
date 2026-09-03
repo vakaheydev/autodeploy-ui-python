@@ -141,7 +141,13 @@ class HttpReferenceHandler(BaseReferenceHandler):
         try:
             raw = self._client.get(url)
         except Exception as exc:
-            print(f"[HttpReferenceHandler] Ошибка загрузки {url}: {exc}")
+            _log.warning(
+                "Reference load failed resource=%s environment=%s status=%s error_type=%s",
+                resource,
+                environment,
+                getattr(exc, "status", "none"),
+                type(exc).__name__,
+            )
             return []
 
         items = self._process_response(resource, raw)

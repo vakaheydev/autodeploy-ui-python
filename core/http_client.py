@@ -14,6 +14,13 @@ from typing import Any, Dict, Optional
 _log = logging.getLogger(__name__)
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Не переносит Authorization header на адрес из HTTP redirect."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 class HttpError(Exception):
     """Ошибка HTTP запроса с кодом ответа и телом."""
 
@@ -31,10 +38,22 @@ class HttpClient:
     Токен устанавливается через set_token() при смене окружения.
     """
 
-    def __init__(self, token: str = "", timeout: int = 30) -> None:
+    def __init__(
+        self,
+        token: str = "",
+        timeout: int = 30,
+        allow_redirects: bool = True,
+        max_response_bytes: Optional[int] = None,
+    ) -> None:
         self._token = token
         self._timeout = timeout
         self._auth_header: Optional[str] = None  # переопределяет _token если задан
+        self._max_response_bytes = max_response_bytes
+        self._opener = (
+            urllib.request.build_opener()
+            if allow_redirects
+            else urllib.request.build_opener(_NoRedirectHandler())
+        )
 
     # ------------------------------------------------------------------
     # Управление авторизацией
@@ -111,15 +130,21 @@ class HttpClient:
         url = req.full_url
         _start = time.monotonic()
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                body = resp.read().decode("utf-8")
+            with self._opener.open(req, timeout=self._timeout) as resp:
+                if self._max_response_bytes is None:
+                    raw = resp.read()
+                else:
+                    raw = resp.read(self._max_response_bytes + 1)
+                    if len(raw) > self._max_response_bytes:
+                        raise ValueError("HTTP response превышает допустимый размер")
+                body = raw.decode("utf-8")
                 elapsed = time.monotonic() - _start
                 _log.info("%s %s → %d  (%.2fs)", method, url, resp.status, elapsed)
                 return json.loads(body) if body.strip() else {}
         except urllib.error.HTTPError as exc:
             elapsed = time.monotonic() - _start
             _log.warning("%s %s → %d  (%.2fs)", method, url, exc.code, elapsed)
-            body = exc.read().decode("utf-8", errors="replace")
+            body = exc.read(65_537).decode("utf-8", errors="replace")
             raise HttpError(exc.code, body) from exc
         except urllib.error.URLError as exc:
             elapsed = time.monotonic() - _start
