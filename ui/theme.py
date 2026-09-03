@@ -99,6 +99,39 @@ def apply(root: tk.Tk) -> None:
           background=[("active", C["primary_h"]), ("disabled", C["border"])],
           foreground=[("disabled", C["text_muted"])])
 
+    s.configure(
+        "Hero.TButton",
+        background=C["primary"],
+        foreground=C["primary_fg"],
+        font=F["h3"],
+        padding=(18, 13),
+        relief="flat",
+        borderwidth=0,
+        focusthickness=0,
+    )
+    s.map(
+        "Hero.TButton",
+        background=[("active", C["primary_h"]), ("disabled", C["border"])],
+        foreground=[("disabled", C["text_muted"])],
+    )
+
+    s.configure(
+        "HeroSecondary.TButton",
+        background=C["surface"],
+        foreground=C["primary"],
+        font=F["h3"],
+        padding=(18, 12),
+        relief="solid",
+        borderwidth=1,
+        bordercolor=C["primary"],
+        focusthickness=0,
+    )
+    s.map(
+        "HeroSecondary.TButton",
+        background=[("active", C["ghost_h"]), ("disabled", C["surface_alt"])],
+        foreground=[("disabled", C["text_muted"])],
+    )
+
     # --- Кнопка Secondary (контурная) ---
     s.configure(
         "Secondary.TButton",

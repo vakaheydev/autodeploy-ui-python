@@ -39,6 +39,7 @@ class PreviewField:
     source: Optional[str]
     reason: Optional[str]
     conflict: Optional[str] = None
+    candidates: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class ValidatedResponse:
     payload: Dict[str, Any]
     preview_fields: list[PreviewField]
     warnings: list[str] = field(default_factory=list)
+    reference_candidates: Dict[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=dict
+    )
 
     @property
     def form_data(self) -> Dict[str, Any]:
@@ -111,6 +115,10 @@ class ResponseValidator:
         current_values: Optional[Mapping[str, Any]] = None,
         reference_values: Optional[Mapping[str, Iterable[Any]]] = None,
         schema: Optional[Dict[str, Any]] = None,
+        reference_candidates: Optional[
+            Mapping[str, Iterable[tuple[str, str]]]
+        ] = None,
+        check_domain: bool = True,
     ) -> ValidatedResponse:
         decoded = _decode(payload)
         effective_schema = schema or build_form_schema(form, reference_values)
@@ -119,7 +127,15 @@ class ResponseValidator:
             raise ResponseValidationError(issues)
         assert isinstance(decoded, dict)  # подтверждено schema
 
-        domain_issues = self._domain_issues(decoded["form"], form)
+        domain_values = dict(current_values or {})
+        domain_values.update({
+            key: value
+            for key, value in decoded["form"].items()
+            if value is not None
+        })
+        domain_issues = (
+            self._domain_issues(domain_values, form) if check_domain else []
+        )
         domain_issues.extend(self._metadata_issues(decoded, form))
         if contains_secret(decoded):
             domain_issues.append("$: результат содержит значение, похожее на секрет")
@@ -143,6 +159,7 @@ class ResponseValidator:
                 source=meta["sources"][field_def.key],
                 reason=meta["reasons"][field_def.key],
                 conflict="; ".join(conflicts_by_field.get(field_def.key, [])) or None,
+                candidates=tuple((reference_candidates or {}).get(field_def.key, ())),
             )
             for field_def in form.fields
         ]
@@ -153,7 +170,15 @@ class ResponseValidator:
             warnings.append(
                 "Низкая уверенность — проверьте перед применением: " + ", ".join(low_fields)
             )
-        return ValidatedResponse(copy.deepcopy(decoded), rows, warnings)
+        return ValidatedResponse(
+            copy.deepcopy(decoded),
+            rows,
+            warnings,
+            {
+                key: tuple(items)
+                for key, items in (reference_candidates or {}).items()
+            },
+        )
 
     def validate_manual_values(
         self,
@@ -171,7 +196,14 @@ class ResponseValidator:
             if field_def is None:
                 result[key] = ["Неизвестное поле"]
                 continue
-            errors = _schema_errors(value, field_value_schema(field_def, reference_values))
+            errors = _schema_errors(
+                value,
+                field_value_schema(
+                    field_def,
+                    reference_values,
+                    strict_references=True,
+                ),
+            )
             if contains_secret(value, key=key):
                 errors.append("Значение похоже на секрет")
             if errors:
@@ -198,6 +230,37 @@ class ResponseValidator:
         values: Mapping[str, Any],
         form: BaseForm,
     ) -> None:
+        # Structured AI output may legitimately contain null for an unknown
+        # required field. В ручном preview уже проверяем effective form: если
+        # пользователь явно очищает обязательное поле, применять это нельзя.
+        for field_def in form.fields:
+            if field_def.required and _is_empty(values.get(field_def.key)):
+                target.setdefault(field_def.key, []).append(
+                    f"Поле «{field_def.label}» обязательно для заполнения"
+                )
+        try:
+            form_issues = form.validate(dict(values))
+        except Exception as exc:
+            form_issues = [
+                f"Ошибка проверки правил формы ({type(exc).__name__})"
+            ]
+        for message in form_issues:
+            text = str(message)[:1000]
+            # BaseForm required-проверку выше делаем точнее для списков/объектов.
+            if text.startswith('Поле "') and "обязательно для заполнения" in text:
+                continue
+            lowered = text.casefold()
+            field_key = next(
+                (
+                    field_def.key
+                    for field_def in form.fields
+                    if field_def.label.casefold() in lowered
+                ),
+                "__form__",
+            )
+            messages = target.setdefault(field_key, [])
+            if text not in messages:
+                messages.append(text)
         for issue in cls._domain_issues(dict(values), form):
             key, _, message = issue.partition(":")
             target.setdefault(key, []).append(message.strip() or issue)

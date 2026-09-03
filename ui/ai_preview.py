@@ -39,6 +39,7 @@ class AIAutofillPreview:
         self._entries: Dict[str, tk.Text] = {}
         self._selected: Dict[str, tk.BooleanVar] = {}
         self._error_labels: Dict[str, tk.Label] = {}
+        self._global_error_var = tk.StringVar()
         self._validate_after_id: Optional[str] = None
         self.result: Optional[Dict[str, Any]] = None
 
@@ -118,6 +119,17 @@ class AIAutofillPreview:
         # Учитываем комбинацию выбранных по умолчанию изменений сразу.
         self._validate_entries()
 
+        tk.Label(
+            self._dlg,
+            textvariable=self._global_error_var,
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=1050,
+            font=theme.F["small"],
+            bg=theme.C["bg"],
+            fg=theme.C["error"],
+        ).pack(fill=tk.X, padx=16, pady=(4, 0))
+
         footer = tk.Frame(self._dlg, bg=theme.C["bg"])
         footer.pack(fill=tk.X, padx=16, pady=12)
         ttk.Button(
@@ -196,6 +208,27 @@ class AIAutofillPreview:
                 font=("Segoe UI", 8), bg=bg, fg=theme.C["primary"],
                 activebackground=theme.C["ghost_h"], relief="flat", bd=0, cursor="hand2",
             ).pack(side=tk.LEFT, padx=(0, 5))
+        if row.candidates:
+            candidate_button = tk.Menubutton(
+                row_actions,
+                text="Справочник ▾",
+                font=("Segoe UI", 8),
+                bg=bg,
+                fg=theme.C["primary"],
+                activebackground=theme.C["ghost_h"],
+                relief="flat",
+                bd=0,
+                cursor="hand2",
+            )
+            menu = tk.Menu(candidate_button, tearoff=False)
+            for value, label in row.candidates:
+                caption = f"{label}  [{value}]" if label != value else value
+                menu.add_command(
+                    label=caption,
+                    command=lambda v=value, k=row.key: self._set_entry(k, v, True),
+                )
+            candidate_button.config(menu=menu)
+            candidate_button.pack(side=tk.LEFT, padx=(0, 5))
         error_label = tk.Label(
             edit_col, text="", anchor="w", justify=tk.LEFT, wraplength=350,
             font=("Segoe UI", 8), bg=bg, fg=theme.C["error"],
@@ -222,6 +255,11 @@ class AIAutofillPreview:
             detail_parts.append(f"Причина: {row.reason}")
         if row.conflict:
             detail_parts.append(f"Конфликт: {row.conflict}")
+        if row.candidates and row.proposed_value is None:
+            detail_parts.append(
+                "Варианты справочника: "
+                + ", ".join(label for _value, label in row.candidates[:3])
+            )
         if not detail_parts:
             detail_parts.append("—")
         tk.Label(
@@ -271,6 +309,7 @@ class AIAutofillPreview:
         self._merge_errors(errors, domain_errors)
         for key, label in self._error_labels.items():
             label.config(text="; ".join(errors.get(key, [])))
+        self._global_error_var.set("; ".join(errors.get("__form__", [])))
         return errors
 
     def _apply(self, *, selected_only: bool) -> None:
@@ -292,9 +331,11 @@ class AIAutofillPreview:
         }
         for key, label in self._error_labels.items():
             label.config(text="; ".join(errors.get(key, [])))
+        self._global_error_var.set("; ".join(errors.get("__form__", [])))
         if blocking:
-            first = next(iter(blocking))
-            self._entries[first].focus_set()
+            first = next((key for key in blocking if key in self._entries), None)
+            if first is not None:
+                self._entries[first].focus_set()
             return
         self.result = {key: values[key] for key in candidate_keys}
         self._dlg.destroy()

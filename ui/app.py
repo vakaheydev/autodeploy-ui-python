@@ -3,10 +3,11 @@ Application — корень приложения.
 
 Создаёт и связывает все сервисы, управляет навигацией между экранами.
 """
-import tkinter as tk
+import math
 import queue
 import threading
 import time
+import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 from typing import List, Type
@@ -14,6 +15,7 @@ from typing import List, Type
 from config.environments import ENVIRONMENTS
 from core.env_manager import EnvManager
 from core.http_client import HttpClient
+from core.logging_setup import configure_logging
 from core.reference_cache import ReferenceCache
 from core.reference_resolver import ReferenceResolver
 from core.run_storage import RunStorage
@@ -26,8 +28,13 @@ from services.submit_service import SubmitService
 from services.tfs_service import TfsService
 from ui.screens.base_screen import BaseScreen
 from opencode_integration.manager import OpenCodeManager
+from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
 from config.environments import (
+    OPENCODE_CONNECT_TIMEOUT_KEY,
     OPENCODE_REQUEST_TIMEOUT_KEY,
+    OPENCODE_SERVER_PASSWORD_KEY,
+    OPENCODE_SERVER_URL_KEY,
+    OPENCODE_SERVER_USERNAME_KEY,
     OPENCODE_STARTUP_TIMEOUT_KEY,
 )
 
@@ -44,7 +51,13 @@ class Application:
     # Инициализация
     # ------------------------------------------------------------------
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        itsm_source: ITSMDataSource | None = None,
+        ado_source: AzureDevOpsDataSource | None = None,
+    ) -> None:
+        self.log_path = configure_logging()
         self._root = tk.Tk()
         self._root.title("Gravitee Admin UI")
         self._root.minsize(660, 480)
@@ -67,20 +80,32 @@ class Application:
             ]
         )
         self.submit_service    = SubmitService(self.http_client, self.env_manager)
-        self.tfs_service       = TfsService(self.env_manager, self.http_client)
-        self.itsm_service      = ITSMService(self.env_manager, self.http_client)
+        # Корпоративная сборка внедряет реальные адаптеры здесь. Публичные
+        # сервисы — явные заглушки без URL, auth и сетевой реализации.
+        self.tfs_service       = ado_source or TfsService(self.env_manager, self.http_client)
+        self.itsm_service      = itsm_source or ITSMService(self.env_manager, self.http_client)
         self.gravitee_service  = GraviteeService(self.env_manager, self.http_client)
         self.run_storage       = RunStorage()
 
         opencode_settings = self.env_manager.load()
         self.opencode_manager = OpenCodeManager(
             Path(__file__).resolve().parent.parent,
+            server_url=opencode_settings.get(
+                OPENCODE_SERVER_URL_KEY, "http://127.0.0.1:4096"
+            ),
+            connect_timeout=self._float_setting(
+                opencode_settings.get(OPENCODE_CONNECT_TIMEOUT_KEY), 10.0
+            ),
             startup_timeout=self._float_setting(
                 opencode_settings.get(OPENCODE_STARTUP_TIMEOUT_KEY), 20.0
             ),
             request_timeout=self._float_setting(
                 opencode_settings.get(OPENCODE_REQUEST_TIMEOUT_KEY), 120.0
             ),
+            username=opencode_settings.get(
+                OPENCODE_SERVER_USERNAME_KEY, "opencode"
+            ),
+            password=opencode_settings.get(OPENCODE_SERVER_PASSWORD_KEY, ""),
         )
         self._closing = False
         self._opencode_events: "queue.Queue[tuple[str, object]]" = queue.Queue()
@@ -259,7 +284,7 @@ class Application:
         return HomeScreen
 
     def _start_opencode(self) -> None:
-        """Стартует OpenCode вне Tk thread; ошибка не останавливает приложение."""
+        """По умолчанию подключается к общему server; ничего не запускает."""
         if self._closing:
             return
 
@@ -268,7 +293,7 @@ class Application:
                 return
             self._opencode_events.put(("error", exc))
 
-        self.opencode_manager.start_async(on_error=on_error)
+        self.opencode_manager.connect_async(on_error=on_error)
 
     def _poll_opencode_events(self) -> None:
         """Передаёт результат фонового startup в UI через queue + Tk.after."""
@@ -292,21 +317,28 @@ class Application:
             pass
 
     def _on_close(self) -> None:
-        """Отменяет AI-запросы через остановку сервера и корректно закрывает Tk."""
+        """Удаляет активную session, затем отключает/останавливает OpenCode."""
         if self._closing:
             return
         self._closing = True
+        ai_agent = None
+        detach = getattr(self._current_screen, "detach_ai_for_shutdown", None)
+        if callable(detach):
+            ai_agent = detach()
         self._root.withdraw()
         finished = threading.Event()
 
         def worker() -> None:
             try:
+                if ai_agent is not None:
+                    ai_agent.cancel()
+                    ai_agent.close()
                 self.opencode_manager.stop()
             finally:
                 finished.set()
 
         threading.Thread(target=worker, name="opencode-shutdown", daemon=True).start()
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + 15.0
 
         def poll() -> None:
             if finished.is_set() or time.monotonic() >= deadline:
@@ -320,6 +352,6 @@ class Application:
     def _float_setting(value: str | None, default: float) -> float:
         try:
             parsed = float(value) if value else default
-            return parsed if parsed > 0 else default
+            return parsed if math.isfinite(parsed) and parsed > 0 else default
         except (TypeError, ValueError):
             return default

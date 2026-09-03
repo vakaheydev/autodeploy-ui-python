@@ -2432,11 +2432,16 @@ REQUIRED_SETTINGS: List[Tuple[str, str]] = [
 
 ## 15. AI-автозаполнение через OpenCode
 
-Приложение запускает OpenCode `1.18.18` на случайном локальном порту, получает
-ITSM/ADO-контекст в Python и передаёт его изолированному агенту
-`form-extractor`. Результат проходит строгую JSON Schema и повторную
-Python-валидацию, после чего открывается редактируемый preview. Основная форма
-меняется только после ручного подтверждения.
+Приложение рассчитано на OpenCode `1.18.18`: по умолчанию оно за 10 секунд
+пытается подключиться к общему серверу `http://127.0.0.1:4096`, а по явной
+команде может создать собственный server на свободном localhost-порту.
+ITSM/ADO-контекст получает Python, после чего открывается управляемая session с
+чатом, статусами, остановкой и подтверждением выбранных MCP-вызовов.
+
+Полные справочники в prompt не отправляются. Агент предлагает смысловые названия,
+Python локально сопоставляет их с ID и только затем выполняет строгую schema- и
+domain-валидацию. Основная форма меняется исключительно через редактируемый
+preview после ручного подтверждения.
 
 Настройки и диагностика вынесены отдельной четвёртой карточкой **OpenCode** на
 самый главный экран. Подробная инструкция по настройке, контракту API,
@@ -2449,8 +2454,8 @@ Python-валидацию, после чего открывается редак
 ```
 autodeploy-ui-python/
 ├── .opencode/
-│   └── agents/form-extractor.md   # primary agent без внешних инструментов
-├── opencode_integration/          # manager, client, agent, schema, prompt и validation
+│   └── agents/form-extractor.md   # primary agent: direct tools deny-by-default
+├── opencode_integration/          # server/session/MCP, context, schema, local refs, validation
 ├── config/
 │   ├── categories.py              # названия категорий и их порядок
 │   ├── environments.py            # список окружений, ключи .env токенов, REQUIRED_SETTINGS
@@ -2459,6 +2464,7 @@ autodeploy-ui-python/
 ├── core/
 │   ├── env_manager.py             # чтение/запись .env (токены)
 │   ├── http_client.py             # HTTP клиент (GET/POST/PUT/DELETE)
+│   ├── logging_setup.py           # redaction + console/UI + ротационный файл
 │   ├── reference_cache.py         # кеш HTTP-справочников (память + файлы cached/)
 │   ├── reference_resolver.py      # выбирает нужный обработчик справочника
 │   └── run_storage.py             # ← история запусков форм (data/runs.json)
@@ -2479,11 +2485,11 @@ autodeploy-ui-python/
 ├── services/
 │   ├── submit_service.py          # валидация → payload → HTTP запрос
 │   ├── gravitee_service.py        # ← сервис Gravitee API (доступен в формах)
-│   ├── itsm_service.py            # ← сервис ITSM (доступен в формах)
-│   └── tfs_service.py             # ← сервис TFS/Azure DevOps (доступен в формах)
+│   ├── itsm_service.py            # точка внедрения закрытого ITSM-адаптера
+│   └── tfs_service.py             # точка внедрения закрытого ADO-адаптера
 ├── cached/                        # файловый кеш HTTP-справочников (авто, не коммитить)
 └── ui/
-    ├── ai_progress.py             # прогресс и отмена AI-flow
+    ├── ai_assistant.py            # интерактивная OpenCode session и approvals
     ├── ai_preview.py              # редактируемый diff перед применением
     ├── theme.py                   # цвета, шрифты, ttk-стили ← менять внешний вид здесь
     ├── app.py                     # DI-контейнер, навигация, Ctrl+A/C/V/X fix

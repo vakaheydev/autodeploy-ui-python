@@ -20,6 +20,7 @@ _MODULES: list[Tuple[str, str, str, str]] = [
 class HomeScreen(BaseScreen):
 
     def _build(self) -> None:
+        self._status_poll_id = None
         # --- Шапка ---
         header = tk.Frame(self, bg=theme.C["bg"])
         header.pack(fill=tk.X, pady=(0, 4))
@@ -49,6 +50,19 @@ class HomeScreen(BaseScreen):
 
         for icon, title, desc, module_key in _MODULES:
             self._module_card(col, icon, title, desc, module_key)
+
+        self._opencode_status = tk.StringVar(value="OpenCode: проверяю состояние…")
+        self._opencode_status_label = tk.Label(
+            col,
+            textvariable=self._opencode_status,
+            font=theme.F["small"],
+            bg=theme.C["bg"],
+            fg=theme.C["text_muted"],
+            anchor="w",
+        )
+        self._opencode_status_label.pack(fill=tk.X, padx=4, pady=(8, 0))
+        self.bind("<Destroy>", self._on_destroy)
+        self._refresh_opencode_status()
 
     def _module_card(self, parent: tk.Frame, icon: str, title: str, desc: str, key: str) -> None:
         border = tk.Frame(parent, bg=theme.C["border"])
@@ -107,6 +121,34 @@ class HomeScreen(BaseScreen):
     def _open_settings(self) -> None:
         from ui.screens.settings_screen import SettingsScreen
         self.app.navigate_to(SettingsScreen)
+
+    def _refresh_opencode_status(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        status = self.app.opencode_manager.status
+        self._opencode_status.set(f"OpenCode: {status.message}")
+        colors = {
+            "ready": theme.C["success"],
+            "error": theme.C["error"],
+            "connecting": theme.C["warning"],
+            "checking": theme.C["warning"],
+            "starting": theme.C["warning"],
+        }
+        self._opencode_status_label.config(
+            fg=colors.get(status.state, theme.C["text_muted"])
+        )
+        self._status_poll_id = self.after(250, self._refresh_opencode_status)
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self and self._status_poll_id is not None:
+            try:
+                self.after_cancel(self._status_poll_id)
+            except tk.TclError:
+                pass
+            self._status_poll_id = None
 
     @staticmethod
     def _set_bg(frame: tk.Frame, color: str) -> None:

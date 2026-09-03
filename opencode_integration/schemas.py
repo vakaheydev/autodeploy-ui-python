@@ -62,6 +62,8 @@ def _reference_enum(
 def field_value_schema(
     field: FieldDefinition,
     reference_values: Optional[Mapping[str, Iterable[Any]]] = None,
+    *,
+    strict_references: bool = False,
 ) -> Dict[str, Any]:
     """Возвращает nullable-схему значения одного поля."""
     references = reference_values or {}
@@ -81,9 +83,9 @@ def field_value_schema(
 
     if field.field_type == FieldType.SELECT:
         values = _reference_enum(field, references)
-        # Если справочник недоступен, безопаснее потребовать null, чем позволить
-        # модели придумать идентификатор, который Python не сможет подтвердить.
-        if field.reference is not None and not values:
+        # Финальная локальная валидация допускает только подтверждённые ID. До
+        # загрузки справочника модель возвращает смысловое имя/метку, не ID.
+        if field.reference is not None and strict_references and not values:
             return {
                 "type": "null",
                 "description": (
@@ -95,7 +97,15 @@ def field_value_schema(
             "type": "string",
             "minLength": 1,
             "maxLength": DEFAULT_STRING_MAX_LENGTH,
-            "description": field.hint or field.label,
+            "description": (
+                (field.hint or field.label)
+                + (
+                    ". Return a semantic label explicitly supported by the context; "
+                    "the application resolves it to a reference ID locally."
+                    if field.reference is not None and not values
+                    else ""
+                )
+            ),
         }
         if values:
             value_schema["enum"] = values
@@ -103,7 +113,7 @@ def field_value_schema(
 
     if field.field_type == FieldType.MULTISELECT:
         values = _reference_enum(field, references)
-        if field.reference is not None and not values:
+        if field.reference is not None and strict_references and not values:
             return {
                 "type": "null",
                 "description": (
@@ -123,12 +133,24 @@ def field_value_schema(
             "items": item_schema,
             "uniqueItems": True,
             "maxItems": MAX_MULTISELECT_ITEMS,
-            "description": field.hint or field.label,
+            "description": (
+                (field.hint or field.label)
+                + (
+                    ". Return semantic labels explicitly supported by the context; "
+                    "the application resolves them to reference IDs locally."
+                    if field.reference is not None and not values
+                    else ""
+                )
+            ),
         })
 
     if field.field_type == FieldType.BLOCK:
         nested_props = {
-            sub.key: field_value_schema(sub, references)
+            sub.key: field_value_schema(
+                sub,
+                references,
+                strict_references=strict_references,
+            )
             for sub in field.block_fields
         }
         return _nullable({
@@ -145,11 +167,17 @@ def field_value_schema(
 def build_form_schema(
     form: BaseForm,
     reference_values: Optional[Mapping[str, Iterable[Any]]] = None,
+    *,
+    strict_references: bool = False,
 ) -> Dict[str, Any]:
     """Строит корневой контракт ``{form, meta}`` для одной формы."""
     fields = list(form.fields)
     form_properties = {
-        field.key: field_value_schema(field, reference_values)
+        field.key: field_value_schema(
+            field,
+            reference_values,
+            strict_references=strict_references,
+        )
         for field in fields
     }
     field_keys = list(form_properties)

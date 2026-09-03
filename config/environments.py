@@ -36,22 +36,24 @@ TFS_TOKEN_KEY = "TFS_TOKEN"
 
 ITSM_LOGIN_KEY    = "ITSM_LOGIN"
 ITSM_PASSWORD_KEY = "ITSM_PASSWORD"
-ITSM_TICKET_URL_TEMPLATE_KEY = "ITSM_TICKET_URL_TEMPLATE"
-
-ADO_PR_URL_TEMPLATE_KEY = "ADO_PR_URL_TEMPLATE"
-ADO_ALLOWED_HOSTS_KEY = "ADO_ALLOWED_HOSTS"
 
 GRAVITEE_REPO_PATH_KEY = "GRAVITEE_REPO_PATH"
 
 CERT_PATH_KEY = "CERT_PATH"
 
-# OpenCode хранит provider credentials в собственной конфигурации. Здесь только
-# несекретные параметры выбора модели и ограничения локального клиента.
+# OpenCode хранит provider credentials в собственной конфигурации. Здесь
+# находятся параметры локального клиента и, при необходимости, Basic Auth
+# password самого localhost-сервера; он никогда не передаётся AI-модели.
 OPENCODE_PROVIDER_ID_KEY = "OPENCODE_PROVIDER_ID"
 OPENCODE_MODEL_ID_KEY = "OPENCODE_MODEL_ID"
+OPENCODE_SERVER_URL_KEY = "OPENCODE_SERVER_URL"
+OPENCODE_SERVER_USERNAME_KEY = "OPENCODE_SERVER_USERNAME"
+OPENCODE_SERVER_PASSWORD_KEY = "OPENCODE_SERVER_PASSWORD"
+OPENCODE_CONNECT_TIMEOUT_KEY = "OPENCODE_CONNECT_TIMEOUT"
 OPENCODE_STARTUP_TIMEOUT_KEY = "OPENCODE_STARTUP_TIMEOUT"
 OPENCODE_REQUEST_TIMEOUT_KEY = "OPENCODE_REQUEST_TIMEOUT"
 OPENCODE_MAX_CONTEXT_CHARS_KEY = "OPENCODE_MAX_CONTEXT_CHARS"
+OPENCODE_ALLOWED_MCP_KEY = "OPENCODE_ALLOWED_MCP"
 
 # Обязательные поля настроек. Проверяются при каждом запуске.
 # Формат: (ключ .env, отображаемое название для пользователя)

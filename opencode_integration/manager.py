@@ -1,11 +1,13 @@
-"""Жизненный цикл локального процесса ``opencode serve``."""
+"""Подключение к общему OpenCode Server и lifecycle создаваемого процесса."""
 from __future__ import annotations
 
 import atexit
+import logging
+import math
 import os
 import re
-import signal
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -21,12 +23,14 @@ from opencode_integration.client import (
 )
 
 OPENCODE_HOST = "127.0.0.1"
+DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 FORM_EXTRACTOR_AGENT = "form-extractor"
 TARGET_OPENCODE_VERSION = "1.18.18"
+_log = logging.getLogger("opencode.manager")
 
 
 class OpenCodeManagerError(OpenCodeError):
-    """OpenCode нельзя запустить безопасным способом."""
+    """К серверу нельзя подключиться или его нельзя запустить безопасно."""
 
 
 @dataclass(frozen=True)
@@ -37,155 +41,313 @@ class ManagerStatus:
     address: str = ""
     pid: Optional[int] = None
     agent_loaded: bool = False
+    ownership: str = "none"  # none | external | owned
+    runtime_dir: str = ""
+
+
+def default_runtime_dir() -> Path:
+    """Отдельный ASCII-friendly каталог, куда OpenCode может ставить plugin deps."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "gravitee-autodeploy-ui" / "opencode-runtime"
 
 
 class OpenCodeManager:
-    """Запускает ровно один localhost-only OpenCode Server на свободном порту."""
+    """Один активный client: внешний сервер либо созданный формой процесс."""
 
     def __init__(
         self,
         project_dir: Path,
         *,
         command: str = "opencode",
+        server_url: str = DEFAULT_SERVER_URL,
+        connect_timeout: float = 10.0,
         startup_timeout: float = 20.0,
         request_timeout: float = 120.0,
+        username: str = "opencode",
+        password: str = "",
+        runtime_dir: Path | None = None,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
+        self.agent_source = (
+            self.project_dir / ".opencode" / "agents" / "form-extractor.md"
+        )
+        self.runtime_dir = Path(runtime_dir or default_runtime_dir()).resolve()
         self.command = command
-        self.startup_timeout = float(startup_timeout)
-        self.request_timeout = float(request_timeout)
+        self.server_url = server_url.strip() or DEFAULT_SERVER_URL
+        self.connect_timeout = self._timeout_value(connect_timeout)
+        self.startup_timeout = self._timeout_value(startup_timeout)
+        self.request_timeout = self._timeout_value(request_timeout)
+        self.username = username.strip() or "opencode"
+        self.password = password
+
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.Lock()
-        self._startup_cancel = threading.Event()
+        self._cancel = threading.Event()
         self._process: Optional[subprocess.Popen[str]] = None
         self._client: Optional[OpenCodeClient] = None
-        self._status = ManagerStatus("stopped", "OpenCode не запущен")
-        self._stopping = False
-        self._desired_running = False
+        self._status = ManagerStatus(
+            "stopped",
+            "OpenCode Server не подключён",
+            address=self.server_url,
+            runtime_dir=str(self.runtime_dir),
+        )
+        self._ownership = "none"
         self._generation = 0
+        self._stopping = False
         atexit.register(self.stop)
+
+    def configure(
+        self,
+        *,
+        server_url: Optional[str] = None,
+        connect_timeout: Optional[float] = None,
+        startup_timeout: Optional[float] = None,
+        request_timeout: Optional[float] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            if server_url is not None:
+                # Валидацию выполняет тот же клиент, что будет делать запросы.
+                OpenCodeClient(
+                    server_url,
+                    timeout=self._timeout_value(
+                        connect_timeout
+                        if connect_timeout is not None
+                        else self.connect_timeout
+                    ),
+                    directory=self.runtime_dir,
+                )
+                self.server_url = server_url.rstrip("/")
+            if connect_timeout is not None:
+                self.connect_timeout = self._timeout_value(connect_timeout)
+            if startup_timeout is not None:
+                self.startup_timeout = self._timeout_value(startup_timeout)
+            if request_timeout is not None:
+                self.request_timeout = self._timeout_value(request_timeout)
+            if username is not None:
+                self.username = username.strip() or "opencode"
+            if password is not None:
+                self.password = password
+            if self._client is not None:
+                self._client.timeout = self.request_timeout
 
     @property
     def client(self) -> Optional[OpenCodeClient]:
         with self._lock:
-            return self._client if self.is_ready else None
+            if not self._ready_locked():
+                return None
+            return self._client
 
     @property
     def is_ready(self) -> bool:
         with self._lock:
-            return (
-                self._status.state == "ready"
-                and self._process is not None
-                and self._process.poll() is None
-                and self._client is not None
-            )
+            return self._ready_locked()
+
+    def _ready_locked(self) -> bool:
+        if self._status.state != "ready" or self._client is None:
+            return False
+        if self._ownership == "owned":
+            return self._process is not None and self._process.poll() is None
+        return self._ownership == "external"
 
     @property
     def status(self) -> ManagerStatus:
         with self._lock:
-            if self._process is not None and self._process.poll() is not None:
-                if self._status.state == "ready" and not self._stopping:
-                    self._status = ManagerStatus(
+            if (
+                self._ownership == "owned"
+                and self._process is not None
+                and self._process.poll() is not None
+                and self._status.state == "ready"
+                and not self._stopping
+            ):
+                self._set_status_locked(
+                    ManagerStatus(
                         "error",
-                        f"OpenCode аварийно завершился с кодом {self._process.returncode}",
+                        f"Созданный OpenCode аварийно завершился с кодом "
+                        f"{self._process.returncode}",
                         version=self._status.version,
                         address=self._status.address,
                         pid=self._process.pid,
+                        ownership="owned",
+                        runtime_dir=str(self.runtime_dir),
                     )
+                )
+                self._client = None
             return self._status
 
-    def start(self) -> OpenCodeClient:
-        """Синхронный start; вызывать только из worker thread."""
-        with self._lock:
-            self._desired_running = True
-        return self._start_requested()
-
-    def _start_requested(self) -> OpenCodeClient:
-        """Выполняет уже зарегистрированный start request."""
+    def connect(
+        self,
+        address: Optional[str] = None,
+        *,
+        timeout: Optional[float] = None,
+    ) -> OpenCodeClient:
+        """Подключается к уже работающему серверу; вызывать из worker thread."""
+        target = (address or self.server_url).strip().rstrip("/")
+        effective_timeout = self._timeout_value(
+            timeout if timeout is not None else self.connect_timeout
+        )
         with self._lifecycle_lock:
-            with self._lock:
-                if not self._desired_running:
-                    raise OpenCodeManagerError("Запуск OpenCode отменён")
-                self._startup_cancel.clear()
-            if self.is_ready:
-                with self._lock:
-                    assert self._client is not None
-                    return self._client
-            self._detach_and_terminate(set_stopped=False)
-            with self._lock:
-                self._status = ManagerStatus("starting", "Проверяю OpenCode...")
-
-            executable = shutil.which(self.command)
-            if executable is None:
-                with self._lock:
-                    self._status = ManagerStatus(
-                        "error",
-                        "Команда 'opencode' не найдена в PATH. Установите OpenCode 1.18.18.",
-                    )
-                    message = self._status.message
-                raise OpenCodeManagerError(message)
-
+            self._cancel.clear()
+            self._clear_connection(terminate_owned=True, set_stopped=False)
+            self._set_status(
+                "connecting",
+                f"Попытка подключения к серверу {target}…",
+                address=target,
+                ownership="external",
+            )
+            deadline = time.monotonic() + effective_timeout
             try:
-                version = self._detect_version(executable)
+                self._prepare_runtime()
+                client = self._make_client(target)
+                health = client.health(timeout=self._remaining(deadline))
+                if not health.healthy:
+                    raise OpenCodeManagerError("health check вернул healthy=false")
+                self._set_status(
+                    "connecting",
+                    f"Сервер отвечает. Проверяю агента {FORM_EXTRACTOR_AGENT}…",
+                    version=health.version,
+                    address=target,
+                    ownership="external",
+                )
+                client.require_agent(
+                    FORM_EXTRACTOR_AGENT,
+                    timeout=self._remaining(deadline),
+                )
+                if self._cancel.is_set():
+                    raise OpenCodeManagerError("Подключение к OpenCode отменено")
             except Exception as exc:
                 with self._lock:
-                    self._status = ManagerStatus(
-                        "error", f"Не удалось проверить версию OpenCode: {exc}"
-                    )
-                    message = self._status.message
-                raise OpenCodeManagerError(message) from exc
-            with self._lock:
-                self._status = ManagerStatus(
-                    "starting", f"Запускаю OpenCode {version}...", version=version
+                    self._client = None
+                    self._ownership = "none"
+                self._set_status(
+                    "error",
+                    f"Не удалось подключиться к серверу {target}: {exc}",
+                    address=target,
                 )
+                raise OpenCodeManagerError(self._status.message) from exc
+
+            with self._lock:
+                self.server_url = target
+                self._client = client
+                self._ownership = "external"
+            self._set_status(
+                "ready",
+                f"Успешно подключено к серверу {target}",
+                version=health.version,
+                address=target,
+                agent_loaded=True,
+                ownership="external",
+            )
+            return client
+
+    def connect_async(
+        self,
+        address: Optional[str] = None,
+        *,
+        timeout: Optional[float] = None,
+        on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> threading.Thread:
+        return self._run_async(
+            "opencode-connect",
+            lambda: self.connect(address, timeout=timeout),
+            on_ready,
+            on_error,
+        )
+
+    def create(self, *, port: int = 0) -> OpenCodeClient:
+        """Создаёт дочерний localhost-only server в изолированной директории."""
+        with self._lifecycle_lock:
+            self._cancel.clear()
+            self._clear_connection(terminate_owned=True, set_stopped=False)
+            self._set_status(
+                "starting",
+                "Проверяю команду OpenCode перед созданием сервера…",
+                ownership="owned",
+            )
+            executable = shutil.which(self.command)
+            if executable is None:
+                return self._create_failed(
+                    "Команда 'opencode' не найдена в PATH. Установите OpenCode 1.18.18."
+                )
+            try:
+                self._prepare_runtime()
+                version = self._detect_version(executable)
+            except Exception as exc:
+                return self._create_failed(f"Не удалось подготовить OpenCode: {exc}", exc)
 
             last_error: Optional[Exception] = None
-            for _attempt in range(3):
+            for attempt in range(1, 4):
+                if self._cancel.is_set():
+                    last_error = OpenCodeManagerError("Создание сервера отменено")
+                    break
                 try:
-                    port = self._pick_free_port()
-                    address = f"http://{OPENCODE_HOST}:{port}"
-                    process = self._spawn(executable, port)
+                    selected_port = int(port) if port else self._pick_free_port()
+                    address = f"http://{OPENCODE_HOST}:{selected_port}"
+                    self._set_status(
+                        "starting",
+                        f"Попытка создать и подключить OpenCode Server {address} "
+                        f"(попытка {attempt}/3)…",
+                        version=version,
+                        address=address,
+                        ownership="owned",
+                    )
+                    process = self._spawn(executable, selected_port)
                     with self._lock:
                         self._process = process
+                        self._ownership = "owned"
                         self._generation += 1
                         generation = self._generation
-                    client = OpenCodeClient(address, timeout=self.request_timeout)
+                    client = self._make_client(address)
                     self._wait_until_ready(client, process)
+                    self._set_status(
+                        "starting",
+                        f"Сервер создан. Проверяю агента {FORM_EXTRACTOR_AGENT}…",
+                        version=version,
+                        address=address,
+                        pid=process.pid,
+                        ownership="owned",
+                    )
                     client.require_agent(
                         FORM_EXTRACTOR_AGENT,
-                        timeout=min(5.0, max(0.5, self.startup_timeout)),
+                        timeout=min(10.0, self.startup_timeout),
                     )
-                    if self._startup_cancel.is_set():
-                        raise OpenCodeManagerError("Запуск OpenCode отменён")
+                    if self._cancel.is_set():
+                        raise OpenCodeManagerError("Создание сервера отменено")
                     with self._lock:
                         self._client = client
-                        self._status = ManagerStatus(
-                            "ready",
-                            "OpenCode готов к AI-автозаполнению",
-                            version=version,
-                            address=address,
-                            pid=process.pid,
-                            agent_loaded=True,
-                        )
+                        self._ownership = "owned"
+                        self.server_url = address
+                    self._set_status(
+                        "ready",
+                        f"Сервер создан и подключён: {address}",
+                        version=version,
+                        address=address,
+                        pid=process.pid,
+                        agent_loaded=True,
+                        ownership="owned",
+                    )
                     self._start_exit_monitor(process, generation)
                     return client
                 except Exception as exc:
                     last_error = exc
-                    self._detach_and_terminate(set_stopped=False)
-                    if self._startup_cancel.is_set() or isinstance(
-                        exc, OpenCodeAgentMissingError
-                    ):
+                    self._clear_connection(terminate_owned=True, set_stopped=False)
+                    if port or isinstance(exc, OpenCodeAgentMissingError):
                         break
-
             detail = str(last_error) if last_error else "неизвестная ошибка"
-            with self._lock:
-                self._status = ManagerStatus(
-                    "error",
-                    f"Не удалось запустить OpenCode Server: {detail}",
-                    version=version,
-                )
-                message = self._status.message
-            raise OpenCodeManagerError(message) from last_error
+            return self._create_failed(
+                f"Не удалось создать OpenCode Server: {detail}",
+                last_error,
+                version=version,
+            )
+
+    # Совместимость со старым API и формами, которые вызывают manager.start().
+    def start(self) -> OpenCodeClient:
+        return self.create()
 
     def start_async(
         self,
@@ -193,14 +355,32 @@ class OpenCodeManager:
         on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> threading.Thread:
-        # Фиксируем намерение до запуска thread, чтобы последующий stop() мог
-        # отменить даже worker, который ещё не успел получить lifecycle lock.
-        with self._lock:
-            self._desired_running = True
+        return self.create_async(on_ready=on_ready, on_error=on_error)
 
+    def create_async(
+        self,
+        *,
+        port: int = 0,
+        on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> threading.Thread:
+        return self._run_async(
+            "opencode-create",
+            lambda: self.create(port=port),
+            on_ready,
+            on_error,
+        )
+
+    @staticmethod
+    def _run_async(
+        name: str,
+        operation: Callable[[], OpenCodeClient],
+        on_ready: Optional[Callable[[OpenCodeClient], None]],
+        on_error: Optional[Callable[[Exception], None]],
+    ) -> threading.Thread:
         def worker() -> None:
             try:
-                client = self._start_requested()
+                client = operation()
             except Exception as exc:
                 if on_error is not None:
                     on_error(exc)
@@ -208,47 +388,144 @@ class OpenCodeManager:
                 if on_ready is not None:
                     on_ready(client)
 
-        thread = threading.Thread(target=worker, name="opencode-startup", daemon=True)
+        thread = threading.Thread(target=worker, name=name, daemon=True)
         thread.start()
         return thread
 
+    def check_status(self) -> ManagerStatus:
+        """Повторяет health/agent-check текущего адреса без создания процесса."""
+        with self._lifecycle_lock:
+            with self._lock:
+                existing = self._client
+                address = (
+                    existing.base_url
+                    if existing is not None
+                    else self._status.address or self.server_url
+                )
+                ownership = self._ownership if existing is not None else "external"
+                process = self._process
+            self._set_status(
+                "checking",
+                f"Проверяю состояние сервера {address}…",
+                address=address,
+                ownership=ownership,
+                pid=process.pid if process else None,
+            )
+            try:
+                self._prepare_runtime()
+                client = existing or self._make_client(address)
+                health = client.health(timeout=self.connect_timeout)
+                if not health.healthy:
+                    raise OpenCodeManagerError("health check вернул healthy=false")
+                client.require_agent(
+                    FORM_EXTRACTOR_AGENT,
+                    timeout=min(self.connect_timeout, 10.0),
+                )
+            except Exception as exc:
+                self._set_status(
+                    "error",
+                    f"Проверка сервера {address} не пройдена: {exc}",
+                    address=address,
+                    ownership=ownership,
+                    pid=process.pid if process else None,
+                )
+                raise OpenCodeManagerError(self._status.message) from exc
+            with self._lock:
+                self._client = client
+                self._ownership = ownership
+            self._set_status(
+                "ready",
+                f"Сервер отвечает: {address}",
+                version=health.version,
+                address=address,
+                agent_loaded=True,
+                ownership=ownership,
+                pid=process.pid if process else None,
+            )
+            return self.status
+
     def restart(self) -> OpenCodeClient:
+        with self._lock:
+            if self._ownership != "owned":
+                raise OpenCodeManagerError(
+                    "Перезапуск доступен только для сервера, созданного формой"
+                )
         self.stop()
-        return self.start()
+        return self.create()
+
+    def disconnect(self) -> None:
+        """Отключает client, не завершая внешний server."""
+        self._cancel.set()
+        with self._lifecycle_lock:
+            with self._lock:
+                owned = self._ownership == "owned"
+            self._clear_connection(terminate_owned=owned, set_stopped=True)
 
     def stop(self) -> None:
-        with self._lock:
-            self._desired_running = False
-            self._startup_cancel.set()
+        """Завершает только owned process; внешний server никогда не трогает."""
+        self._cancel.set()
         with self._lifecycle_lock:
-            self._detach_and_terminate(set_stopped=True)
-
-    def _detach_and_terminate(self, *, set_stopped: bool) -> None:
-        with self._lock:
-            process = self._process
-            self._stopping = True
-            self._process = None
-            self._client = None
-        try:
-            self._terminate_process(process)
-        finally:
             with self._lock:
-                self._stopping = False
-                if set_stopped:
-                    self._status = ManagerStatus("stopped", "OpenCode остановлен")
+                owned = self._ownership == "owned"
+            self._clear_connection(terminate_owned=owned, set_stopped=True)
+
+    def _prepare_runtime(self) -> None:
+        if not self.agent_source.is_file():
+            raise OpenCodeManagerError(
+                f"Не найден файл агента: {self.agent_source}"
+            )
+        # Не позволяем случайно вернуть OpenCode в каталог репозитория.
+        try:
+            self.runtime_dir.relative_to(self.project_dir)
+        except ValueError:
+            pass
+        else:
+            raise OpenCodeManagerError(
+                "OpenCode runtime должен находиться вне каталога проекта"
+            )
+        agent_dir = self.runtime_dir / ".opencode" / "agents"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            agent_dir.resolve().relative_to(self.runtime_dir)
+        except ValueError as exc:
+            raise OpenCodeManagerError(
+                "Каталог агентов OpenCode через symlink выходит за пределы runtime"
+            ) from exc
+        destination = agent_dir / self.agent_source.name
+        if destination.is_symlink():
+            raise OpenCodeManagerError(
+                "Файл runtime-агента не должен быть symbolic link"
+            )
+        source_text = self.agent_source.read_text(encoding="utf-8")
+        if not destination.exists() or destination.read_text(encoding="utf-8") != source_text:
+            destination.write_text(source_text, encoding="utf-8")
+        _log.info("runtime prepared directory=%s", self.runtime_dir)
+
+    def _make_client(self, address: str) -> OpenCodeClient:
+        return OpenCodeClient(
+            address,
+            timeout=self.request_timeout,
+            directory=self.runtime_dir,
+            username=self.username,
+            password=self.password,
+        )
 
     def _detect_version(self, executable: str) -> str:
         try:
             completed = subprocess.run(
                 [executable, "--version"],
-                cwd=str(self.project_dir),
+                # Даже безобидная команда версии у некоторых сборок OpenCode
+                # инициализирует project plugins. Никогда не даём ей cwd проекта.
+                cwd=str(self.runtime_dir),
                 capture_output=True,
                 text=True,
                 timeout=5,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise OpenCodeManagerError(f"Не удалось выполнить opencode --version: {exc}") from exc
+            raise OpenCodeManagerError(
+                f"Не удалось выполнить opencode --version: {exc}"
+            ) from exc
         combined = f"{completed.stdout}\n{completed.stderr}".strip()
         if completed.returncode != 0:
             raise OpenCodeManagerError(
@@ -257,7 +534,14 @@ class OpenCodeManager:
         match = re.search(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", combined)
         if not match:
             raise OpenCodeManagerError("Не удалось определить версию OpenCode")
-        return match.group(0)
+        version = match.group(0)
+        if version != TARGET_OPENCODE_VERSION:
+            _log.warning(
+                "OpenCode version mismatch actual=%s target=%s",
+                version,
+                TARGET_OPENCODE_VERSION,
+            )
+        return version
 
     @staticmethod
     def _pick_free_port() -> int:
@@ -267,22 +551,32 @@ class OpenCodeManager:
             return int(sock.getsockname()[1])
 
     def _spawn(self, executable: str, port: int) -> subprocess.Popen[str]:
-        kwargs = {
-            "cwd": str(self.project_dir),
+        environment = os.environ.copy()
+        if self.password:
+            environment["OPENCODE_SERVER_PASSWORD"] = self.password
+            environment["OPENCODE_SERVER_USERNAME"] = self.username
+        else:
+            # Не наследуем случайный password из shell: иначе созданный server
+            # потребует auth, о котором клиент формы не знает.
+            environment.pop("OPENCODE_SERVER_PASSWORD", None)
+            environment.pop("OPENCODE_SERVER_USERNAME", None)
+        kwargs: dict[str, object] = {
+            "cwd": str(self.runtime_dir),
             "stdin": subprocess.DEVNULL,
-            # Не сохраняем stdout: сервер/провайдер потенциально может вывести
-            # чувствительный контекст заявки. Диагностика идёт через HTTP/status.
+            # Поток OpenCode может содержать provider diagnostics и контекст.
+            # HTTP lifecycle логируется отдельно, без body.
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
+            "env": environment,
         }
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
         else:
             kwargs["start_new_session"] = True
-        return subprocess.Popen(
+        process = subprocess.Popen(
             [
                 executable,
                 "serve",
@@ -293,19 +587,25 @@ class OpenCodeManager:
             ],
             **kwargs,  # type: ignore[arg-type]
         )
+        _log.info("server process started pid=%s host=%s port=%s", process.pid, OPENCODE_HOST, port)
+        return process
 
-    def _wait_until_ready(self, client: OpenCodeClient, process: subprocess.Popen[str]) -> None:
+    def _wait_until_ready(
+        self,
+        client: OpenCodeClient,
+        process: subprocess.Popen[str],
+    ) -> None:
         deadline = time.monotonic() + self.startup_timeout
         last_error: Optional[Exception] = None
         while time.monotonic() < deadline:
-            if self._startup_cancel.is_set():
-                raise OpenCodeManagerError("Запуск OpenCode отменён")
+            if self._cancel.is_set():
+                raise OpenCodeManagerError("Создание сервера отменено")
             if process.poll() is not None:
                 raise OpenCodeManagerError(
                     f"OpenCode завершился во время запуска (код {process.returncode})"
                 )
             try:
-                health = client.health(timeout=0.8)
+                health = client.health(timeout=min(0.8, self._remaining(deadline)))
                 if health.healthy:
                     return
                 last_error = OpenCodeManagerError("health check вернул healthy=false")
@@ -313,10 +613,67 @@ class OpenCodeManager:
                 last_error = exc
             time.sleep(0.15)
         raise OpenCodeManagerError(
-            f"OpenCode не прошёл health check за {self.startup_timeout:.0f} с: {last_error}"
+            f"OpenCode не прошёл health check за {self.startup_timeout:g} с: {last_error}"
         )
 
-    def _start_exit_monitor(self, process: subprocess.Popen[str], generation: int) -> None:
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OpenCodeManagerError("Истёк timeout подключения")
+        return max(0.1, remaining)
+
+    @staticmethod
+    def _timeout_value(value: float) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("OpenCode timeout должен быть положительным конечным числом")
+        return max(0.1, parsed)
+
+    def _create_failed(
+        self,
+        message: str,
+        cause: Optional[BaseException] = None,
+        *,
+        version: str = "",
+    ) -> OpenCodeClient:
+        self._set_status("error", message, version=version)
+        error = OpenCodeManagerError(message)
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _clear_connection(
+        self,
+        *,
+        terminate_owned: bool,
+        set_stopped: bool,
+    ) -> None:
+        with self._lock:
+            process = self._process if terminate_owned and self._ownership == "owned" else None
+            address = self._status.address or self.server_url
+            self._stopping = True
+            self._client = None
+            if terminate_owned:
+                self._process = None
+            self._ownership = "none"
+        try:
+            self._terminate_process(process)
+        finally:
+            with self._lock:
+                self._stopping = False
+            if set_stopped:
+                self._set_status(
+                    "stopped",
+                    "OpenCode Server отключён",
+                    address=address,
+                )
+
+    def _start_exit_monitor(
+        self,
+        process: subprocess.Popen[str],
+        generation: int,
+    ) -> None:
         def monitor() -> None:
             return_code = process.wait()
             with self._lock:
@@ -327,39 +684,95 @@ class OpenCodeManager:
                 ):
                     previous = self._status
                     self._client = None
-                    self._status = ManagerStatus(
-                        "error",
-                        f"OpenCode аварийно завершился с кодом {return_code}",
-                        version=previous.version,
-                        address=previous.address,
-                        pid=process.pid,
+                    self._set_status_locked(
+                        ManagerStatus(
+                            "error",
+                            f"Созданный OpenCode аварийно завершился с кодом {return_code}",
+                            version=previous.version,
+                            address=previous.address,
+                            pid=process.pid,
+                            ownership="owned",
+                            runtime_dir=str(self.runtime_dir),
+                        )
                     )
 
-        threading.Thread(target=monitor, name="opencode-monitor", daemon=True).start()
+        threading.Thread(
+            target=monitor,
+            name="opencode-process-monitor",
+            daemon=True,
+        ).start()
 
     @staticmethod
     def _terminate_process(process: Optional[subprocess.Popen[str]]) -> None:
         if process is None or process.poll() is not None:
             return
+        pid = process.pid
         try:
             if os.name == "nt":
                 process.terminate()
             else:
-                # Процесс запущен в отдельной session: завершаем и возможных
-                # дочерних provider-процессов, чтобы ничего не осталось висеть.
-                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(pid, signal.SIGTERM)
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
                 if os.name == "nt":
                     process.kill()
                 else:
-                    os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                return
-            try:
+                    os.killpg(pid, signal.SIGKILL)
                 process.wait(timeout=3)
-            except (subprocess.TimeoutExpired, OSError):
+            except (OSError, subprocess.TimeoutExpired):
                 pass
         except OSError:
             pass
+        _log.info("server process stopped pid=%s", pid)
+
+    def _set_status(
+        self,
+        state: str,
+        message: str,
+        *,
+        version: str = "",
+        address: str = "",
+        pid: Optional[int] = None,
+        agent_loaded: bool = False,
+        ownership: str = "none",
+    ) -> None:
+        with self._lock:
+            self._set_status_locked(
+                ManagerStatus(
+                    state,
+                    message,
+                    version=version,
+                    address=address,
+                    pid=pid,
+                    agent_loaded=agent_loaded,
+                    ownership=ownership,
+                    runtime_dir=str(self.runtime_dir),
+                )
+            )
+
+    @staticmethod
+    def _safe_status_message(message: str) -> str:
+        return re.sub(r"[\r\n\x00-\x1f]+", " ", str(message))[:2000]
+
+    def _set_status_locked(self, status: ManagerStatus) -> None:
+        safe = ManagerStatus(
+            status.state,
+            self._safe_status_message(status.message),
+            status.version,
+            status.address,
+            status.pid,
+            status.agent_loaded,
+            status.ownership,
+            status.runtime_dir,
+        )
+        self._status = safe
+        level = logging.ERROR if safe.state == "error" else logging.INFO
+        _log.log(
+            level,
+            "state=%s ownership=%s address=%s message=%s",
+            safe.state,
+            safe.ownership,
+            safe.address,
+            safe.message,
+        )

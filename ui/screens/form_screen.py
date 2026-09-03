@@ -16,17 +16,18 @@ from forms.base_form import BaseForm
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
 from config.environments import (
+    OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
 )
-from opencode_integration.agent import FormExtractorAgent
+from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeStructuredOutputError,
 )
+from ui.ai_assistant import AIAssistantDialog
 from ui.ai_preview import show_ai_preview
-from ui.ai_progress import AIProgressDialog
 from ui.dialogs import ask_ticket_id, show_error, show_info, show_loading, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
@@ -66,7 +67,9 @@ class FormScreen(BaseScreen):
         self._ai_session_id: Optional[str] = None
         self._ai_queue: Optional["queue.Queue[tuple[str, Any]]"] = None
         self._ai_poll_id: Optional[str] = None
-        self._ai_progress: Optional[AIProgressDialog] = None
+        self._ai_assistant: Optional[AIAssistantDialog] = None
+        self._ai_agent: Optional[FormExtractorAgent] = None
+        self._ai_busy = False
         super().__init__(master, app, **kwargs)
 
     # ------------------------------------------------------------------
@@ -427,8 +430,8 @@ class FormScreen(BaseScreen):
                     self.after_cancel(self._ai_poll_id)
                 except tk.TclError:
                     pass
-            if self._ai_progress is not None:
-                self._ai_progress.close()
+            if self._ai_assistant is not None:
+                self._ai_assistant.close()
             try:
                 self.app.current_environment.trace_remove("write", self._env_trace_id)
             except Exception:
@@ -939,8 +942,13 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
 
     def _on_ai_autofill(self) -> None:
-        if self._ai_cancel_event is not None:
-            show_warning(self, "AI-автозаполнение", "Предыдущая операция ещё выполняется.")
+        """Открывает управляемую chat-session; форма пока не меняется."""
+        if self._ai_agent is not None:
+            show_warning(
+                self,
+                "AI-автозаполнение",
+                "Предыдущая OpenCode session ещё открыта.",
+            )
             return
         if not self._ready:
             show_warning(self, "AI-автозаполнение", "Дождитесь загрузки полей формы.")
@@ -952,192 +960,298 @@ class FormScreen(BaseScreen):
                 self,
                 "OpenCode недоступен",
                 f"AI-автозаполнение сейчас отключено.\n\n{status.message}\n\n"
-                "Откройте кнопку OpenCode на главном экране для диагностики.",
+                "Откройте OpenCode на главном экране и подключитесь к серверу.",
             )
             return
         ticket_id = ask_ticket_id(self)
         if ticket_id is None:
             return
 
-        environment = self.app.current_environment.get()
-        current_values = self._collect_form_data()
         settings = self.app.env_manager.load()
         provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
         model_id = settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
         try:
-            max_context = int(settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000"))
+            max_context = int(
+                settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000")
+            )
         except ValueError:
             max_context = 120_000
-
+        allowed_mcp = self._parse_allowed_mcp(
+            settings.get(OPENCODE_ALLOWED_MCP_KEY, "")
+        )
+        environment = self.app.current_environment.get()
+        current_values = self._collect_form_data()
         cancel_event = threading.Event()
         result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        agent = FormExtractorAgent(
+            client,
+            self.app.itsm_service,
+            self.app.tfs_service,
+            reference_resolver=self.app.reference_resolver,
+            max_context_chars=max_context,
+        )
         self._ai_cancel_event = cancel_event
         self._ai_queue = result_queue
+        self._ai_agent = agent
         self._ai_session_id = None
-        self._ai_progress = AIProgressDialog(self, self._cancel_ai_operation)
+        self._ai_busy = True
+        self._ai_assistant = AIAssistantDialog(
+            self,
+            on_send=self._send_ai_guidance,
+            on_finalize=self._finalize_ai_session,
+            on_stop=self._stop_ai_request,
+            on_cancel=self._cancel_ai_operation,
+            on_permission=self._answer_ai_permission,
+        )
 
         def progress(message: str) -> None:
             result_queue.put(("progress", message))
 
+        def conversation_event(event: ConversationEvent) -> None:
+            result_queue.put(("conversation", event))
+
         def session_changed(session_id: Optional[str]) -> None:
-            self._ai_session_id = session_id
-            if session_id is not None and cancel_event.is_set():
-                try:
-                    client.abort_session(session_id)
-                except Exception:
-                    pass
+            result_queue.put(("session", session_id))
+
+        self._start_ai_worker(
+            "begin",
+            lambda: agent.begin(
+                form=self._form,
+                ticket_id=ticket_id,
+                environment=environment,
+                current_values=current_values,
+                allowed_mcp=allowed_mcp,
+                provider_id=provider_id,
+                model_id=model_id,
+                cancel_event=cancel_event,
+                on_progress=progress,
+                on_event=conversation_event,
+                on_session=session_changed,
+            ),
+        )
+        self._poll_ai_queue()
+
+    def _start_ai_worker(
+        self,
+        action: str,
+        operation,
+    ) -> None:
+        result_queue = self._ai_queue
+        dialog = self._ai_assistant
+        if result_queue is None or dialog is None:
+            return
+        self._ai_busy = True
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.clear()
+        dialog.set_busy(True)
 
         def worker() -> None:
             try:
-                progress("Подготавливаю справочные данные...")
-                reference_data, reference_values = self._collect_ai_references(
-                    environment, current_values, cancel_event
-                )
-                extractor = FormExtractorAgent(
-                    client,
-                    self.app.itsm_service,
-                    self.app.tfs_service,
-                    max_context_chars=max_context,
-                )
-                result = extractor.extract(
-                    form=self._form,
-                    ticket_id=ticket_id,
-                    environment=environment,
-                    current_values=current_values,
-                    reference_data=reference_data,
-                    reference_values=reference_values,
-                    provider_id=provider_id,
-                    model_id=model_id,
-                    cancel_event=cancel_event,
-                    on_progress=progress,
-                    on_session=session_changed,
-                )
-                result_queue.put(("done", (result, reference_values)))
+                value = operation()
             except Exception as exc:
-                result_queue.put(("error", exc))
+                result_queue.put(("error", (action, exc)))
+            else:
+                result_queue.put((action, value))
 
-        threading.Thread(target=worker, name="ai-form-autofill", daemon=True).start()
-        self._poll_ai_queue()
+        threading.Thread(
+            target=worker,
+            name=f"opencode-form-{action}",
+            daemon=True,
+        ).start()
 
-    def _collect_ai_references(
-        self,
-        environment: str,
-        current_values: Dict[str, Any],
-        cancel_event: threading.Event,
-    ) -> tuple[Dict[str, Any], Dict[str, List[str]]]:
-        """Загружает разрешённые значения в worker thread, без Tk-вызовов."""
-        context: Dict[str, Any] = {}
-        allowed_values: Dict[str, List[str]] = {}
-        warnings: List[str] = []
+    def _send_ai_guidance(self, message: str) -> None:
+        if self._ai_busy or self._ai_agent is None:
+            return
+        self._start_ai_worker(
+            "guidance",
+            lambda: self._ai_agent.send_guidance(message),
+        )
 
-        def collect(field_def: FieldDefinition, context_key: str) -> None:
-            if cancel_event.is_set():
-                raise OpenCodeCancelled("Операция отменена пользователем")
-            if field_def.reference is None:
-                return
-            extra_params = None
-            if field_def.depends_on:
-                parent_value = current_values.get(field_def.depends_on)
-                if parent_value:
-                    extra_params = {field_def.depends_on: parent_value}
-                else:
-                    return
+    def _finalize_ai_session(self) -> None:
+        if self._ai_busy or self._ai_agent is None:
+            return
+        self._start_ai_worker("final", self._ai_agent.finalize)
+
+    def _stop_ai_request(self) -> None:
+        if not self._ai_busy or self._ai_agent is None:
+            return
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.set()
+        if self._ai_assistant is not None:
+            self._ai_assistant.set_status("Останавливаю текущий запрос…")
+
+        agent = self._ai_agent
+        threading.Thread(
+            target=agent.cancel,
+            name="opencode-form-abort",
+            daemon=True,
+        ).start()
+
+    def _answer_ai_permission(self, permission_id: str, allow: bool) -> None:
+        agent = self._ai_agent
+        result_queue = self._ai_queue
+        if agent is None or result_queue is None:
+            return
+
+        def worker() -> None:
             try:
-                items = self.app.reference_resolver.resolve(
-                    field_def.reference, environment, extra_params
-                )
+                agent.approve_permission(permission_id, allow=allow)
             except Exception as exc:
-                warnings.append(f"{context_key}:{type(exc).__name__}")
-                return
-            ref = field_def.reference
-            keep_keys = {ref.value_key, ref.label_key, *ref.search_keys}
-            slim_items = [
-                {key: item.get(key) for key in keep_keys if key in item}
-                for item in items[:200]
-                if isinstance(item, dict)
-            ]
-            context[context_key] = slim_items
-            allowed: List[str] = []
-            for item in slim_items:
-                raw_value = item.get(ref.value_key)
-                if raw_value is None:
-                    continue
-                value = str(raw_value)
-                if 0 < len(value) <= 4000:
-                    allowed.append(value)
-                else:
-                    warnings.append(f"{context_key}:invalid_reference_value")
-            allowed_values[field_def.key] = allowed
+                result_queue.put(("permission_error", (permission_id, allow, exc)))
+            else:
+                result_queue.put(("permission_answered", (permission_id, allow)))
 
-        for field_def in self._form.fields:
-            collect(field_def, field_def.key)
-            if field_def.field_type == FieldType.BLOCK:
-                for sub_field in field_def.block_fields:
-                    collect(sub_field, f"{field_def.key}.{sub_field.key}")
-        if warnings:
-            context["_collection_warnings"] = warnings
-        return context, allowed_values
+        threading.Thread(
+            target=worker,
+            name="opencode-permission-response",
+            daemon=True,
+        ).start()
 
     def _cancel_ai_operation(self) -> None:
-        cancel_event = self._ai_cancel_event
-        if cancel_event is None:
+        """Закрывает всю AI-session; ни одно значение формы не применяется."""
+        agent = self._ai_agent
+        if agent is None:
             return
-        cancel_event.set()
-        session_id = self._ai_session_id
-        client = self.app.opencode_manager.client
-        if session_id and client is not None:
-            def abort() -> None:
-                try:
-                    client.abort_session(session_id)
-                except Exception:
-                    pass
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.set()
+        dialog = self._ai_assistant
+        if dialog is not None:
+            dialog.close()
+        self._set_status("AI-предложения не применены", "muted")
+        self._clear_ai_state()
 
-            threading.Thread(target=abort, name="opencode-abort", daemon=True).start()
+        def cleanup() -> None:
+            agent.cancel()
+            agent.close()
+
+        threading.Thread(
+            target=cleanup,
+            name="opencode-form-cancel",
+            daemon=True,
+        ).start()
+
+    def detach_ai_for_shutdown(self) -> Optional[FormExtractorAgent]:
+        """Отделяет session от Tk; сетевую очистку выполнит shutdown-worker."""
+        agent = self._ai_agent
+        if agent is None:
+            return None
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.set()
+        if self._ai_assistant is not None:
+            self._ai_assistant.close()
+        self._clear_ai_state()
+        return agent
 
     def _poll_ai_queue(self) -> None:
         result_queue = self._ai_queue
         if result_queue is None:
             return
-        terminal: Optional[tuple[str, Any]] = None
+        final_payload: Optional[tuple[Any, Dict[str, List[str]]]] = None
         try:
             while True:
                 event, payload = result_queue.get_nowait()
-                if event == "progress":
-                    if self._ai_progress is not None:
-                        self._ai_progress.update_status(str(payload))
-                else:
-                    terminal = (event, payload)
+                dialog = self._ai_assistant
+                if event == "progress" and dialog is not None:
+                    dialog.set_status(str(payload))
+                elif event == "conversation" and dialog is not None:
+                    dialog.append_event(payload)
+                elif event == "session":
+                    self._ai_session_id = (
+                        str(payload) if payload is not None else None
+                    )
+                    if dialog is not None:
+                        dialog.set_session(self._ai_session_id)
+                elif event in {"begin", "guidance"}:
+                    self._ai_busy = False
+                    if dialog is not None:
+                        dialog.append_message("assistant", payload.text)
+                        dialog.set_status(
+                            "Готов к уточнениям или формированию preview."
+                        )
+                        dialog.set_busy(False)
+                elif event == "final":
+                    agent = self._ai_agent
+                    refs = agent.reference_values if agent is not None else {}
+                    final_payload = (payload, refs)
+                elif event == "permission_answered" and dialog is not None:
+                    permission_id, allow = payload
+                    dialog.permission_answered(str(permission_id), bool(allow))
+                elif event == "permission_error" and dialog is not None:
+                    permission_id, allow, error = payload
+                    dialog.permission_answered(
+                        str(permission_id), bool(allow), str(error)
+                    )
+                elif event == "error":
+                    action, error = payload
+                    self._handle_ai_error(str(action), error)
         except queue.Empty:
             pass
 
-        if terminal is None:
+        if final_payload is not None:
+            self._finish_ai_result(*final_payload)
+            return
+        if self._ai_queue is not None:
             try:
                 self._ai_poll_id = self.after(100, self._poll_ai_queue)
             except tk.TclError:
                 pass
+
+    def _handle_ai_error(self, action: str, error: Exception) -> None:
+        dialog = self._ai_assistant
+        self._ai_busy = False
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.clear()
+        if dialog is None:
             return
-
-        self._ai_poll_id = None
-        if self._ai_progress is not None:
-            self._ai_progress.close()
-        self._ai_progress = None
-        self._ai_cancel_event = None
-        self._ai_session_id = None
-        self._ai_queue = None
-
-        event, payload = terminal
-        if event == "error":
-            if isinstance(payload, OpenCodeCancelled):
+        if isinstance(error, OpenCodeCancelled):
+            if action == "begin" and (
+                self._ai_agent is None or self._ai_agent.session_id is None
+            ):
+                dialog.close()
+                self._clear_ai_state()
                 self._set_status("Операция AI-автозаполнения отменена", "muted")
                 return
-            if isinstance(payload, OpenCodeStructuredOutputError):
-                show_error(self, "Ошибка Structured Output", str(payload))
-            else:
-                show_error(self, "Ошибка AI-автозаполнения", str(payload))
-            self._set_status(f"✗  {str(payload).splitlines()[0]}", "error")
+            dialog.append_event(ConversationEvent(
+                "warning",
+                "Запрос остановлен",
+                "Сессия сохранена: можно отправить уточнение или повторить preview.",
+            ))
+            dialog.set_status("Текущий запрос остановлен.")
+            dialog.set_busy(False)
             return
+        if action == "begin" and (
+            self._ai_agent is None or self._ai_agent.session_id is None
+        ):
+            dialog.close()
+            self._clear_ai_state()
+            show_error(self, "Ошибка AI-автозаполнения", str(error))
+            self._set_status(f"✗  {str(error).splitlines()[0]}", "error")
+            return
+        title = (
+            "Ошибка Structured Output"
+            if isinstance(error, OpenCodeStructuredOutputError)
+            else f"Ошибка этапа {action}"
+        )
+        dialog.append_event(ConversationEvent("error", title, str(error)))
+        dialog.set_status(str(error).splitlines()[0], error=True)
+        dialog.set_busy(False)
 
-        result, reference_values = payload
+    def _finish_ai_result(
+        self,
+        result,
+        reference_values: Dict[str, List[str]],
+    ) -> None:
+        agent = self._ai_agent
+        dialog = self._ai_assistant
+        if dialog is not None:
+            dialog.close()
+        self._clear_ai_state()
+        if agent is not None:
+            threading.Thread(
+                target=agent.close,
+                name="opencode-form-session-cleanup",
+                daemon=True,
+            ).start()
         patch = show_ai_preview(
             self,
             response=result,
@@ -1148,7 +1262,36 @@ class FormScreen(BaseScreen):
             self._set_status("AI-предложения не применены", "muted")
             return
         filled = self.apply_form_data(patch)
-        self._set_status(f"✓  Применено AI-предложений: {len(filled)}", "success")
+        self._set_status(
+            f"✓  Применено AI-предложений: {len(filled)}",
+            "success",
+        )
+
+    def _clear_ai_state(self) -> None:
+        if self._ai_poll_id is not None:
+            try:
+                self.after_cancel(self._ai_poll_id)
+            except tk.TclError:
+                pass
+        self._ai_poll_id = None
+        self._ai_assistant = None
+        self._ai_agent = None
+        self._ai_cancel_event = None
+        self._ai_session_id = None
+        self._ai_queue = None
+        self._ai_busy = False
+
+    @staticmethod
+    def _parse_allowed_mcp(value: str) -> List[str]:
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            parsed = value.split(",")
+        if not isinstance(parsed, list):
+            return []
+        return list(dict.fromkeys(
+            str(item).strip() for item in parsed if str(item).strip()
+        ))
 
     def _on_fetch_from_itsm(self) -> None:
         """Запрашивает номер заявки, затем запускает fetch_from_itsm() в фоне."""

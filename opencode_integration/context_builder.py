@@ -8,6 +8,12 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from opencode_integration.data_sources import (
+    AzureDevOpsDataSource,
+    DataSourceNotConfiguredError,
+    ITSMDataSource,
+)
+
 
 DEFAULT_MAX_CONTEXT_CHARS = 120_000
 HARD_MAX_CONTEXT_CHARS = 500_000
@@ -30,9 +36,10 @@ _PEM_RE = re.compile(
 _AUTH_RE = re.compile(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9+/._~=-]{8,}", re.IGNORECASE)
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?key|secret[_-]?key|token|pat|password|passwd|"
-    r"client[_-]?secret|connection[_-]?string)"
-    r"\s*[:=]\s*([^\s,;]{6,})"
+    r"(?i)\b([a-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|pat|"
+    r"password|passwd|client[_-]?secret|connection[_-]?string|authorization|"
+    r"private[_-]?key|cookie)[a-z0-9_.-]*)"
+    r"\b[\"']?\s*[:=]\s*[\"']?([^\"'\s,;}]{6,})"
 )
 _ADO_PR_URL_RE = re.compile(
     r"https?://[^\s<>\"']+/(?:pullrequest|pullrequests?)/\d+[^\s<>\"']*",
@@ -54,7 +61,6 @@ class BuiltContext:
     ticket_id: str
     itsm: Any
     ado: Any
-    references: Any
     warnings: list[str] = field(default_factory=list)
     pull_request_id: Optional[str] = None
 
@@ -71,6 +77,8 @@ def is_secret_key(key: str) -> bool:
             "refreshtoken", "sastoken", "clientsecret", "privatekey",
             "credential", "credentials", "connectionstring",
         ))
+        or compact.endswith("token")
+        or compact.endswith("secret")
         or compact.endswith("password")
     )
 
@@ -217,7 +225,12 @@ def pull_request_id(reference: Any, ado_data: Any = None) -> Optional[str]:
 class ContextBuilder:
     """Оркестрирует ITSM/ADO-клиенты и выдаёт только очищенный контекст."""
 
-    def __init__(self, itsm_service: Any, tfs_service: Any, max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS) -> None:
+    def __init__(
+        self,
+        itsm_service: ITSMDataSource,
+        tfs_service: AzureDevOpsDataSource,
+        max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    ) -> None:
         self._itsm_service = itsm_service
         self._tfs_service = tfs_service
         self._max_context_chars = min(
@@ -230,15 +243,25 @@ class ContextBuilder:
         *,
         ticket_id: str,
         environment: str,
-        reference_data: Any = None,
         cancel_event: Any = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> BuiltContext:
         notify = on_progress or (lambda _message: None)
+        clean_ticket_id = str(ticket_id).strip()
+        if not clean_ticket_id:
+            raise ContextBuildError("Не указан ID ITSM-заявки")
+        if len(clean_ticket_id) > 200:
+            raise ContextBuildError("ID ITSM-заявки превышает 200 символов")
+        if any(ord(char) < 32 or ord(char) == 127 for char in clean_ticket_id):
+            raise ContextBuildError("ID ITSM-заявки содержит управляющие символы")
         self._check_cancel(cancel_event)
         notify("Получаю заявку...")
         try:
-            raw_itsm = self._itsm_service.get_ticket(ticket_id, environment)
+            raw_itsm = self._itsm_service.get_ticket(clean_ticket_id, environment)
+        except DataSourceNotConfiguredError as exc:
+            # Это контролируемая локальная ошибка адаптера, а не потенциально
+            # чувствительный ответ корпоративной ITSM.
+            raise ContextBuildError(str(exc)) from exc
         except Exception as exc:
             status = getattr(exc, "status", None)
             status_note = f" (HTTP {status})" if isinstance(status, int) else ""
@@ -261,35 +284,26 @@ class ContextBuilder:
                 raw_ado = self._tfs_service.get_pull_request(pr_reference, environment)
                 if not raw_ado:
                     warnings.append("Azure DevOps вернул пустые данные PR")
+            except DataSourceNotConfiguredError as exc:
+                warnings.append(str(exc))
             except Exception as exc:
                 # ITSM-контекст всё ещё полезен; ошибка ADO явно попадёт в preview.
                 warnings.append(f"Не удалось получить Azure DevOps PR: {type(exc).__name__}")
-
-        if isinstance(reference_data, dict):
-            reference_warnings = reference_data.get("_collection_warnings", [])
-            if isinstance(reference_warnings, list):
-                warnings.extend(
-                    f"Не удалось загрузить справочник: {item}"
-                    for item in reference_warnings[:50]
-                    if isinstance(item, str)
-                )
 
         self._check_cancel(cancel_event)
         notify("Подготавливаю контекст...")
         clean_itsm = sanitize(raw_itsm)
         clean_ado = sanitize(raw_ado)
-        clean_refs = sanitize(reference_data or {})
 
-        # Бюджет распределён предсказуемо; внешние ответы никогда не растут бесконечно.
-        clean_itsm = _fit_to_budget(clean_itsm, int(self._max_context_chars * 0.48))
-        clean_ado = _fit_to_budget(clean_ado, int(self._max_context_chars * 0.42))
-        clean_refs = _fit_to_budget(clean_refs, int(self._max_context_chars * 0.10))
+        # Справочники сюда принципиально не входят: модель возвращает смысловые
+        # кандидаты, а идентификаторы сопоставляются локальным Python-кодом.
+        clean_itsm = _fit_to_budget(clean_itsm, int(self._max_context_chars * 0.53))
+        clean_ado = _fit_to_budget(clean_ado, int(self._max_context_chars * 0.47))
 
         return BuiltContext(
-            ticket_id=ticket_id,
+            ticket_id=clean_ticket_id,
             itsm=clean_itsm,
             ado=clean_ado,
-            references=clean_refs,
             warnings=warnings,
             pull_request_id=pull_request_id(pr_reference, raw_ado),
         )

@@ -7,9 +7,8 @@ from typing import Dict, Optional
 
 import ui.theme as theme
 from config.environments import (
-    ADO_ALLOWED_HOSTS_KEY, ADO_PR_URL_TEMPLATE_KEY, CERT_PATH_KEY, ENVIRONMENTS,
-    GRAVITEE_REPO_PATH_KEY, ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY,
-    ITSM_TICKET_URL_TEMPLATE_KEY, LOGIN_KEY, TFS_TOKEN_KEY, gravitee_token_key,
+    CERT_PATH_KEY, ENVIRONMENTS, GRAVITEE_REPO_PATH_KEY, ITSM_LOGIN_KEY,
+    ITSM_PASSWORD_KEY, LOGIN_KEY, TFS_TOKEN_KEY, gravitee_token_key,
 )
 from ui.screens.base_screen import BaseScreen
 
@@ -275,27 +274,15 @@ class SettingsScreen(BaseScreen):
             command=lambda e=tfs_entry, v=tfs_show: e.config(show="" if v.get() else "*"),
         ).pack(side=tk.LEFT, padx=8)
 
-        for label, key in (
-            ("PR URL template", ADO_PR_URL_TEMPLATE_KEY),
-            ("Allowed hosts", ADO_ALLOWED_HOSTS_KEY),
-        ):
-            row = tk.Frame(tfs_card, bg=theme.C["surface"])
-            row.pack(fill=tk.X, padx=14, pady=(0, 8))
-            var = tk.StringVar(value=saved.get(key, ""))
-            self._token_vars[key] = var
-            tk.Label(
-                row, text=label, font=theme.F["body"], bg=theme.C["surface"],
-                fg=theme.C["text_label"], width=18, anchor="w",
-            ).pack(side=tk.LEFT)
-            entry = tk.Entry(
-                row, textvariable=var,
-                bg=theme.C["input_bg"], fg=theme.C["text"], relief="solid", bd=1,
-                font=theme.F["body"], insertbackground=theme.C["text"],
-                highlightthickness=1, highlightbackground=theme.C["input_border"],
-                highlightcolor=theme.C["border_focus"],
-            )
-            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-            self._entry_widgets[key] = entry
+        tk.Label(
+            tfs_card,
+            text=(
+                "Получение PR реализуется закрытым корпоративным адаптером. "
+                "В открытом проекте сетевой реализации и URL нет."
+            ),
+            wraplength=690, justify=tk.LEFT, font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(fill=tk.X, padx=14, pady=(0, 10))
 
         theme.separator(sf, pady=10)
 
@@ -354,22 +341,15 @@ class SettingsScreen(BaseScreen):
             command=lambda e=pass_entry, v=pass_show: e.config(show="" if v.get() else "*"),
         ).grid(row=1, column=2, padx=8)
 
-        itsm_url_var = tk.StringVar(value=saved.get(ITSM_TICKET_URL_TEMPLATE_KEY, ""))
-        self._token_vars[ITSM_TICKET_URL_TEMPLATE_KEY] = itsm_url_var
         tk.Label(
-            itsm_grid, text="Ticket URL template",
-            font=theme.F["body"], bg=theme.C["surface"], fg=theme.C["text_label"],
-            width=18, anchor="w",
-        ).grid(row=2, column=0, sticky="w", pady=3)
-        itsm_url_entry = tk.Entry(
-            itsm_grid, textvariable=itsm_url_var,
-            bg=theme.C["input_bg"], fg=theme.C["text"], relief="solid", bd=1,
-            font=theme.F["body"], insertbackground=theme.C["text"],
-            highlightthickness=1, highlightbackground=theme.C["input_border"],
-            highlightcolor=theme.C["border_focus"],
-        )
-        itsm_url_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=3, padx=(6, 8))
-        self._entry_widgets[ITSM_TICKET_URL_TEMPLATE_KEY] = itsm_url_entry
+            itsm_grid,
+            text=(
+                "Структура заявки и сетевой вызов задаются закрытым "
+                "корпоративным адаптером ITSMService.get_ticket()."
+            ),
+            wraplength=650, justify=tk.LEFT, font=theme.F["small"],
+            bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         itsm_grid.columnconfigure(1, weight=1)
 
