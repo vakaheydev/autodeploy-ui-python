@@ -2,6 +2,7 @@
 LocalReferenceHandler — загрузка справочников из локальных JSON файлов.
 """
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,7 @@ from handlers.base_reference_handler import BaseReferenceHandler
 
 # Директория с локальными справочниками
 REFERENCES_DIR = Path(__file__).parent.parent / "config" / "references"
+_log = logging.getLogger(__name__)
 
 
 class LocalReferenceHandler(BaseReferenceHandler):
@@ -32,13 +34,17 @@ class LocalReferenceHandler(BaseReferenceHandler):
     ) -> List[Dict[str, Any]]:
         file_path = REFERENCES_DIR / config.resource
         if not file_path.exists():
-            print(f"[LocalReferenceHandler] Файл не найден: {file_path}")
+            _log.warning("Reference file not found resource=%s", config.resource)
             return []
         try:
             with open(file_path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
         except (json.JSONDecodeError, OSError) as exc:
-            print(f"[LocalReferenceHandler] Ошибка чтения {file_path}: {exc}")
+            _log.warning(
+                "Reference file read failed resource=%s error_type=%s",
+                config.resource,
+                type(exc).__name__,
+            )
             return []
 
         items = data if isinstance(data, list) else data.get("items", [])
@@ -55,10 +61,12 @@ class LocalReferenceHandler(BaseReferenceHandler):
             if not isinstance(item, dict):
                 continue
             if config.value_key not in item or config.label_key not in item:
-                print(
-                    f"[LocalReferenceHandler] Пропущен элемент без ключей "
-                    f"'{config.value_key}'/'{config.label_key}' "
-                    f"в resource='{config.resource}', index={index}"
+                _log.warning(
+                    "Reference item skipped resource=%s index=%d missing_keys=%s,%s",
+                    config.resource,
+                    index,
+                    config.value_key,
+                    config.label_key,
                 )
                 continue
             valid.append(item)

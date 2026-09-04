@@ -36,6 +36,23 @@ class CustomButton:
     style: str = "Secondary"
 
 
+@dataclass(frozen=True)
+class ServerAction:
+    """UI-independent custom form action available through the web API.
+
+    ``handler`` runs only in Python and receives ``(environment, form_data)``.
+    It may return a mapping with optional ``message``, ``values`` and ``data``
+    keys.  Existing :class:`CustomButton` remains untouched for Tkinter.
+    """
+
+    action_id: str
+    label: str
+    handler: Callable[[str, Dict[str, Any]], Any]
+    style: str = "Secondary"
+    require_valid_form: bool = False
+    confirmation_text: str = ""
+
+
 class BaseForm(ABC):
     """
     Декларативное описание формы.
@@ -378,6 +395,15 @@ class BaseForm(ABC):
                 name = ask_string(self.screen, "Введите имя", "Имя ресурса")
                 if name:
                     self.screen.apply_form_data({"resource_name": name})
+        """
+        return []
+
+    def get_server_actions(self) -> List[ServerAction]:
+        """Return optional headless actions for React/API clients.
+
+        Corporate forms can move UI-independent custom-button logic here while
+        keeping ``get_custom_buttons`` for the desktop client.  The handler is
+        never sent to the browser; only metadata and its result cross the API.
         """
         return []
 

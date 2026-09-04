@@ -1,0 +1,280 @@
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { post } from '../api'
+import { FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
+import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
+
+interface FieldProps {
+  field: FieldDocument
+  value: unknown
+  values: Record<string, unknown>
+  environment: string
+  formId: string
+  errors: ValidationError[]
+  disabled?: boolean
+  onChange: (value: unknown) => void
+  onObjectChange?: (key: string, value: unknown) => void
+  onObjectDelete?: (key: string) => void
+  review?: Record<string, { status: 'pending' | 'accepted' | 'rejected'; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }>
+  onReview?: (key: string, accept: boolean) => void
+}
+
+interface OptionsResponse {
+  items: ReferenceItem[]
+  total: number
+  has_more: boolean
+}
+
+function FieldError({ field, errors }: { field: FieldDocument; errors: ValidationError[] }) {
+  const relevant = errors.filter((item) => item.field === field.path || item.field === field.key)
+  return relevant.length ? <div className="field-errors">{relevant.map((item) => <span key={`${item.code}-${item.message}`}>{item.message}</span>)}</div> : null
+}
+
+function ReferenceField(props: FieldProps) {
+  const { field, values, environment, formId, disabled, onChange } = props
+  const reference = field.reference!
+  const [items, setItems] = useState<ReferenceItem[]>(field.options ?? [])
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [total, setTotal] = useState(field.options?.length ?? 0)
+  const requestSequence = useRef(0)
+  const dependency = field.depends_on ? values[field.depends_on] : undefined
+  const serverBacked = field.options === undefined
+
+  const load = async (refresh = false, requestedQuery = query) => {
+    const sequence = ++requestSequence.current
+    setLoading(true)
+    setLoadError('')
+    try {
+      const result = await post<OptionsResponse>(reference.endpoint, {
+        environment,
+        values,
+        query: requestedQuery,
+        offset: 0,
+        limit: 500,
+        refresh,
+      })
+      if (sequence !== requestSequence.current) return
+      setItems(result.items)
+      setTotal(result.total)
+    } catch (error) {
+      if (sequence !== requestSequence.current) return
+      setLoadError(error instanceof Error ? error.message : String(error))
+      setItems([])
+    } finally {
+      if (sequence === requestSequence.current) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    // Invalidate a request started for the previous field/environment before
+    // changing to inline data or an unavailable dependency.
+    requestSequence.current += 1
+    if (field.options !== undefined) {
+      setItems(field.options)
+      setTotal(field.options.length)
+      setLoading(false)
+      setLoadError('')
+      return
+    }
+    if (field.depends_on && (dependency === undefined || dependency === null || dependency === '')) {
+      setItems([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
+  }, [field.options, field.depends_on, dependency, environment, reference.endpoint])
+
+  useEffect(() => {
+    if (!serverBacked) return
+    if (field.depends_on && (dependency === undefined || dependency === null || dependency === '')) return
+    const timer = window.setTimeout(() => void load(false, query), 260)
+    return () => window.clearTimeout(timer)
+  }, [query, serverBacked, field.depends_on, environment, reference.endpoint, dependency])
+
+  const searchable = items.length > 8 || serverBacked
+  const shown = useMemo(() => {
+    if (serverBacked) return items
+    const needle = query.trim().toLocaleLowerCase('ru')
+    if (!needle) return items
+    return items.filter((item) => reference.search_keys.some((key) => String(item[key] ?? '').toLocaleLowerCase('ru').includes(needle)))
+  }, [items, query, reference.search_keys, serverBacked])
+  const label = (item: ReferenceItem) => String(item[reference.label_key] ?? item[reference.value_key] ?? '')
+  const identifier = (item: ReferenceItem) => String(item[reference.value_key] ?? '')
+
+  if (field.type === 'select') {
+    return (
+      <div className="reference-control">
+        <div className="reference-toolbar">
+          {searchable && <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск…" /></label>}
+          {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
+        </div>
+        <select id={field.path} value={String(props.value ?? '')} disabled={disabled || loading} onChange={(event) => onChange(event.target.value)}>
+          <option value="">Не выбрано</option>
+          {shown.map((item) => <option value={identifier(item)} key={identifier(item)}>{label(item)}</option>)}
+        </select>
+        {loading && <small className="muted">Загружаю справочник…</small>}
+        {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
+        {loadError && <small className="field-load-error">{loadError}</small>}
+      </div>
+    )
+  }
+
+  const selected = new Set(Array.isArray(props.value) ? props.value.map(String) : [])
+  const toggle = (id: string) => {
+    const next = new Set(selected)
+    next.has(id) ? next.delete(id) : next.add(id)
+    onChange([...next])
+  }
+  return (
+    <div className="reference-control multiselect">
+      <div className="reference-toolbar">
+        <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Фильтр значений…" /></label>
+        {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
+      </div>
+      <div className="option-list" role="group" aria-label={field.label}>
+        {shown.map((item) => {
+          const id = identifier(item)
+          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id}><input type="checkbox" checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span>{label(item)}</span></label>
+        })}
+        {!loading && shown.length === 0 && <span className="muted option-empty">Значения не найдены</span>}
+      </div>
+      <small className="selection-count">Выбрано: {selected.size}</small>
+      {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
+      {loadError && <small className="field-load-error">{loadError}</small>}
+    </div>
+  )
+}
+
+function BasicField(props: FieldProps) {
+  const { field, value, disabled, onChange } = props
+  if (field.reference) return <ReferenceField {...props} />
+  if (field.type === 'textarea') {
+    return <textarea id={field.path} rows={5} value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value)} />
+  }
+  if (field.type === 'checkbox') {
+    return <label className="switch-control"><input id={field.path} type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><span className="switch" /><span>{Boolean(value) ? 'Включено' : 'Выключено'}</span></label>
+  }
+  if (field.type === 'number') {
+    return <input id={field.path} type="number" value={value === null || value === undefined ? '' : String(value)} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))} />
+  }
+  if (field.type === 'file') {
+    const readFile = (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = () => onChange(String(reader.result ?? ''))
+      reader.readAsText(file)
+    }
+    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => onChange(event.target.value)} /></div>
+  }
+  return <input id={field.path} type="text" value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value)} />
+}
+
+function SingleField(props: FieldProps) {
+  const { field, value, errors, onChange } = props
+  const reviewKey = props.review?.[field.path] ? field.path : field.key
+  const fieldReview = props.review?.[reviewKey]
+  if (!field.visible) return null
+  if (field.type === 'block') {
+    const block = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+    return (
+      <fieldset className="block-field">
+        <legend><FileJson size={17} /> {field.label}{field.required && <b>*</b>}</legend>
+        {field.hint && <p className="field-hint">{field.hint}</p>}
+        <div className="block-fields">
+          {(field.fields ?? []).map((nested) => (
+            <PluralField
+              key={nested.key}
+              {...props}
+              field={nested}
+              values={block}
+              value={block[nested.key]}
+              onChange={(nestedValue) => onChange({ ...block, [nested.key]: nestedValue })}
+              onObjectChange={(key, nestedValue) => onChange({ ...block, [key]: nestedValue })}
+              onObjectDelete={(key) => {
+                const next = { ...block }
+                delete next[key]
+                onChange(next)
+              }}
+            />
+          ))}
+        </div>
+        <FieldError field={field} errors={errors} />
+      </fieldset>
+    )
+  }
+  return (
+    <div className={`form-field ${errors.some((item) => item.field === field.path || item.field === field.key) ? 'invalid' : ''} ${fieldReview ? `ai-review ${fieldReview.status} confidence-${fieldReview.confidence}` : ''}`}>
+      <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <div className="field-review-controls"><span className="confidence-badge" title={[fieldReview.source, fieldReview.reason, fieldReview.conflict].filter(Boolean).join('\n')}>{fieldReview.confidence}</span><button type="button" className="review-accept" aria-label={`Принять ${field.label}`} onClick={() => props.onReview?.(reviewKey, true)}>✓</button><button type="button" className="review-reject" aria-label={`Отклонить ${field.label}`} onClick={() => props.onReview?.(reviewKey, false)}>×</button></div>}</div>
+      {field.hint && <p className="field-hint">{field.hint}</p>}
+      <BasicField {...props} />
+      <FieldError field={field} errors={errors} />
+    </div>
+  )
+}
+
+export function PluralField(props: FieldProps) {
+  const { field, values, onChange } = props
+  if (!field.plural) return <SingleField {...props} />
+  const instances = Object.keys(values)
+    .filter((key) => key === field.key || new RegExp(`^${field.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_\\d+$`).test(key))
+    .sort((left, right) => {
+      const index = (value: string) => value === field.key ? 1 : Number(value.slice(field.key.length + 1))
+      return index(left) - index(right)
+    })
+  if (!instances.includes(field.key)) instances.unshift(field.key)
+  const add = () => {
+    if (field.plural_max && instances.length >= field.plural_max) return
+    let nextIndex = 2
+    while (Object.prototype.hasOwnProperty.call(values, `${field.key}_${nextIndex}`)) nextIndex += 1
+    props.onObjectChange?.(`${field.key}_${nextIndex}`, field.default ?? '')
+  }
+  return (
+    <div className="plural-group">
+      {instances.map((key, index) => (
+        <div className="plural-instance" key={key}>
+          <SingleField {...props} field={{ ...field, key, path: field.path.replace(/[^.]+$/, key), label: index ? `${field.label} · ${index + 1}` : field.label, plural: false }} value={values[key]} onChange={(next) => props.onObjectChange ? props.onObjectChange(key, next) : index === 0 && onChange(next)} />
+          {index > 0 && props.onObjectDelete && <button type="button" className="icon-button danger floating-remove" onClick={() => props.onObjectDelete?.(key)} aria-label="Удалить значение"><Trash2 size={16} /></button>}
+        </div>
+      ))}
+      <button type="button" className="button ghost small" onClick={add} disabled={Boolean(field.plural_max && instances.length >= field.plural_max)}><Plus size={15} /> Добавить значение</button>
+    </div>
+  )
+}
+
+export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, review, onReview }: {
+  fields: FieldDocument[]
+  values: Record<string, unknown>
+  environment: string
+  formId: string
+  errors: ValidationError[]
+  disabled?: boolean
+  onValuesChange: (values: Record<string, unknown>) => void
+  review?: FieldProps['review']
+  onReview?: FieldProps['onReview']
+}) {
+  const change = (key: string, value: unknown) => onValuesChange({ ...values, [key]: value })
+  const remove = (key: string) => {
+    const next = { ...values }
+    delete next[key]
+    onValuesChange(next)
+  }
+  return <div className="fields-grid">{fields.map((field) => (
+    <PluralField
+      key={field.key}
+      field={field}
+      value={values[field.key]}
+      values={values}
+      environment={environment}
+      formId={formId}
+      errors={errors}
+      disabled={disabled}
+      onChange={(value) => change(field.key, value)}
+      onObjectChange={change}
+      onObjectDelete={remove}
+      review={review}
+      onReview={onReview}
+    />
+  ))}</div>
+}

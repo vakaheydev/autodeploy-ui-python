@@ -1,0 +1,5 @@
+include README.md GUIDE.md OPENCODE_AUTOFILL.md version.txt
+recursive-include config/references *.json
+recursive-include webapp/static *
+recursive-include webapp/resources/opencode_agents *.md
+recursive-include .opencode/agents *.md

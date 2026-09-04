@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import re
+import stat
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -144,6 +146,12 @@ def configure_logging(log_dir: Path | None = None) -> Path:
     )
     rotating.setLevel(logging.DEBUG)
     rotating.setFormatter(detailed)
+    # Logs can contain internal identifiers and error details.  Keep them
+    # private on POSIX; Windows applies the user's ACL to the profile folder.
+    try:
+        os.chmod(log_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
     UI_LOG_BUFFER.setFormatter(compact)
     UI_LOG_BUFFER.addFilter(_OpenCodeOnly())
 

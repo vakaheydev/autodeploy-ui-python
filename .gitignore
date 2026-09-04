@@ -102,6 +102,7 @@ cached/
 .env.local
 .env.*.local
 venv/
+.venv/
 ENV/
 env/
 env.bak/
@@ -134,6 +135,15 @@ dmypy.json
 *.swo
 *~
 .DS_Store
+
+# Frontend build workspace (the compiled webapp/static assets are committed)
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+playwright-report/
+test-results/
+.e2e/
 
 # OS
 Thumbs.db

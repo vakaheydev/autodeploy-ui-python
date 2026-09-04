@@ -1,0 +1,73 @@
+trigger:
+  branches:
+    include:
+      - web-platform
+
+pr:
+  branches:
+    include:
+      - master
+      - web-platform
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  pythonVersion: '3.12'
+  nodeVersion: '22.x'
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: $(pythonVersion)
+      addToPath: true
+
+  - task: NodeTool@0
+    inputs:
+      versionSpec: $(nodeVersion)
+
+  - powershell: |
+      python -m pip install --upgrade pip
+      python -m pip install -r requirements-dev.txt
+    displayName: Install Python test/build dependencies
+
+  - powershell: |
+      npm ci
+      npm audit --audit-level=high
+      npm test
+      npm run build
+    workingDirectory: frontend
+    displayName: Audit, test and build React
+
+  - powershell: python -m pytest
+    displayName: Test Python core, API and launcher
+
+  - powershell: |
+      npx playwright install chromium
+      npm run e2e
+    workingDirectory: frontend
+    env:
+      AUTODEPLOY_TEST_PYTHON: python
+    displayName: Browser end-to-end tests
+
+  - powershell: |
+      $artifactUrl = "$(UpdateArtifactUrl)"
+      if ([string]::IsNullOrWhiteSpace($artifactUrl) -or $artifactUrl -eq '$(UpdateArtifactUrl)') {
+        $artifactUrl = 'https://tfs.example.invalid/replace-me/release.zip'
+      }
+      python scripts/build_release.py --skip-frontend --artifact-url $artifactUrl --wheel-platform win_amd64 --python-version 310 --python-version 311 --python-version 312 --python-version 313
+    displayName: Build offline Windows release
+
+  - powershell: |
+      $bundle = (Get-ChildItem build/release/gravitee-autodeploy-app-*.zip | Select-Object -First 1).FullName
+      python scripts/verify_release.py $bundle
+    displayName: Install and smoke-test release bundle
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: build/release
+      artifact: gravitee-autodeploy-web
+    displayName: Publish installer and updater artifacts

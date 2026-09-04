@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gravitee-autodeploy"
+version = "1.0.0"
+description = "Local-first Gravitee AutoDeploy Python server, web UI and compatible desktop client"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "LicenseRef-Proprietary"
+authors = [{ name = "Gravitee AutoDeploy Team" }]
+dependencies = [
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
+  "jsonschema>=4.23,<5",
+  "uvicorn==0.52.4",
+]
+
+[project.optional-dependencies]
+test = [
+  "build==1.6.0",
+  "httpx==0.28.1",
+  "pytest==8.4.2",
+]
+
+[project.scripts]
+gravitee-autodeploy = "webapp.__main__:main"
+gravitee-autodeploy-desktop = "main:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "config*",
+  "core*",
+  "forms*",
+  "handlers*",
+  "opencode_integration*",
+  "services*",
+  "ui*",
+  "webapp*",
+]
+exclude = ["frontend*", "launcher*", "tests*"]
+
+[tool.setuptools.package-data]
+config = ["references/*.json"]
+webapp = ["static/**/*", "resources/opencode_agents/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = ["integration: starts real local services", "e2e: browser end-to-end test"]

@@ -7,11 +7,16 @@ ReferenceCache — персистентный кеш HTTP-справочнико
 Инвалидация: по TTL при каждом обращении (проверяется timestamp в файле/памяти).
 """
 import json
+import logging
+import os
+import stat
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 _CACHE_DIR = Path(__file__).parent.parent / "cached"
+_log = logging.getLogger(__name__)
 
 
 class ReferenceCache:
@@ -20,10 +25,12 @@ class ReferenceCache:
     сохраняет в файлы при записи, удаляет файлы при инвалидации.
     """
 
-    def __init__(self) -> None:
-        _CACHE_DIR.mkdir(exist_ok=True)
+    def __init__(self, cache_dir: Optional[Path] = None) -> None:
+        self._cache_dir = Path(cache_dir or _CACHE_DIR).resolve()
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
         # (resource, environment) → (timestamp, data)
         self._store: Dict[Tuple[str, str], Tuple[float, List[Dict]]] = {}
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -40,8 +47,14 @@ class ReferenceCache:
         ttl == -1 (TTL_INFINITE) — данные считаются актуальными всегда,
         пока кеш не сброшен вручную через invalidate().
         """
+        with self._lock:
+            return self._get_locked(resource, environment, ttl)
+
+    def _get_locked(
+        self, resource: str, environment: str, ttl: int
+    ) -> Optional[List[Dict]]:
         key = (resource, environment)
-        infinite = (ttl == -1)
+        infinite = ttl == -1
 
         # 1. Проверяем память
         entry = self._store.get(key)
@@ -70,24 +83,26 @@ class ReferenceCache:
         Возвращает unix-timestamp последней записи кеша (memory → file).
         Возвращает None, если кеш отсутствует.
         """
-        key = (resource, environment)
-        entry = self._store.get(key)
-        if entry is not None:
-            return entry[0]
+        with self._lock:
+            key = (resource, environment)
+            entry = self._store.get(key)
+            if entry is not None:
+                return entry[0]
 
-        file_entry = self._load_file(resource, environment)
-        if file_entry is not None:
-            ts, data = file_entry
-            self._store[key] = (ts, data)  # восстанавливаем в памяти попутно
-            return ts
+            file_entry = self._load_file(resource, environment)
+            if file_entry is not None:
+                ts, data = file_entry
+                self._store[key] = (ts, data)
+                return ts
 
-        return None
+            return None
 
     def set(self, resource: str, environment: str, data: List[Dict]) -> None:
         """Сохраняет данные в память и на диск."""
-        ts = time.time()
-        self._store[(resource, environment)] = (ts, data)
-        self._save_file(resource, environment, ts, data)
+        with self._lock:
+            ts = time.time()
+            self._store[(resource, environment)] = (ts, data)
+            self._save_file(resource, environment, ts, data)
 
     def invalidate(
         self, resource: Optional[str] = None, environment: Optional[str] = None
@@ -98,9 +113,15 @@ class ReferenceCache:
         - resource           — все окружения этого ресурса
         - resource+environment — конкретная запись
         """
+        with self._lock:
+            self._invalidate_locked(resource, environment)
+
+    def _invalidate_locked(
+        self, resource: Optional[str], environment: Optional[str]
+    ) -> None:
         if resource is None:
             self._store.clear()
-            for f in _CACHE_DIR.glob("*.json"):
+            for f in self._cache_dir.glob("*.json"):
                 f.unlink(missing_ok=True)
             return
 
@@ -114,20 +135,19 @@ class ReferenceCache:
         if environment is not None:
             self._delete_file(resource, environment)
         else:
-            for f in _CACHE_DIR.glob(f"{resource}__*.json"):
+            for f in self._cache_dir.glob(f"{resource}__*.json"):
                 f.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Работа с файлами
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _cache_path(resource: str, environment: str) -> Path:
+    def _cache_path(self, resource: str, environment: str) -> Path:
         # Двойное подчёркивание как разделитель — resource и environment
         # не содержат __ в штатных именах
         safe_res = resource.replace("/", "_").replace("\\", "_")
         safe_env = environment.replace("/", "_").replace("\\", "_")
-        return _CACHE_DIR / f"{safe_res}__{safe_env}.json"
+        return self._cache_dir / f"{safe_res}__{safe_env}.json"
 
     def _load_file(
         self, resource: str, environment: str
@@ -139,7 +159,11 @@ class ReferenceCache:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return float(raw["timestamp"]), list(raw["data"])
         except Exception as exc:
-            print(f"[ReferenceCache] Не удалось прочитать {path.name}: {exc}")
+            _log.warning(
+                "Reference cache read failed file=%s error_type=%s",
+                path.name,
+                type(exc).__name__,
+            )
             return None
 
     def _save_file(
@@ -147,12 +171,22 @@ class ReferenceCache:
     ) -> None:
         path = self._cache_path(resource, environment)
         try:
-            path.write_text(
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(
                 json.dumps({"timestamp": ts, "data": data}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            try:
+                temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+            os.replace(temporary, path)
         except Exception as exc:
-            print(f"[ReferenceCache] Не удалось сохранить {path.name}: {exc}")
+            _log.warning(
+                "Reference cache write failed file=%s error_type=%s",
+                path.name,
+                type(exc).__name__,
+            )
 
     def _delete_file(self, resource: str, environment: str) -> None:
         self._cache_path(resource, environment).unlink(missing_ok=True)

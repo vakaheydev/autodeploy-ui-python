@@ -9,9 +9,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 _log = logging.getLogger(__name__)
+
+
+def _safe_log_url(value: str) -> str:
+    """Log scheme/host/path only; never credentials or query parameters."""
+    parsed = urllib.parse.urlsplit(value)
+    hostname = parsed.hostname or ""
+    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -81,17 +91,27 @@ class HttpClient:
         req = self._build_request(url, method="GET")
         return self._execute(req)
 
-    def post(self, url: str, payload: Dict[str, Any]) -> Any:
+    def post(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Any:
         """POST запрос с JSON телом. Возвращает десериализованный JSON."""
         data = json.dumps(payload).encode("utf-8")
-        req = self._build_request(url, method="POST", data=data)
+        req = self._build_request(url, method="POST", data=data, headers=headers)
         req.add_header("Content-Type", "application/json")
         return self._execute(req)
 
-    def put(self, url: str, payload: Dict[str, Any]) -> Any:
+    def put(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Any:
         """PUT запрос с JSON телом."""
         data = json.dumps(payload).encode("utf-8")
-        req = self._build_request(url, method="PUT", data=data)
+        req = self._build_request(url, method="PUT", data=data, headers=headers)
         req.add_header("Content-Type", "application/json")
         return self._execute(req)
 
@@ -109,6 +129,7 @@ class HttpClient:
         url: str,
         method: str,
         data: Optional[bytes] = None,
+        headers: Optional[Mapping[str, str]] = None,
     ) -> urllib.request.Request:
         req = urllib.request.Request(url, data=data, method=method)
         if self._auth_header:
@@ -123,11 +144,14 @@ class HttpClient:
                 )
             req.add_header("Authorization", f"Bearer {self._token}")
         req.add_header("Accept", "application/json")
+        for key, value in (headers or {}).items():
+            req.add_header(str(key), str(value))
         return req
 
     def _execute(self, req: urllib.request.Request) -> Any:
         method = req.get_method()
         url = req.full_url
+        logged_url = _safe_log_url(url)
         _start = time.monotonic()
         try:
             with self._opener.open(req, timeout=self._timeout) as resp:
@@ -139,14 +163,14 @@ class HttpClient:
                         raise ValueError("HTTP response превышает допустимый размер")
                 body = raw.decode("utf-8")
                 elapsed = time.monotonic() - _start
-                _log.info("%s %s → %d  (%.2fs)", method, url, resp.status, elapsed)
+                _log.info("%s %s → %d  (%.2fs)", method, logged_url, resp.status, elapsed)
                 return json.loads(body) if body.strip() else {}
         except urllib.error.HTTPError as exc:
             elapsed = time.monotonic() - _start
-            _log.warning("%s %s → %d  (%.2fs)", method, url, exc.code, elapsed)
+            _log.warning("%s %s → %d  (%.2fs)", method, logged_url, exc.code, elapsed)
             body = exc.read(65_537).decode("utf-8", errors="replace")
             raise HttpError(exc.code, body) from exc
         except urllib.error.URLError as exc:
             elapsed = time.monotonic() - _start
-            _log.error("%s %s → ERROR  (%.2fs): %s", method, url, elapsed, exc.reason)
+            _log.error("%s %s → ERROR  (%.2fs): %s", method, logged_url, elapsed, exc.reason)
             raise ConnectionError(f"Ошибка соединения: {exc.reason}") from exc

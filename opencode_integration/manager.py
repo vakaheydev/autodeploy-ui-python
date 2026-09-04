@@ -76,13 +76,17 @@ class OpenCodeManager:
         username: str = "opencode",
         password: str = "",
         runtime_dir: Path | None = None,
+        agent_source_dir: Path | None = None,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
+        source_dir = Path(
+            agent_source_dir or self.project_dir / ".opencode" / "agents"
+        ).resolve()
         self.agent_source = (
-            self.project_dir / ".opencode" / "agents" / "form-extractor.md"
+            source_dir / "form-extractor.md"
         )
         self.agent_sources = tuple(
-            self.project_dir / ".opencode" / "agents" / f"{name}.md"
+            source_dir / f"{name}.md"
             for name in REQUIRED_AGENTS
         )
         self.runtime_dir = Path(runtime_dir or default_runtime_dir()).resolve()

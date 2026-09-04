@@ -124,9 +124,10 @@ class HttpReferenceHandler(BaseReferenceHandler):
 
         url = self._resolve_url(resource, environment)
         if not url:
-            print(
-                f"[HttpReferenceHandler] URL не задан для resource='{resource}'"
-                f" / environment='{environment}'. Возвращаю пустой список."
+            _log.warning(
+                "Reference URL not configured resource=%s environment=%s",
+                resource,
+                environment,
             )
             return []
 
@@ -135,7 +136,11 @@ class HttpReferenceHandler(BaseReferenceHandler):
             try:
                 url = url.format_map(params)
             except KeyError as exc:
-                print(f"[HttpReferenceHandler] Не хватает параметра {exc} для URL '{url}'")
+                _log.warning(
+                    "Reference URL parameter missing resource=%s parameter=%s",
+                    resource,
+                    exc,
+                )
                 return []
 
         try:

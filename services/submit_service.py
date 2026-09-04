@@ -80,11 +80,12 @@ class SubmitService:
 
         # 5. Отправить
         method = form.get_http_method().upper()
+        headers = form.get_submit_headers(environment)
         try:
             if method == "POST":
-                response = self._client.post(endpoint, payload)
+                response = self._client.post(endpoint, payload, headers=headers)
             elif method == "PUT":
-                response = self._client.put(endpoint, payload)
+                response = self._client.put(endpoint, payload, headers=headers)
             else:
                 return SubmitResult(False, f"HTTP метод '{method}' не поддерживается")
         except HttpError as exc:
