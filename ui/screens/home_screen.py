@@ -26,6 +26,8 @@ class HomeScreen(BaseScreen):
         self._status_poll_id = None
         self._health_probe_thread = None
         self._next_health_probe = time.monotonic() + 15.0
+        self._wheel_bindings: list[tuple[str, str]] = []
+        self._wheel_root = None
         # --- Шапка ---
         header = tk.Frame(self, bg=theme.C["bg"])
         header.pack(fill=tk.X, pady=(0, 4))
@@ -64,6 +66,7 @@ class HomeScreen(BaseScreen):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._canvas = canvas
+        self._bind_mousewheel()
 
         self._ai_chat = AIHomeChat(col, app=self.app)
         self._ai_chat_visible = False
@@ -213,13 +216,75 @@ class HomeScreen(BaseScreen):
         self._health_probe_thread.start()
 
     def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is self and self._status_poll_id is not None:
+        if event.widget is not self:
+            return
+        if self._status_poll_id is not None:
             try:
                 self.after_cancel(self._status_poll_id)
             except tk.TclError:
                 pass
             self._status_poll_id = None
-            self._ai_chat.shutdown()
+        self._unbind_mousewheel()
+        self._ai_chat.shutdown()
+
+    def _bind_mousewheel(self) -> None:
+        """Маршрутизирует колесо с любого дочернего виджета в canvas экрана."""
+        root = self.winfo_toplevel()
+        self._wheel_root = root
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            func_id = root.bind(sequence, self._on_mousewheel, add="+")
+            if func_id:
+                self._wheel_bindings.append((sequence, func_id))
+
+    def _unbind_mousewheel(self) -> None:
+        root = self._wheel_root
+        if root is None:
+            return
+        for sequence, func_id in self._wheel_bindings:
+            try:
+                root.unbind(sequence, func_id)
+            except tk.TclError:
+                pass
+        self._wheel_bindings.clear()
+        self._wheel_root = None
+
+    def _on_mousewheel(self, event: tk.Event):
+        """Не перехватывает колесо у transcript, но скроллит остальную страницу."""
+        try:
+            widget = event.widget
+            if not self._is_descendant(widget):
+                return None
+            current = widget
+            while current is not None:
+                if getattr(current, "_owns_mousewheel", False):
+                    return None
+                if current is self:
+                    break
+                current = getattr(current, "master", None)
+
+            number = getattr(event, "num", None)
+            if number == 4:
+                units = -1
+            elif number == 5:
+                units = 1
+            else:
+                delta = int(getattr(event, "delta", 0) or 0)
+                if delta == 0:
+                    return None
+                magnitude = max(1, abs(delta) // 120)
+                units = -magnitude if delta > 0 else magnitude
+            self._canvas.yview_scroll(units, "units")
+            return "break"
+        except tk.TclError:
+            return None
+
+    def _is_descendant(self, widget: tk.Widget) -> bool:
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            current = getattr(current, "master", None)
+        return False
 
     def detach_ai_for_shutdown(self):
         """Передаёт активный routing worker общему shutdown приложения."""

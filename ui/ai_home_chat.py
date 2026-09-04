@@ -55,27 +55,28 @@ class AIHomeChat(tk.Frame):
         surface = tk.Frame(self, bg=theme.C["surface"])
         surface.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        hero = tk.Frame(surface, bg="#0F172A")
+        hero_bg = theme.C["chat_status"]
+        hero = tk.Frame(surface, bg=hero_bg)
         hero.pack(fill=tk.X)
-        heading = tk.Frame(hero, bg="#0F172A")
+        heading = tk.Frame(hero, bg=hero_bg)
         heading.pack(fill=tk.X, padx=18, pady=(15, 5))
         tk.Label(
             heading, text="✦", font=("Segoe UI", 17, "bold"),
-            bg="#0F172A", fg="#60A5FA",
+            bg=hero_bg, fg=theme.C["primary"],
         ).pack(side=tk.LEFT)
-        title = tk.Frame(heading, bg="#0F172A")
+        title = tk.Frame(heading, bg=hero_bg)
         title.pack(side=tk.LEFT, padx=(9, 0))
         tk.Label(
             title, text="Gravitee Copilot", font=theme.F["h2"],
-            bg="#0F172A", fg="#F8FAFC",
+            bg=hero_bg, fg=theme.C["text"],
         ).pack(anchor=tk.W)
         tk.Label(
             title, text="Единая точка входа в формы, заявки и Gravitee Repository",
-            font=theme.F["small"], bg="#0F172A", fg="#94A3B8",
+            font=theme.F["small"], bg=hero_bg, fg=theme.C["text_muted"],
         ).pack(anchor=tk.W, pady=(1, 0))
         self._connection_label = tk.Label(
             heading, text="●  OpenCode", font=theme.F["small"],
-            bg="#DCFCE7", fg="#15803D", padx=9, pady=4,
+            bg=theme.C["success_soft"], fg=theme.C["success"], padx=9, pady=4,
         )
         self._connection_label.pack(side=tk.RIGHT)
         self._session_button = ttk.Button(
@@ -91,7 +92,7 @@ class AIHomeChat(tk.Frame):
                 "а любые изменения покажет до применения."
             ),
             wraplength=820, justify=tk.LEFT, font=theme.F["small"],
-            bg="#0F172A", fg="#CBD5E1",
+            bg=hero_bg, fg=theme.C["text_label"],
         ).pack(fill=tk.X, padx=18, pady=(2, 14))
 
         quick = tk.Frame(surface, bg=theme.C["surface"])
@@ -120,6 +121,9 @@ class AIHomeChat(tk.Frame):
             transcript_body, orient=tk.VERTICAL, command=self._transcript.yview
         )
         self._transcript.configure(yscrollcommand=transcript_scroll.set)
+        # HomeScreen оставляет колесо этому вложенному скроллу. Над остальными
+        # частями чата колесо прокручивает всю главную страницу.
+        self._transcript._owns_mousewheel = True  # type: ignore[attr-defined]
         transcript_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._configure_transcript_tags()
@@ -224,7 +228,9 @@ class AIHomeChat(tk.Frame):
         self._connected_address = address
         short_address = (address or "OpenCode").removeprefix("http://")
         self._connection_label.config(
-            text=f"●  {short_address}", bg="#DCFCE7", fg="#15803D"
+            text=f"●  {short_address}",
+            bg=theme.C["success_soft"],
+            fg=theme.C["success"],
         )
         if not self._pending_checked:
             self._pending_checked = True

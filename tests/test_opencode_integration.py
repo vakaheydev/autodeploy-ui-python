@@ -48,6 +48,7 @@ from opencode_integration.copilot import (
     CopilotValidationError,
     UnifiedCopilot,
     detect_ticket_reference,
+    is_casual_conversation,
     validate_copilot_output,
 )
 from opencode_integration.data_sources import DataSourceNotConfiguredError
@@ -317,6 +318,9 @@ class PermissionTests(unittest.TestCase):
             "permission": "*", "pattern": "*", "action": "deny"
         })
         self.assertIn({
+            "permission": "StructuredOutput", "pattern": "*", "action": "deny"
+        }, rules)
+        self.assertIn({
             "permission": "ado_get*", "pattern": "*", "action": "ask"
         }, rules)
         self.assertNotIn({
@@ -410,7 +414,10 @@ class _RecordingClient(OpenCodeClient):
         if path == "/session":
             return {"id": "ses_contract"}
         if path.endswith("/message"):
-            return {"info": {"structured": {"ok": True}}, "parts": []}
+            return {
+                "info": {"id": "msg_contract"},
+                "parts": [{"type": "text", "text": '{"ok":true}'}],
+            }
         return True
 
 
@@ -443,8 +450,43 @@ class OpenCodeContractTests(unittest.TestCase):
             message_body["model"],
             {"providerID": "openai", "modelID": "gpt-test"},
         )
-        self.assertEqual(message_body["format"]["retryCount"], 2)
+        self.assertNotIn("format", message_body)
+        self.assertIn("AUTODEPLOY_VALIDATED_JSON_PROTOCOL", message_body["system"])
         self.assertEqual(result, {"ok": True})
+
+    def test_invalid_json_is_repaired_locally_without_native_format(self) -> None:
+        class RepairClient(OpenCodeClient):
+            def __init__(self) -> None:
+                super().__init__("http://127.0.0.1:4096")
+                self.bodies: list[dict[str, Any]] = []
+
+            def _request(  # type: ignore[override]
+                self, _method: str, _path: str, payload: Any = None, **_kwargs: Any,
+            ) -> Any:
+                self.bodies.append(payload)
+                response = '{"ok":"wrong type"}' if len(self.bodies) == 1 else '{"ok":true}'
+                return {
+                    "info": {"id": f"msg_{len(self.bodies)}"},
+                    "parts": [{"type": "text", "text": response}],
+                }
+
+        client = RepairClient()
+        result = client.send_structured_message(
+            session_id="ses_repair",
+            prompt="return status",
+            system="rules",
+            schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["ok"],
+                "properties": {"ok": {"type": "boolean"}},
+            },
+            agent=FORM_EXTRACTOR_AGENT,
+            retry_count=1,
+        )
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(client.bodies), 2)
+        self.assertTrue(all("format" not in body for body in client.bodies))
 
     def test_11818_permission_reply_uses_current_endpoint(self) -> None:
         client = _RecordingClient()
@@ -623,7 +665,6 @@ class _Handler(BaseHTTPRequestHandler):
     structured_error = False
     redirect_message = False
     leak_requested = False
-    root_structured_output = False
 
     def log_message(self, _format: str, *_args: Any) -> None:
         pass
@@ -691,10 +732,11 @@ class _Handler(BaseHTTPRequestHandler):
                     }},
                     "parts": [],
                 })
-            elif self.root_structured_output:
-                self._json(200, {"structured_output": {"ok": True}})
-            elif "format" in body:
-                self._json(200, {"info": {"structured": {"ok": True}}, "parts": []})
+            elif "AUTODEPLOY_VALIDATED_JSON_PROTOCOL" in str(body.get("system", "")):
+                self._json(200, {
+                    "info": {"id": "msg_json"},
+                    "parts": [{"type": "text", "text": '{"ok":true}'}],
+                })
             else:
                 self._json(200, {
                     "info": {"id": "msg_test"},
@@ -805,7 +847,7 @@ class ClientPolicyTests(unittest.TestCase):
                     PROJECT_DIR / ".opencode" / "agents" / f"{agent_name}.md"
                 ).read_text(encoding="utf-8")
                 self.assertIn('  "*": deny', config)
-                self.assertIn("  StructuredOutput: allow", config)
+                self.assertIn("  StructuredOutput: deny", config)
                 self.assertIn("  read: deny", config)
                 self.assertIn("  bash: deny", config)
                 self.assertIn("  external_directory: deny", config)
@@ -822,7 +864,6 @@ class ClientTests(unittest.TestCase):
         _Handler.structured_error = False
         _Handler.redirect_message = False
         _Handler.leak_requested = False
-        _Handler.root_structured_output = False
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -907,8 +948,11 @@ class ClientTests(unittest.TestCase):
         ]
         structured_body = message_bodies[-1]
         self.assertEqual(structured_body["agent"], FORM_EXTRACTOR_AGENT)
-        self.assertEqual(structured_body["format"]["type"], "json_schema")
-        self.assertEqual(structured_body["format"]["retryCount"], 2)
+        self.assertNotIn("format", structured_body)
+        self.assertIn(
+            "AUTODEPLOY_VALIDATED_JSON_PROTOCOL",
+            structured_body["system"],
+        )
         self.assertEqual(
             structured_body["model"],
             {"providerID": "openai", "modelID": "gpt-test"},
@@ -943,16 +987,11 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(error.exception.status, 302)
         self.assertFalse(_Handler.leak_requested)
 
-    def test_documented_structured_output_name_is_supported(self) -> None:
-        _Handler.root_structured_output = True
-        result = self.client.send_structured_message(
-            session_id="ses_test",
-            prompt="data",
-            system="rules",
-            schema={"type": "object"},
-            agent=FORM_EXTRACTOR_AGENT,
+    def test_fenced_json_is_accepted_by_compatibility_decoder(self) -> None:
+        self.assertEqual(
+            self.client._decode_json_object('```json\n{"ok": true}\n```'),
+            {"ok": True},
         )
-        self.assertEqual(result, {"ok": True})
 
 class _AgentClient:
     timeout = 5.0
@@ -1380,6 +1419,8 @@ class _CopilotClient:
         self.created: dict[str, Any] = {}
         self.session_count = 0
         self.deleted: list[str] = []
+        self.chat_calls = 0
+        self.structured_calls = 0
 
     def require_agent(self, name: str, **_kwargs: Any) -> None:
         self.agent = name
@@ -1396,6 +1437,7 @@ class _CopilotClient:
         return "ses_copilot" if self.session_count == 1 else f"ses_copilot_{self.session_count}"
 
     def send_structured_message(self, **kwargs: Any) -> dict[str, Any]:
+        self.structured_calls += 1
         observer = kwargs.get("on_response")
         if observer:
             observer({
@@ -1410,6 +1452,21 @@ class _CopilotClient:
             })
         return self.payload
 
+    def send_chat_message(self, **kwargs: Any) -> OpenCodeMessage:
+        self.chat_calls += 1
+        observer = kwargs.get("on_response")
+        response = {
+            "info": {"id": "msg_chat"},
+            "parts": [{"type": "text", "text": "Привет! Чем помочь?"}],
+        }
+        if observer:
+            observer(response)
+        return OpenCodeMessage(
+            "Привет! Чем помочь?",
+            {"id": "msg_chat"},
+            tuple(response["parts"]),
+        )
+
     def respond_permission(self, *_args: Any, **_kwargs: Any) -> None:
         pass
 
@@ -1421,6 +1478,19 @@ class _CopilotClient:
 
 
 class CopilotWorkflowTests(unittest.TestCase):
+    def test_greeting_uses_plain_chat_without_schema_or_structured_output(self) -> None:
+        client = _CopilotClient(_copilot_payload())
+        copilot = UnifiedCopilot(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        outcome = copilot.ask("Привет!", environment="test_int")
+        self.assertTrue(is_casual_conversation("привет, как дела?"))
+        self.assertEqual(outcome.intent, "conversation")
+        self.assertEqual(outcome.answer, "Привет! Чем помочь?")
+        self.assertEqual(client.chat_calls, 1)
+        self.assertEqual(client.structured_calls, 0)
+
     def test_duplicate_session_status_is_coalesced(self) -> None:
         copilot = UnifiedCopilot(
             _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]

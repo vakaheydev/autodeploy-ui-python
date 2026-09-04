@@ -1354,7 +1354,7 @@ class FormScreen(BaseScreen):
             self._set_status(f"✗  {str(error).splitlines()[0]}", "error")
             return
         title = (
-            "Ошибка Structured Output"
+            "Ошибка JSON-ответа"
             if isinstance(error, OpenCodeStructuredOutputError)
             else f"Ошибка этапа {action}"
         )

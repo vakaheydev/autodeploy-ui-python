@@ -18,6 +18,14 @@ from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence
 
 from opencode_integration.context_builder import redact_text
 
+try:
+    import jsonschema
+except ImportError as exc:  # pragma: no cover - dependency is declared by the app
+    jsonschema = None  # type: ignore[assignment]
+    _JSONSCHEMA_IMPORT_ERROR = exc
+else:
+    _JSONSCHEMA_IMPORT_ERROR = None
+
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 MAX_SSE_EVENT_BYTES = 512 * 1024
 _log = logging.getLogger("opencode.http")
@@ -98,7 +106,10 @@ def build_session_permissions(
     """Deny-by-default; известный read-only профиль разрешается точно."""
     rules: list[Dict[str, str]] = [
         {"permission": "*", "pattern": "*", "action": "deny"},
-        {"permission": "StructuredOutput", "pattern": "*", "action": "allow"},
+        # OpenCode 1.18.18 implements this internal tool through a provider call
+        # that is incompatible with some OpenAI-compatible endpoints.  All JSON
+        # responses are transported as text and validated in Python instead.
+        {"permission": "StructuredOutput", "pattern": "*", "action": "deny"},
     ]
     names = {item.strip() for item in mcp_names if item.strip()}
     invalid = sorted(name for name in names if not _MCP_NAME_RE.fullmatch(name))
@@ -379,6 +390,7 @@ class OpenCodeClient:
         model_id: str = "",
         cancel_event: Optional[threading.Event] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_response: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> OpenCodeMessage:
         body = self._message_body(
             prompt=prompt,
@@ -393,6 +405,11 @@ class OpenCodeClient:
             cancel_event=cancel_event,
             on_event=on_event,
         )
+        if on_response is not None:
+            try:
+                on_response(response)
+            except Exception:
+                _log.warning("chat response observer failed", exc_info=True)
         parts = tuple(
             item for item in response.get("parts", []) if isinstance(item, dict)
         )
@@ -422,62 +439,147 @@ class OpenCodeClient:
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_response: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        body = self._message_body(
-            prompt=prompt,
-            system=system,
-            agent=agent,
-            provider_id=provider_id,
-            model_id=model_id,
+        """Return schema-validated JSON without OpenCode's broken ``format`` path.
+
+        OpenCode 1.18.18 persists ``format.type=json_schema`` in a shape that its
+        own Web UI cannot deserialize. It also implements the format as a forced
+        ``StructuredOutput`` tool call (``tool_choice=required``), which some
+        OpenAI-compatible providers reject with an empty HTTP 500.  The application
+        therefore asks for plain JSON in a normal message and validates it locally.
+        This keeps sessions readable and avoids sending the incompatible request.
+        """
+        # Никогда не превращаем ошибку модели в бесконечный цикл: максимум
+        # исходный ответ и две адресные коррекции JSON.
+        attempts = min(2, max(0, int(retry_count))) + 1
+        schema_json = json.dumps(
+            schema, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         )
-        body["format"] = {
-            "type": "json_schema",
-            "schema": schema,
-            "retryCount": max(0, int(retry_count)),
-        }
         schema_size = len(
-            json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            schema_json.encode("utf-8")
         )
         _log.info(
-            "structured request session=%s agent=%s provider=%s model=%s "
+            "validated-json request session=%s agent=%s provider=%s model=%s "
             "schema_bytes=%d retries=%d",
             session_id,
             agent,
             provider_id or "default",
             model_id or "default",
             schema_size,
-            body["format"]["retryCount"],
+            attempts - 1,
         )
-        response = self._send_message(
-            session_id=session_id,
-            body=body,
-            cancel_event=cancel_event,
-            on_event=on_event,
+        protocol = (
+            "\n\nAUTODEPLOY_VALIDATED_JSON_PROTOCOL\n"
+            "For this turn, return exactly one JSON object and no Markdown or prose. "
+            "The object must validate against the following trusted JSON Schema. "
+            "Do not call StructuredOutput; write the JSON object as ordinary text.\n"
+            f"BEGIN_TRUSTED_RESPONSE_SCHEMA\n{schema_json}\n"
+            "END_TRUSTED_RESPONSE_SCHEMA"
         )
-        if on_response is not None:
+        current_prompt = prompt
+        last_error = "response is not a JSON object"
+        for attempt in range(1, attempts + 1):
+            body = self._message_body(
+                prompt=current_prompt,
+                system=system + protocol,
+                agent=agent,
+                provider_id=provider_id,
+                model_id=model_id,
+            )
+            response = self._send_message(
+                session_id=session_id,
+                body=body,
+                cancel_event=cancel_event,
+                on_event=on_event,
+            )
+            if on_response is not None:
+                try:
+                    on_response(response)
+                except Exception:
+                    _log.warning("validated-json response observer failed", exc_info=True)
+            text = self._message_text(response)
             try:
-                on_response(response)
-            except Exception:
-                _log.warning("structured response observer failed", exc_info=True)
-        info = response.get("info") or {}
-        structured = None
-        for container in (info, response):
-            if not isinstance(container, dict):
-                continue
-            for key in ("structured", "structured_output", "structuredOutput"):
-                if key in container:
-                    structured = container[key]
+                structured = self._decode_json_object(text)
+                validation_errors = self._json_schema_errors(structured, schema)
+                if validation_errors:
+                    last_error = "; ".join(validation_errors[:8])
+                    raise ValueError(last_error)
+            except (json.JSONDecodeError, ValueError) as exc:
+                last_error = redact_text(str(exc))[:1000] or "invalid JSON"
+                _log.warning(
+                    "validated-json rejected session=%s attempt=%d/%d reason=%s",
+                    session_id,
+                    attempt,
+                    attempts,
+                    last_error,
+                )
+                if attempt >= attempts:
                     break
-            if structured is not None:
-                break
-        if structured is None:
-            raise OpenCodeStructuredOutputError(
-                "OpenCode завершил запрос без обязательного structured_output"
+                current_prompt = (
+                    "Correct your previous response. It did not satisfy the trusted "
+                    f"JSON protocol ({last_error}). Return only the corrected JSON object."
+                )
+                continue
+            _log.info(
+                "validated-json accepted session=%s attempt=%d/%d",
+                session_id,
+                attempt,
+                attempts,
             )
-        if not isinstance(structured, dict):
-            raise OpenCodeStructuredOutputError(
-                "structured_output имеет неожиданный тип"
-            )
-        return structured
+            return structured
+        raise OpenCodeStructuredOutputError(
+            "OpenCode не смог сформировать JSON по заданной схеме: "
+            + last_error
+        )
+
+    @staticmethod
+    def _message_text(response: Mapping[str, Any]) -> str:
+        parts = response.get("parts")
+        if not isinstance(parts, (list, tuple)):
+            return ""
+        return "\n".join(
+            str(item.get("text", ""))
+            for item in parts
+            if isinstance(item, Mapping)
+            and item.get("type") == "text"
+            and item.get("text")
+        ).strip()
+
+    @staticmethod
+    def _decode_json_object(text: str) -> Dict[str, Any]:
+        """Accept plain JSON or one fenced JSON block, never arbitrary fragments."""
+        candidate = str(text).strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            candidate,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced is not None:
+            candidate = fenced.group(1).strip()
+        value = json.loads(candidate)
+        if not isinstance(value, dict):
+            raise ValueError("top-level response must be a JSON object")
+        return value
+
+    @staticmethod
+    def _json_schema_errors(
+        payload: Mapping[str, Any], schema: Mapping[str, Any]
+    ) -> list[str]:
+        if jsonschema is None:
+            raise RuntimeError(
+                "Для проверки JSON ответа требуется пакет jsonschema"
+            ) from _JSONSCHEMA_IMPORT_ERROR
+        validator_cls = getattr(
+            jsonschema, "Draft202012Validator", jsonschema.Draft7Validator
+        )
+        validator = validator_cls(schema)
+        errors = sorted(
+            validator.iter_errors(payload), key=lambda item: list(item.absolute_path)
+        )
+        return [
+            f"{'.'.join(str(part) for part in error.absolute_path) or '$'}: "
+            f"violates {error.validator}"
+            for error in errors
+        ]
 
     @staticmethod
     def _message_body(

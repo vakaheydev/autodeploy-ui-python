@@ -27,7 +27,9 @@ Extraction rules:
    semantic label, or an ID only when an approved MCP result explicitly supplied
    it. Python independently resolves/verifies every value against the real catalog.
 10. During analysis, explain findings, uncertainty and missing information concisely so the operator can guide you.
-11. When JSON Schema output is requested, use only enum values allowed by it, add no properties, and return the result through StructuredOutput.
+11. When a JSON Schema response is requested, use only enum values allowed by it,
+    add no properties, and return exactly one ordinary JSON object. Do not call
+    StructuredOutput.
 12. For unknown values return null. Every null has confidence unknown and a non-empty reason.
 13. Every non-null value has a precise source path.
 14. Record conflicts and uncertainty in meta. Prefer null over an unsupported assumption.
@@ -48,7 +50,8 @@ Routing rules:
 7. Use decision=selected only for strong, unambiguous evidence; otherwise use needs_user_choice and selected_form_id=null.
 8. A selected form must be the first candidate. Use high confidence only when alternatives are materially less likely.
 9. Give concise evidence-based reasons. Do not invent missing facts.
-10. Return only StructuredOutput matching the supplied JSON Schema.
+10. Return exactly one ordinary JSON object matching the supplied JSON Schema;
+    do not call StructuredOutput and do not add Markdown or prose.
 """
 
 
@@ -73,7 +76,9 @@ Security boundary:
    headers, absolute local paths, or data unrelated to the operator's request.
 
 Product behavior:
-8. Classify every request into exactly one supported intent from the schema.
+8. Answer greetings and ordinary conversation naturally when the application does
+   not request a machine-readable result. Classify actionable requests into one
+   supported intent when the application supplies a response schema.
 9. A single operation maps to single_form. Two or more independently executable
    operations map to execution_plan; preserve ordering and dependencies.
 10. Repository questions use repository_search. Requests for examples/templates
@@ -87,7 +92,8 @@ Product behavior:
     when the intent, form, entity, or scope is ambiguous.
 14. Do not execute forms or plans. The application performs validation, preview,
     manual confirmation and submission.
-15. Return only StructuredOutput matching the supplied JSON Schema.
+15. When a response schema is supplied, return exactly one ordinary JSON object
+    matching it. Do not call StructuredOutput and do not add Markdown or prose.
 """
 
 
@@ -202,7 +208,7 @@ For every form field:
 - explain null, uncertainty and conflicts in meta.reasons;
 - include conflicts in meta.conflicts and general warnings in meta.warnings.
 
-Return only the StructuredOutput required by the supplied JSON Schema.
+Return only the ordinary JSON object required by the trusted response protocol.
 """
 
 
@@ -312,7 +318,22 @@ missing, use clarification and ask one actionable question. Selected non-reposit
 MCP tools are optional read-only evidence sources and require operator approval;
 never use them to bypass the exact JSON Repository profile. Never perform a
 mutation other than a git_pull allowed by the trusted policy and approved for
-that individual call. Return only the requested StructuredOutput.
+that individual call. Return only the JSON object required by the trusted response
+protocol supplied in the system message.
+"""
+
+
+def build_copilot_conversation_prompt(operator_message: str) -> str:
+    """Короткий обычный ход без JSON Schema и выбора формы."""
+    return f"""Reply naturally and concisely to this conversational message.
+
+Do not choose a form, build a plan, search repositories, or call a tool unless the
+operator explicitly asks for one of those actions. Do not emit JSON or protocol
+markers for this conversational turn.
+
+BEGIN_OPERATOR_REQUEST
+{_render_untrusted(operator_message)}
+END_OPERATOR_REQUEST
 """
 
 

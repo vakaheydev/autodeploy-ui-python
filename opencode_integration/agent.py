@@ -261,7 +261,7 @@ class FormExtractorAgent:
             )
 
             self._check_cancel()
-            self._on_progress("Проверяю Structured Output…")
+            self._on_progress("Проверяю JSON по схеме…")
             # Первая проверка не применяет зависимости формы: reference labels
             # ещё не преобразованы в реальные ID.
             semantic = self._validator.validate(

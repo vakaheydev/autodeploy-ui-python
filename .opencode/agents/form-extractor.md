@@ -4,7 +4,7 @@ mode: primary
 temperature: 0.0
 permission:
   "*": deny
-  StructuredOutput: allow
+  StructuredOutput: deny
   read: deny
   edit: deny
   glob: deny
@@ -49,7 +49,8 @@ Mandatory rules:
     session and only after the operator approves that individual call. Other MCP
     reads require operator approval; never perform any other mutation.
 12. During analysis, report concise findings and gaps to the operator. When a
-    JSON Schema format is supplied, return no prose outside StructuredOutput.
+    JSON Schema protocol is supplied, return exactly one ordinary JSON object,
+    without Markdown or prose. Never call StructuredOutput.
 13. Record uncertainty and conflicts in the warnings, reasons, and conflicts sections.
 14. Include the source of each extracted value in meta.sources.
 15. Prefer leaving a value null over making an unsupported assumption.

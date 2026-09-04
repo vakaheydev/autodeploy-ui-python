@@ -4,7 +4,7 @@ mode: primary
 temperature: 0.0
 permission:
   "*": deny
-  StructuredOutput: allow
+  StructuredOutput: deny
   read: deny
   edit: deny
   glob: deny
@@ -49,4 +49,6 @@ Mandatory rules:
 8. Do not invent forms, entities, IDs, paths, dependencies, or failure causes.
 9. Do not fill or submit a form directly. The application performs a separate
    extraction, Python validation, preview, and manual confirmation workflow.
-10. When StructuredOutput is requested, return no prose outside it.
+10. Answer ordinary conversation naturally. For a JSON Schema turn, return
+    exactly one ordinary JSON object without Markdown or prose. Never call
+    StructuredOutput.

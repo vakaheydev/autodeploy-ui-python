@@ -18,7 +18,7 @@ from config.mcp_profiles import (
 )
 from forms.base_form import BaseForm
 from opencode_integration.agent import ConversationEvent
-from opencode_integration.client import OpenCodeCancelled, OpenCodeClient
+from opencode_integration.client import OpenCodeCancelled, OpenCodeClient, OpenCodeError
 from opencode_integration.context_builder import (
     BuiltContext,
     ContextBuilder,
@@ -28,7 +28,11 @@ from opencode_integration.context_builder import (
 )
 from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
 from opencode_integration.manager import AUTODEPLOY_COPILOT_AGENT
-from opencode_integration.prompts import COPILOT_SYSTEM_RULES, build_copilot_prompt
+from opencode_integration.prompts import (
+    COPILOT_SYSTEM_RULES,
+    build_copilot_conversation_prompt,
+    build_copilot_prompt,
+)
 from opencode_integration.schemas import build_copilot_schema
 from opencode_integration.workflow import PlannedFormStep
 
@@ -52,6 +56,15 @@ _TICKET_IN_TEXT_RE = re.compile(
     r"))(?![\w])"
 )
 _TICKET_WORD_RE = re.compile(r"(?i)\b(?:заявк\w*|тикет\w*|ticket|request)\b")
+_CASUAL_MESSAGE_RE = re.compile(
+    r"(?ix)^\s*(?:"
+    r"(?:привет(?:ик)?|здравствуй(?:те)?|hello|hi|hey|"
+    r"добр(?:ое\s+утро|ый\s+день|ый\s+вечер))"
+    r"(?:\s*[,!?.-]*\s*(?:как\s+дела|what(?:'s|\s+is)\s+up)?)?"
+    r"|как\s+дела|кто\s+ты|что\s+ты\s+умеешь|"
+    r"спасибо|благодарю|thanks|thank\s+you"
+    r")\s*[!?.]*\s*$"
+)
 
 
 class CopilotValidationError(ValueError):
@@ -107,6 +120,11 @@ def detect_ticket_reference(message: str) -> Optional[str]:
         return None
     matches = list(dict.fromkeys(match.group(1) for match in _TICKET_IN_TEXT_RE.finditer(text)))
     return matches[0] if len(matches) == 1 else None
+
+
+def is_casual_conversation(message: str) -> bool:
+    """Распознаёт только безопасный узкий набор small-talk без workflow."""
+    return _CASUAL_MESSAGE_RE.fullmatch(str(message)) is not None
 
 
 def _schema_errors(payload: Any, schema: Mapping[str, Any]) -> list[str]:
@@ -376,6 +394,45 @@ class UnifiedCopilot:
             self._check_cancel()
             self._ensure_session(notify)
             context = self._context
+
+            if diagnostic_data is None and is_casual_conversation(text):
+                notify("OpenCode готовит ответ…")
+                message_result = self._client.send_chat_message(
+                    session_id=self._require_session(),
+                    prompt=build_copilot_conversation_prompt(text),
+                    system=COPILOT_SYSTEM_RULES,
+                    agent=AUTODEPLOY_COPILOT_AGENT,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    cancel_event=cancel_event,
+                    on_event=self._handle_raw_event,
+                    on_response=self._capture_response_evidence,
+                )
+                answer = message_result.text.strip()
+                if not answer:
+                    raise OpenCodeError("OpenCode вернул пустой ответ")
+                if contains_secret(answer):
+                    raise CopilotValidationError(
+                        "Ответ помощника содержит данные, похожие на секрет"
+                    )
+                outcome = CopilotOutcome(
+                    intent="conversation",
+                    answer=answer,
+                    question=None,
+                    selected_form_id=None,
+                    form_candidates=(),
+                    plan=(),
+                    repository_items=(),
+                    diagnostics=None,
+                    warnings=(),
+                    context=context,
+                )
+                _log.info(
+                    "copilot conversation success session=%s duration=%.2fs",
+                    self._session_id,
+                    time.monotonic() - started,
+                )
+                return outcome
 
             notify("AI анализирует запрос и при необходимости ищет в репозитории…")
             structured = self._client.send_structured_message(
