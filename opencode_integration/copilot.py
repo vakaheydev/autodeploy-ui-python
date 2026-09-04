@@ -308,6 +308,7 @@ class UnifiedCopilot:
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
         self._permission_ids: set[str] = set()
+        self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._repository_evidence: set[tuple[str, str]] = set()
@@ -350,6 +351,7 @@ class UnifiedCopilot:
             self._on_session = on_session or (lambda _session: None)
             self._provider_id = provider_id
             self._model_id = model_id
+            self._last_session_status_signature = ""
             started = time.monotonic()
 
             requested_ticket = ticket_id or detect_ticket_reference(text)
@@ -513,6 +515,7 @@ class UnifiedCopilot:
         self._repository_evidence.clear()
         self._part_states.clear()
         self._permission_ids.clear()
+        self._last_session_status_signature = ""
         self._on_session(None)
 
     def _handle_raw_event(self, event: Mapping[str, Any]) -> None:
@@ -541,8 +544,29 @@ class UnifiedCopilot:
         if event_type == "session.status":
             status = values.get("status")
             if isinstance(status, dict):
+                status_type = str(status.get("type") or "unknown")
+                attempt = status.get("attempt")
+                next_at = status.get("next")
+                signature = json.dumps(
+                    [status_type, attempt, next_at],
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                )
+                with self._event_lock:
+                    if signature == self._last_session_status_signature:
+                        return
+                    self._last_session_status_signature = signature
+                labels = {
+                    "busy": "OpenCode анализирует запрос",
+                    "retry": "OpenCode повторяет запрос",
+                    "idle": "OpenCode завершает обработку",
+                }
+                detail = f"попытка {attempt}" if attempt not in (None, "") else ""
                 self._emit(ConversationEvent(
-                    "status", f"Статус: {status.get('type', 'unknown')}", ""
+                    "status",
+                    labels.get(status_type, f"OpenCode: {status_type}"),
+                    detail,
                 ))
             return
         if event_type in {"session.error", "session.failed"}:
@@ -658,7 +682,14 @@ class UnifiedCopilot:
         return redact_text(rendered)[:2000]
 
     def _emit(self, event: ConversationEvent) -> None:
-        _log.info("copilot event kind=%s title=%s", event.kind, event.title)
+        if event.kind == "status":
+            _log.info(
+                "copilot event kind=status title=%s detail=%s",
+                event.title,
+                event.detail or "none",
+            )
+        else:
+            _log.info("copilot event kind=%s title=%s", event.kind, event.title)
         self._on_event(event)
 
     def _require_session(self) -> str:

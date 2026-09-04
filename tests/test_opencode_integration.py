@@ -31,6 +31,7 @@ from forms.other.enable_ingress_form import EnableIngressForm
 from opencode_integration.agent import FormExtractorAgent
 from opencode_integration.client import (
     OpenCodeClient,
+    OpenCodeError,
     OpenCodeHttpError,
     OpenCodeHealth,
     OpenCodeMessage,
@@ -712,6 +713,48 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class ClientPolicyTests(unittest.TestCase):
+    def test_session_web_url_uses_opencode_directory_route(self) -> None:
+        with tempfile.TemporaryDirectory() as runtime:
+            client = OpenCodeClient(
+                "http://127.0.0.1:4096",
+                directory=runtime,
+            )
+            resolved = str(Path(runtime).resolve())
+            directory = base64.urlsafe_b64encode(
+                resolved.encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            self.assertEqual(
+                client.session_web_url("ses_test-1"),
+                f"http://127.0.0.1:4096/{directory}/session/ses_test-1",
+            )
+            with self.assertRaises(ValueError):
+                client.session_web_url("../not-a-session")
+
+    def test_nested_provider_500_gets_safe_actionable_error(self) -> None:
+        response = {
+            "info": {
+                "providerID": "corp",
+                "modelID": "Qwen3.8-27B-FP8",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {
+                        "message": json.dumps({
+                            "message": "",
+                            "type": "InternalServerError",
+                            "param": None,
+                            "code": 500,
+                        }),
+                    },
+                },
+            },
+        }
+        with self.assertRaises(OpenCodeError) as raised:
+            OpenCodeClient._raise_message_error(response)
+        rendered = str(raised.exception)
+        self.assertIn("corp/Qwen3.8-27B-FP8", rendered)
+        self.assertIn("HTTP 500", rendered)
+        self.assertNotIn('"param"', rendered)
+
     def test_non_local_address_is_rejected(self) -> None:
         for address in (
             "http://0.0.0.0:4096",
@@ -1378,6 +1421,34 @@ class _CopilotClient:
 
 
 class CopilotWorkflowTests(unittest.TestCase):
+    def test_duplicate_session_status_is_coalesced(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events = []
+        copilot._on_event = events.append
+        retry = {
+            "type": "session.status",
+            "properties": {
+                "sessionID": "ses_copilot",
+                "status": {"type": "retry", "attempt": 2, "next": 123},
+            },
+        }
+        copilot._handle_raw_event(retry)
+        copilot._handle_raw_event(retry)
+        copilot._handle_raw_event({
+            "type": "session.status",
+            "properties": {
+                "sessionID": "ses_copilot",
+                "status": {"type": "busy"},
+            },
+        })
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0].title, "OpenCode повторяет запрос")
+        self.assertEqual(events[0].detail, "попытка 2")
+        self.assertEqual(events[1].title, "OpenCode анализирует запрос")
+
     def test_copilot_uses_exact_repository_profile_and_verifies_sources(self) -> None:
         payload = _copilot_payload("repository_search")
         payload["repository_items"] = [{

@@ -6,6 +6,8 @@ import logging
 import queue
 import threading
 import tkinter as tk
+import webbrowser
+from datetime import datetime
 from tkinter import ttk
 from typing import Any, Optional
 
@@ -43,6 +45,8 @@ class AIHomeChat(tk.Frame):
         self._busy = False
         self._destroying = False
         self._connected_address = ""
+        self._session_id = ""
+        self._last_status_key = ""
         self._permission_rows: dict[str, tk.Frame] = {}
         self._pending_checked = False
         self._build()
@@ -50,50 +54,75 @@ class AIHomeChat(tk.Frame):
     def _build(self) -> None:
         surface = tk.Frame(self, bg=theme.C["surface"])
         surface.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-        heading = tk.Frame(surface, bg=theme.C["surface"])
-        heading.pack(fill=tk.X, padx=16, pady=(14, 3))
+
+        hero = tk.Frame(surface, bg="#0F172A")
+        hero.pack(fill=tk.X)
+        heading = tk.Frame(hero, bg="#0F172A")
+        heading.pack(fill=tk.X, padx=18, pady=(15, 5))
         tk.Label(
-            heading, text="✦  Gravitee AI", font=theme.F["h2"],
-            bg=theme.C["surface"], fg=theme.C["text"],
+            heading, text="✦", font=("Segoe UI", 17, "bold"),
+            bg="#0F172A", fg="#60A5FA",
         ).pack(side=tk.LEFT)
+        title = tk.Frame(heading, bg="#0F172A")
+        title.pack(side=tk.LEFT, padx=(9, 0))
+        tk.Label(
+            title, text="Gravitee Copilot", font=theme.F["h2"],
+            bg="#0F172A", fg="#F8FAFC",
+        ).pack(anchor=tk.W)
+        tk.Label(
+            title, text="Единая точка входа в формы, заявки и Gravitee Repository",
+            font=theme.F["small"], bg="#0F172A", fg="#94A3B8",
+        ).pack(anchor=tk.W, pady=(1, 0))
         self._connection_label = tk.Label(
-            heading, text="● OpenCode", font=theme.F["small"],
-            bg=theme.C["surface"], fg=theme.C["success"],
+            heading, text="●  OpenCode", font=theme.F["small"],
+            bg="#DCFCE7", fg="#15803D", padx=9, pady=4,
         )
         self._connection_label.pack(side=tk.RIGHT)
+        self._session_button = ttk.Button(
+            heading,
+            text="Открыть сессию ↗",
+            style="Chip.TButton",
+            command=self._open_session_in_browser,
+        )
         tk.Label(
-            surface,
+            hero,
             text=(
-                "Единая точка входа: заявка → форма или план, поиск API/приложений, "
-                "похожие шаблоны и диагностика исполнения."
+                "Опишите результат, который нужен. Copilot сам выберет форму или план, "
+                "а любые изменения покажет до применения."
             ),
             wraplength=820, justify=tk.LEFT, font=theme.F["small"],
-            bg=theme.C["surface"], fg=theme.C["text_muted"],
-        ).pack(fill=tk.X, padx=16, pady=(0, 7))
+            bg="#0F172A", fg="#CBD5E1",
+        ).pack(fill=tk.X, padx=18, pady=(2, 14))
 
         quick = tk.Frame(surface, bg=theme.C["surface"])
-        quick.pack(fill=tk.X, padx=16, pady=(0, 7))
+        quick.pack(fill=tk.X, padx=16, pady=(12, 9))
         for label, prompt in (
-            ("Найти API", "Найди API по имени, пути или backend URL: "),
-            ("Найти приложение", "Найди приложение по имени, ID или client_id: "),
-            ("Похожие шаблоны", "Найди похожие API или приложения для шаблона: "),
-            ("План заявки", "Построй полный многошаговый план исполнения заявки "),
+            ("⌕  Найти API", "Найди API по имени, пути или backend URL: "),
+            ("⌕  Приложение", "Найди приложение по имени, ID или client_id: "),
+            ("≋  Похожие", "Найди похожие API или приложения для шаблона: "),
+            ("✓  План заявки", "Построй полный многошаговый план исполнения заявки "),
         ):
             ttk.Button(
-                quick, text=label, style="Ghost.TButton",
+                quick, text=label, style="Chip.TButton",
                 command=lambda value=prompt: self._set_input(value),
-            ).pack(side=tk.LEFT, padx=(0, 4))
+            ).pack(side=tk.LEFT, padx=(0, 6))
 
+        transcript_border = tk.Frame(surface, bg=theme.C["border"])
+        transcript_border.pack(fill=tk.BOTH, expand=True, padx=16)
+        transcript_body = tk.Frame(transcript_border, bg=theme.C["chat_bg"])
+        transcript_body.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         self._transcript = tk.Text(
-            surface, height=12, wrap=tk.WORD, font=theme.F["small"],
-            bg=theme.C["surface_alt"], fg=theme.C["text"], relief="flat", bd=0,
-            padx=10, pady=8, state=tk.DISABLED, cursor="arrow",
+            transcript_body, height=14, wrap=tk.WORD, font=theme.F["body"],
+            bg=theme.C["chat_bg"], fg=theme.C["text"], relief="flat", bd=0,
+            padx=8, pady=8, state=tk.DISABLED, cursor="arrow",
         )
-        self._transcript.pack(fill=tk.BOTH, expand=True, padx=16)
-        self._transcript.tag_configure("assistant", foreground=theme.C["text"], spacing3=5)
-        self._transcript.tag_configure("user", foreground=theme.C["primary"], spacing3=5)
-        self._transcript.tag_configure("error", foreground=theme.C["error"], spacing3=5)
-        self._transcript.tag_configure("activity", foreground=theme.C["text_muted"], spacing3=3)
+        transcript_scroll = ttk.Scrollbar(
+            transcript_body, orient=tk.VERTICAL, command=self._transcript.yview
+        )
+        self._transcript.configure(yscrollcommand=transcript_scroll.set)
+        transcript_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._configure_transcript_tags()
         for role, message in self.app.copilot_history:
             self._append(role, message, remember=False)
         if not self.app.copilot_history:
@@ -111,46 +140,101 @@ class AIHomeChat(tk.Frame):
         self._action_frame.pack(fill=tk.X, padx=16, pady=(5, 0))
         self._render_active_plan()
 
-        self._status_var = tk.StringVar(value="")
-        self._status_label = tk.Label(
-            surface, textvariable=self._status_var, font=theme.F["small"],
-            bg=theme.C["surface"], fg=theme.C["text_muted"], anchor="w",
+        self._status_panel = tk.Frame(surface, bg=theme.C["chat_status"])
+        self._status_panel.pack(fill=tk.X, padx=16, pady=(9, 0))
+        self._status_dot = tk.Label(
+            self._status_panel, text="●", font=theme.F["small"],
+            bg=theme.C["chat_status"], fg=theme.C["success"],
         )
-        self._status_label.pack(fill=tk.X, padx=16, pady=(6, 2))
-        self._progress = ttk.Progressbar(surface, mode="indeterminate")
+        self._status_dot.pack(side=tk.LEFT, padx=(10, 6), pady=7)
+        self._status_var = tk.StringVar(value="Готов к работе")
+        self._status_label = tk.Label(
+            self._status_panel, textvariable=self._status_var, font=theme.F["small"],
+            bg=theme.C["chat_status"], fg=theme.C["text_label"], anchor="w",
+        )
+        self._status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=7)
+        self._cancel_button = ttk.Button(
+            self._status_panel, text="Остановить", style="DangerGhost.TButton",
+            command=self._cancel_request,
+        )
+        self._progress = ttk.Progressbar(surface, mode="indeterminate", maximum=100)
 
-        self._input_row = tk.Frame(surface, bg=theme.C["surface"])
-        self._input_row.pack(fill=tk.X, padx=16, pady=(5, 14))
+        self._input_row = tk.Frame(surface, bg=theme.C["border_focus"])
+        self._input_row.pack(fill=tk.X, padx=16, pady=(9, 4))
+        composer = tk.Frame(self._input_row, bg=theme.C["input_bg"])
+        composer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         self._input = tk.Text(
-            self._input_row, height=2, wrap=tk.WORD, font=theme.F["body"],
-            bg=theme.C["input_bg"], fg=theme.C["text"], relief="solid", bd=1,
-            padx=7, pady=5,
+            composer, height=3, wrap=tk.WORD, font=theme.F["body"],
+            bg=theme.C["input_bg"], fg=theme.C["text"], relief="flat", bd=0,
+            padx=10, pady=8, insertbackground=theme.C["text"],
         )
         self._input.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._input.bind("<Return>", self._on_enter)
         self._pick_button = ttk.Button(
-            self._input_row, text="Заявка", style="Secondary.TButton",
+            composer, text="＋ Заявка", style="Chip.TButton",
             command=self._pick_ticket,
         )
-        self._pick_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._pick_button.pack(side=tk.LEFT, padx=(5, 6), pady=7)
         self._send_button = ttk.Button(
-            self._input_row, text="Отправить", style="Primary.TButton", command=self._send,
+            composer, text="Отправить  ↑", style="Primary.TButton", command=self._send,
         )
-        self._send_button.pack(side=tk.LEFT, padx=(8, 0))
-        self._cancel_button = ttk.Button(
-            self._input_row, text="Остановить", style="Secondary.TButton",
-            command=self._cancel_request,
+        self._send_button.pack(side=tk.LEFT, padx=(0, 7), pady=7)
+        tk.Label(
+            surface,
+            text="Enter — отправить   ·   Shift+Enter — новая строка",
+            font=("Segoe UI", 9), bg=theme.C["surface"], fg=theme.C["text_muted"],
+        ).pack(anchor=tk.E, padx=17, pady=(0, 11))
+
+    def _configure_transcript_tags(self) -> None:
+        common = {"font": theme.F["small"], "foreground": theme.C["text_muted"]}
+        self._transcript.tag_configure(
+            "assistant_meta", **common, lmargin1=16, lmargin2=16,
+            rmargin=130, spacing1=10, spacing3=3,
+        )
+        self._transcript.tag_configure(
+            "assistant", font=theme.F["body"], foreground=theme.C["text"],
+            background=theme.C["chat_ai"], lmargin1=16, lmargin2=16,
+            rmargin=130, spacing3=10,
+        )
+        self._transcript.tag_configure(
+            "user_meta", font=("Segoe UI", 9, "bold"), foreground=theme.C["primary"],
+            justify=tk.RIGHT, lmargin1=130, lmargin2=130, rmargin=16,
+            spacing1=10, spacing3=3,
+        )
+        self._transcript.tag_configure(
+            "user", font=theme.F["body"], foreground=theme.C["text"],
+            background=theme.C["chat_user"], justify=tk.RIGHT,
+            lmargin1=130, lmargin2=130, rmargin=16, spacing3=10,
+        )
+        self._transcript.tag_configure(
+            "error_meta", font=("Segoe UI", 9, "bold"), foreground=theme.C["error"],
+            lmargin1=16, lmargin2=16, rmargin=80, spacing1=10, spacing3=3,
+        )
+        self._transcript.tag_configure(
+            "error", font=theme.F["body"], foreground="#991B1B",
+            background=theme.C["chat_error"], lmargin1=16, lmargin2=16,
+            rmargin=80, spacing3=10,
+        )
+        self._transcript.tag_configure(
+            "activity", font=("Segoe UI", 9), foreground=theme.C["text_muted"],
+            lmargin1=28, lmargin2=28, rmargin=28, spacing1=3, spacing3=4,
         )
 
     def connected(self, address: str) -> None:
         self._connected_address = address
-        self._connection_label.config(text=f"● {address or 'OpenCode'}")
+        short_address = (address or "OpenCode").removeprefix("http://")
+        self._connection_label.config(
+            text=f"●  {short_address}", bg="#DCFCE7", fg="#15803D"
+        )
         if not self._pending_checked:
             self._pending_checked = True
             self.after(120, self._consume_pending_request)
 
     def disconnected(self) -> None:
         self._connected_address = ""
+        self._connection_label.config(
+            text="●  Нет соединения", bg=theme.C["chat_error"], fg=theme.C["error"]
+        )
         if self._busy:
             self._cancel_request()
 
@@ -226,6 +310,7 @@ class AIHomeChat(tk.Frame):
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         self._set_busy(True)
+        self._status("Готовлю контекст и запускаю OpenCode…")
 
         def progress(value: str) -> None:
             self._queue.put(("progress", value))
@@ -268,8 +353,8 @@ class AIHomeChat(tk.Frame):
                     self._status(str(payload))
                 elif event == "conversation":
                     self._handle_conversation_event(payload)
-                elif event == "session" and payload:
-                    _log.info("home copilot session=%s", payload)
+                elif event == "session":
+                    self._set_session(str(payload) if payload else "")
                 elif event == "permission_answered":
                     self._permission_answered(*payload)
                 elif event == "result":
@@ -284,6 +369,13 @@ class AIHomeChat(tk.Frame):
     def _handle_conversation_event(self, event: ConversationEvent) -> None:
         if event.kind == "permission":
             self._render_permission(event)
+            return
+        if event.kind == "status":
+            key = f"{event.title}\0{event.detail}"
+            if key != self._last_status_key:
+                self._last_status_key = key
+                detail = f" · {event.detail}" if event.detail else ""
+                self._status(event.title + detail)
             return
         detail = f" — {event.detail}" if event.detail else ""
         role = "error" if event.kind == "error" else "activity"
@@ -629,19 +721,34 @@ class AIHomeChat(tk.Frame):
         if isinstance(error, OpenCodeCancelled):
             self._append("assistant", "Текущий запрос остановлен. Внешние системы не изменялись.")
             self._status("Запрос отменён.")
+            if copilot is not None:
+                threading.Thread(
+                    target=copilot.close,
+                    name="opencode-copilot-cancel-cleanup",
+                    daemon=True,
+                ).start()
         else:
             _log.error(
-                "unified copilot request failed error_type=%s",
+                "unified copilot request failed error_type=%s session=%s",
                 type(error).__name__,
+                self._session_id or "unknown",
             )
-            self._append("error", f"Не удалось обработать запрос: {error}")
-            self._status("Ошибка AI-помощника. Можно повторить запрос.", error=True)
-        if copilot is not None:
-            threading.Thread(
-                target=copilot.close,
-                name="opencode-copilot-error-cleanup",
-                daemon=True,
-            ).start()
+            self._append("error", self._friendly_error(error))
+            if self._session_id:
+                self._status(
+                    "Запрос завершился ошибкой. Сессия сохранена для диагностики.",
+                    error=True,
+                )
+            else:
+                self._status("Ошибка AI-помощника. Можно повторить запрос.", error=True)
+            # Ошибочную session намеренно не удаляем: пользователь может открыть
+            # её в OpenCode Web и увидеть tool calls, retries и provider error.
+            # Следующий запрос получит новый UnifiedCopilot и новую session.
+            if copilot is not None:
+                _log.info(
+                    "failed copilot session preserved id=%s",
+                    copilot.session_id or self._session_id or "unknown",
+                )
 
     def _cancel_request(self) -> None:
         if not self._busy:
@@ -656,13 +763,19 @@ class AIHomeChat(tk.Frame):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self._last_status_key = ""
         state = tk.DISABLED if busy else tk.NORMAL
         self._input.config(state=state)
         self._pick_button.config(state=state)
         self._send_button.config(state=state)
         if busy:
-            self._cancel_button.pack(side=tk.LEFT, padx=(8, 0))
-            self._progress.pack(fill=tk.X, padx=16, pady=(0, 2), before=self._input_row)
+            self._status_panel.config(bg=theme.C["chat_status"])
+            self._status_dot.config(
+                text="●", bg=theme.C["chat_status"], fg=theme.C["primary"]
+            )
+            self._status_label.config(bg=theme.C["chat_status"])
+            self._cancel_button.pack(side=tk.RIGHT, padx=6, pady=2)
+            self._progress.pack(fill=tk.X, padx=16, pady=(2, 0), before=self._input_row)
             self._progress.start(10)
         else:
             self._cancel_button.pack_forget()
@@ -671,21 +784,95 @@ class AIHomeChat(tk.Frame):
 
     def _status(self, message: str, *, error: bool = False) -> None:
         self._status_var.set(message)
-        self._status_label.config(fg=theme.C["error"] if error else theme.C["text_muted"])
+        background = theme.C["chat_error"] if error else theme.C["chat_status"]
+        self._status_panel.config(bg=background)
+        self._status_dot.config(
+            bg=background,
+            fg=theme.C["error"] if error else (
+                theme.C["primary"] if self._busy else theme.C["success"]
+            ),
+        )
+        self._status_label.config(
+            bg=background,
+            fg=theme.C["error"] if error else theme.C["text_label"],
+        )
 
     def _append(self, role: str, message: str, *, remember: bool = True) -> None:
-        prefixes = {"assistant": "AI", "user": "Вы", "error": "Ошибка", "activity": "Процесс"}
         clean = str(message).strip()
         if not clean:
             return
         self._transcript.config(state=tk.NORMAL)
-        if self._transcript.index("end-1c") != "1.0":
-            self._transcript.insert(tk.END, "\n")
-        self._transcript.insert(tk.END, f"{prefixes.get(role, role)}: {clean}\n", role)
+        if role == "activity":
+            self._transcript.insert(tk.END, f"⚙  {clean}\n", "activity")
+        else:
+            labels = {"assistant": "GRAVITEE AI", "user": "ВЫ", "error": "ОШИБКА"}
+            timestamp = datetime.now().strftime("%H:%M")
+            meta_tag = f"{role}_meta" if role in {"assistant", "user", "error"} else "assistant_meta"
+            body_tag = role if role in {"assistant", "user", "error"} else "assistant"
+            self._transcript.insert(
+                tk.END,
+                f"{labels.get(role, str(role).upper())}  ·  {timestamp}\n",
+                meta_tag,
+            )
+            self._transcript.insert(tk.END, clean + "\n", body_tag)
         self._transcript.config(state=tk.DISABLED)
         self._transcript.see(tk.END)
         if remember and role in {"assistant", "user", "error"}:
             self.app.add_copilot_history(role, clean)
+
+    @staticmethod
+    def _friendly_error(error: Exception) -> str:
+        message = str(error).strip()
+        if "Internal Server Error" in message or "InternalServerError" in message:
+            return (
+                "Provider вернул HTTP 500 и не передал описание причины. "
+                "Сессия сохранена: откройте её кнопкой в шапке, чтобы увидеть "
+                "ход выполнения и повторные попытки OpenCode."
+            )
+        if "Expected OutputFormatJsonSchema" in message:
+            return (
+                "OpenCode не смог повторно прочитать сообщение со Structured Output. "
+                "Это ошибка сериализации session в OpenCode 1.18.18; исходная "
+                "сессия сохранена для просмотра."
+            )
+        if len(message) > 700:
+            message = message[:697].rstrip() + "…"
+        return "Не удалось обработать запрос: " + message
+
+    def _set_session(self, session_id: str) -> None:
+        self._session_id = session_id.strip()
+        if self._session_id:
+            self._session_button.config(
+                text=f"Сессия …{self._session_id[-8:]}  ↗"
+            )
+            if not self._session_button.winfo_ismapped():
+                self._session_button.pack(side=tk.RIGHT, padx=(0, 8))
+            _log.info("home copilot session=%s", self._session_id)
+        else:
+            self._session_button.pack_forget()
+
+    def _open_session_in_browser(self) -> None:
+        if not self._session_id:
+            self._status("OpenCode session ещё не создана.", error=True)
+            return
+        client = self.app.opencode_manager.client
+        if client is None:
+            self._status("Сначала восстановите подключение к OpenCode Server.", error=True)
+            return
+        try:
+            url = client.session_web_url(self._session_id)
+            opened = webbrowser.open(url, new=2)
+        except Exception as exc:
+            _log.warning("failed to open session in browser", exc_info=True)
+            self._status(f"Не удалось открыть OpenCode Web: {exc}", error=True)
+            return
+        if opened:
+            self._status("Сессия открыта в OpenCode Web.")
+        else:
+            self._status(
+                "Браузер не открылся автоматически. Откройте адрес OpenCode Server вручную.",
+                error=True,
+            )
 
     def _clear_actions(self) -> None:
         for child in self._action_frame.winfo_children():

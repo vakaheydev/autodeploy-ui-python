@@ -263,13 +263,16 @@ class AIAssistantDialog:
         self._append(title, clean, tag, "body")
 
     def append_event(self, event: ConversationEvent) -> None:
+        if event.kind == "status":
+            detail = f" · {event.detail}" if event.detail else ""
+            self.set_status(event.title + detail)
+            return
         tag = {
             "tool": "tool_title",
             "permission": "warning_title",
             "permission_resolved": "system_title",
             "warning": "warning_title",
             "error": "error_title",
-            "status": "system_title",
             "system": "system_title",
         }.get(event.kind, "system_title")
         self._append(event.title, event.detail, tag, "detail")

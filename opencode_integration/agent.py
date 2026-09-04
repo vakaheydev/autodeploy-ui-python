@@ -82,6 +82,7 @@ class FormExtractorAgent:
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
         self._permission_ids: set[str] = set()
+        self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._started = 0.0
@@ -129,6 +130,7 @@ class FormExtractorAgent:
             self._on_progress = on_progress or (lambda _message: None)
             self._on_event = on_event or (lambda _event: None)
             self._on_session = on_session or (lambda _session: None)
+            self._last_session_status_signature = ""
 
             if prepared_context is not None:
                 if prepared_context.ticket_id != self._ticket_id:
@@ -431,9 +433,28 @@ class FormExtractorAgent:
         if event_type == "session.status":
             status = props.get("status")
             if isinstance(status, dict):
-                status_type = str(status.get("type", "unknown"))
-                detail = self._safe_detail(status)
-                self._emit(ConversationEvent("status", f"Статус: {status_type}", detail))
+                status_type = str(status.get("type") or "unknown")
+                attempt = status.get("attempt")
+                next_at = status.get("next")
+                signature = json.dumps(
+                    [status_type, attempt, next_at],
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                )
+                with self._event_lock:
+                    if signature == self._last_session_status_signature:
+                        return
+                    self._last_session_status_signature = signature
+                labels = {
+                    "busy": "OpenCode анализирует запрос",
+                    "retry": "OpenCode повторяет запрос",
+                    "idle": "OpenCode завершает обработку",
+                }
+                detail = f"попытка {attempt}" if attempt not in (None, "") else ""
+                self._emit(ConversationEvent(
+                    "status", labels.get(status_type, f"OpenCode: {status_type}"), detail
+                ))
             return
         if event_type in {"session.error", "session.failed"}:
             self._emit(ConversationEvent(
@@ -474,11 +495,14 @@ class FormExtractorAgent:
         return redact_text(rendered)[:2000]
 
     def _emit(self, event: ConversationEvent) -> None:
-        _log.info(
-            "event kind=%s title=%s",
-            event.kind,
-            event.title,
-        )
+        if event.kind == "status":
+            _log.info(
+                "event kind=status title=%s detail=%s",
+                event.title,
+                event.detail or "none",
+            )
+        else:
+            _log.info("event kind=%s title=%s", event.kind, event.title)
         try:
             self._on_event(event)
         except Exception:

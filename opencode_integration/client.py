@@ -193,6 +193,20 @@ class OpenCodeClient:
             _NoRedirectHandler(),
         )
 
+    def session_web_url(self, session_id: str) -> str:
+        """Возвращает localhost-only deep link на session в OpenCode Web UI."""
+        clean_id = str(session_id).strip()
+        if not clean_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", clean_id):
+            raise ValueError("Некорректный OpenCode session ID")
+        if not self.directory:
+            return self.base_url
+        directory = base64.urlsafe_b64encode(
+            self.directory.encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        # OpenCode 1.18.18 поддерживает legacy directory route и сам переводит
+        # его на актуальный server-scoped route при включённом новом layout.
+        return f"{self.base_url}/{directory}/session/{clean_id}"
+
     def health(self, timeout: Optional[float] = None) -> OpenCodeHealth:
         payload = _unwrap_data(
             self._request("GET", "/global/health", timeout=timeout, instance=False)
@@ -420,6 +434,19 @@ class OpenCodeClient:
             "schema": schema,
             "retryCount": max(0, int(retry_count)),
         }
+        schema_size = len(
+            json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        _log.info(
+            "structured request session=%s agent=%s provider=%s model=%s "
+            "schema_bytes=%d retries=%d",
+            session_id,
+            agent,
+            provider_id or "default",
+            model_id or "default",
+            schema_size,
+            body["format"]["retryCount"],
+        )
         response = self._send_message(
             session_id=session_id,
             body=body,
@@ -551,7 +578,67 @@ class OpenCodeClient:
             raise OpenCodeProviderError(message)
         if name in {"MessageAbortedError", "AbortedError"}:
             raise OpenCodeCancelled("OpenCode session была отменена")
-        raise OpenCodeError(f"{name}: {message}")
+        summary = OpenCodeClient._provider_error_summary(name, message, info)
+        _log.warning(
+            "message failed error=%s provider=%s model=%s code=%s",
+            name[:100],
+            str(info.get("providerID") or "unknown")[:100],
+            str(info.get("modelID") or "unknown")[:200],
+            summary[1],
+        )
+        raise OpenCodeError(summary[0])
+
+    @staticmethod
+    def _provider_error_summary(
+        name: str,
+        message: str,
+        info: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        """Извлекает безопасный код provider error, не показывая response body."""
+        current: Any = message
+        details: dict[str, Any] = {}
+        for _ in range(3):
+            if isinstance(current, dict):
+                details = current
+                nested = current.get("message")
+                if not isinstance(nested, str):
+                    break
+                current = nested
+                continue
+            if not isinstance(current, str):
+                break
+            stripped = current.strip()
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                break
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                break
+            if not isinstance(parsed, dict):
+                break
+            details = parsed
+            current = parsed.get("message")
+
+        code_value = details.get("code", details.get("statusCode", ""))
+        code = str(code_value) if code_value not in (None, "") else "unknown"
+        error_type = str(details.get("type") or name or "OpenCodeError")[:100]
+        provider = str(info.get("providerID") or "provider")[:100]
+        model = str(info.get("modelID") or "")[:200]
+        target = f"{provider}/{model}" if model else provider
+        if code == "500" or error_type.lower() in {
+            "internal_error", "internalservererror",
+        }:
+            return (
+                f"Provider {target} вернул HTTP 500 Internal Server Error без "
+                "диагностического сообщения. OpenCode session сохранена — её можно "
+                "открыть в Web UI.",
+                "500",
+            )
+        return (
+            f"OpenCode завершил запрос ошибкой {error_type} "
+            f"(provider={target}, code={code}).",
+            code,
+        )
 
     def iter_events(self, stop_event: threading.Event) -> Iterator[Dict[str, Any]]:
         """Читает instance SSE; незавершённый JSON наружу не выдаётся."""

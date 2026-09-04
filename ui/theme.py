@@ -37,6 +37,14 @@ C = {
     "badge_api":    "#DBEAFE",   # синяя пилюля
     "badge_apps":   "#D1FAE5",   # зелёная
     "badge_other":  "#FEF3C7",   # жёлтая
+
+    # AI chat
+    "chat_bg":      "#F5F7FB",
+    "chat_user":    "#E8F0FE",
+    "chat_ai":      "#FFFFFF",
+    "chat_error":   "#FEF2F2",
+    "chat_status":  "#EFF6FF",
+    "success_soft": "#ECFDF5",
 }
 
 # ------------------------------------------------------------------
@@ -161,6 +169,37 @@ def apply(root: tk.Tk) -> None:
     s.map("Ghost.TButton",
           background=[("active", C["ghost_h"])],
           foreground=[("active", C["text"])])
+
+    # --- Компактные действия AI-чата ---
+    s.configure(
+        "Chip.TButton",
+        background=C["surface_alt"],
+        foreground=C["text_label"],
+        font=F["small"],
+        padding=(10, 5),
+        relief="solid",
+        borderwidth=1,
+        bordercolor=C["border"],
+        focusthickness=0,
+    )
+    s.map(
+        "Chip.TButton",
+        background=[("active", C["ghost_h"])],
+        foreground=[("active", C["primary"])],
+        bordercolor=[("active", C["border_focus"])],
+    )
+
+    s.configure(
+        "DangerGhost.TButton",
+        background=C["surface"],
+        foreground=C["error"],
+        font=F["small"],
+        padding=(10, 5),
+        relief="flat",
+        borderwidth=0,
+        focusthickness=0,
+    )
+    s.map("DangerGhost.TButton", background=[("active", C["chat_error"])])
 
     # --- Кнопка-строка списка (категория/форма) ---
     s.configure(
