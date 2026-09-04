@@ -8,7 +8,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from config.environments import (
     ENVIRONMENT_MAP,
@@ -20,13 +20,20 @@ from config.environments import (
     OPENCODE_REPOSITORY_GIT_PULL_KEY,
     OPENCODE_REPOSITORY_MCP_KEY,
 )
-from config.mcp_profiles import AUTODEPLOY_MCP_NAME, AUTODEPLOY_MCP_TOOLS, setting_enabled
+from config.mcp_profiles import (
+    AUTODEPLOY_COPILOT_TOOLS,
+    AUTODEPLOY_MCP_NAME,
+    setting_enabled,
+)
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot, detect_ticket_reference
 from opencode_integration.context_builder import BuiltContext, redact_text
+from opencode_integration.form_search import SemanticFormSearchSession
+from opencode_integration.researcher import RepositoryResearcher
 from opencode_integration.thinking import decide_copilot_thinking, decide_extractor_thinking
 from opencode_integration.workflow import ExtractionDirective
+from webapp.ai_drafts import FormDraftStore
 
 
 _log = logging.getLogger("web.ai")
@@ -48,6 +55,7 @@ class WebCopilotSession:
     model_id: str
     default_variant: str
     variants: tuple[str, ...]
+    form_search: SemanticFormSearchSession
     created_at: float = field(default_factory=time.time)
     events: list[WebEvent] = field(default_factory=list)
     sequence: int = 0
@@ -56,6 +64,14 @@ class WebCopilotSession:
     cancel_event: Optional[threading.Event] = None
     last_progress: str = ""
     operator_messages: list[str] = field(default_factory=list)
+    turn_candidates: list[dict[str, Any]] = field(default_factory=list)
+    turn_candidates_job_id: str = ""
+    turn_draft_id: str = ""
+    turn_draft_ids: list[str] = field(default_factory=list)
+    turn_draft_job_id: str = ""
+    refining_draft_id: str = ""
+    active_environment: str = ""
+    active_researcher: Optional[RepositoryResearcher] = None
     condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
     def emit(self, kind: str, payload: Mapping[str, Any]) -> WebEvent:
@@ -115,6 +131,7 @@ class WebAIService:
         self._sessions: dict[str, WebCopilotSession] = {}
         self._handoffs: dict[str, AIHandoff] = {}
         self._extractions: dict[str, ExtractionJob] = {}
+        self._drafts = FormDraftStore(container)
         self._lock = threading.RLock()
 
     def create_session(self) -> dict[str, Any]:
@@ -149,11 +166,13 @@ class WebAIService:
         allowed_mcp = self._csv(values.get(OPENCODE_ALLOWED_MCP_KEY, ""))
         if self.container.settings.mcp_enabled:
             allowed_mcp = list(dict.fromkeys((*allowed_mcp, AUTODEPLOY_MCP_NAME)))
+        workflow_id = secrets.token_urlsafe(24)
+        forms = tuple(FormRegistry().all_forms())
         copilot = UnifiedCopilot(
             client,
             services.itsm,
             services.tfs,
-            forms=FormRegistry().all_forms(),
+            forms=forms,
             allowed_mcp=allowed_mcp,
             repository_mcp=values.get(OPENCODE_REPOSITORY_MCP_KEY, ""),
             allow_repository_git_pull=setting_enabled(
@@ -163,27 +182,28 @@ class WebAIService:
                 values.get(OPENCODE_MAX_CONTEXT_CHARS_KEY), 120_000
             ),
             trusted_mcp_tools=(
-                {AUTODEPLOY_MCP_NAME: AUTODEPLOY_MCP_TOOLS}
+                {AUTODEPLOY_MCP_NAME: AUTODEPLOY_COPILOT_TOOLS}
                 if self.container.settings.mcp_enabled
                 else {}
             ),
+            workflow_id=workflow_id,
         )
-        session_id = secrets.token_urlsafe(24)
         session = WebCopilotSession(
-            id=session_id,
+            id=workflow_id,
             copilot=copilot,
             provider_id=provider_id,
             model_id=model_id,
             default_variant=default_variant,
             variants=tuple(model.variants),
+            form_search=SemanticFormSearchSession(client, forms=forms),
         )
         session.emit("system", {
             "title": "Сессия готова",
             "detail": "История и контекст сохраняются между сообщениями.",
         })
         with self._lock:
-            self._sessions[session_id] = session
-        return self.snapshot(session_id, include_events=True)
+            self._sessions[workflow_id] = session
+        return self.snapshot(workflow_id, include_events=True)
 
     def snapshot(self, session_id: str, *, include_events: bool = True) -> dict[str, Any]:
         session = self._session(session_id)
@@ -196,6 +216,15 @@ class WebAIService:
             "default_variant": session.default_variant,
             "variants": list(session.variants),
             "opencode_session_id": session.copilot.session_id,
+            "form_search_session_id": session.form_search.session_id,
+            "form_search_url": (
+                self.container.opencode_manager.client.session_web_url(
+                    session.form_search.session_id
+                )
+                if self.container.opencode_manager.client
+                and session.form_search.session_id
+                else None
+            ),
             "opencode_url": (
                 self.container.opencode_manager.client.session_web_url(session.copilot.session_id)
                 if self.container.opencode_manager.client and session.copilot.session_id
@@ -214,6 +243,8 @@ class WebAIService:
         provider_id: str,
         model_id: str,
         thinking: str,
+        draft_context: Any = None,
+        refining_draft_id: str = "",
     ) -> dict[str, Any]:
         if environment not in ENVIRONMENT_MAP:
             raise ValueError("Неизвестное окружение")
@@ -236,16 +267,23 @@ class WebAIService:
             session.job_id = secrets.token_urlsafe(16)
             session.cancel_event = threading.Event()
             session.last_progress = ""
+            session.turn_candidates = []
+            session.turn_candidates_job_id = ""
+            session.turn_draft_id = ""
+            session.turn_draft_ids = []
+            session.turn_draft_job_id = ""
+            session.refining_draft_id = refining_draft_id
+            session.active_environment = environment
             job_id = session.job_id
         session.emit("user", {"text": message, "thinking": actual_thinking})
         clean_message = redact_text(message.strip())[:20_000]
-        session.operator_messages.append(clean_message)
-        # This history is used only when handing work to the separate extractor
-        # session.  The copilot itself already has native OpenCode session memory.
-        while len(session.operator_messages) > 30 or sum(
-            len(item) for item in session.operator_messages
-        ) > 60_000:
-            session.operator_messages.pop(0)
+        if not session.copilot.mcp_native:
+            session.operator_messages.append(clean_message)
+            # Legacy extractor handoff only. OpenCode already owns Copilot history.
+            while len(session.operator_messages) > 30 or sum(
+                len(item) for item in session.operator_messages
+            ) > 60_000:
+                session.operator_messages.pop(0)
         session.emit("progress", {
             "text": "OpenCode начинает обработку",
             "thinking": actual_thinking,
@@ -276,11 +314,21 @@ class WebAIService:
                     cancel_event=session.cancel_event,
                     on_progress=progress,
                     on_event=conversation,
+                    draft_context=draft_context,
                 )
                 payload = self._outcome_payload(session, outcome)
                 payload["thinking"] = actual_thinking
                 payload["elapsed_seconds"] = outcome.elapsed_seconds or (time.monotonic() - started)
                 session.emit("assistant", payload)
+                if (
+                    refining_draft_id
+                    and refining_draft_id not in session.turn_draft_ids
+                ):
+                    self._drafts.fail(
+                        refining_draft_id,
+                        "Copilot не обновил черновик. "
+                        + (outcome.answer.strip()[:1500] or "Требуется уточнение."),
+                    )
             except Exception as exc:
                 cancelled = bool(session.cancel_event and session.cancel_event.is_set())
                 _log.warning(
@@ -294,12 +342,19 @@ class WebAIService:
                     "error_type": type(exc).__name__,
                     "elapsed_seconds": time.monotonic() - started,
                 })
+                if refining_draft_id:
+                    self._drafts.fail(
+                        refining_draft_id,
+                        "Запрос отменён" if cancelled else str(exc),
+                    )
             finally:
                 with session.condition:
                     if session.job_id == job_id:
                         session.busy = False
                         session.job_id = ""
                         session.cancel_event = None
+                        session.refining_draft_id = ""
+                        session.active_environment = ""
                 session.emit("idle", {})
 
         threading.Thread(
@@ -314,6 +369,9 @@ class WebAIService:
         if session.cancel_event:
             session.cancel_event.set()
         session.copilot.cancel()
+        session.form_search.cancel()
+        if session.active_researcher:
+            session.active_researcher.cancel()
 
     def permission(self, session_id: str, permission_id: str, allow: bool) -> None:
         self._session(session_id).copilot.approve_permission(permission_id, allow=allow)
@@ -324,6 +382,247 @@ class WebAIService:
         if session:
             session.copilot.cancel()
             session.copilot.close()
+            session.form_search.close()
+            if session.active_researcher:
+                session.active_researcher.cancel()
+                session.active_researcher.close()
+            self._drafts.delete_workflow(session.id)
+
+    def semantic_search_forms(
+        self,
+        workflow_id: str,
+        *,
+        query: str,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Run one query in the lazy search session owned by this chat."""
+        session, job_id = self._active_workflow(workflow_id)
+        none_variant = self._exact_variant(session.variants, "none")
+        if not none_variant:
+            raise RuntimeError(
+                "Для семантического поиска у выбранной модели должен быть "
+                "thinking variant 'none' в opencode.json"
+            )
+        result = session.form_search.search(
+            query,
+            provider_id=session.provider_id,
+            model_id=session.model_id,
+            none_variant=none_variant,
+            limit=limit,
+            cancel_event=session.cancel_event,
+        )
+        items = [
+            {
+                **copy_json(candidate.description),
+                "score": candidate.score,
+                "reason": candidate.reason,
+            }
+            for candidate in result.candidates
+        ]
+        with session.condition:
+            if session.job_id != job_id:
+                raise RuntimeError("Запрос семантического поиска уже не активен")
+            session.turn_candidates = items
+            session.turn_candidates_job_id = job_id
+        return {
+            "items": items,
+            "total": len(items),
+            "search_session_id": result.session_id,
+            "thinking": none_variant,
+        }
+
+    def prepare_form_draft(
+        self,
+        workflow_id: str,
+        *,
+        form_id: str,
+        environment: str,
+        form_version: str,
+        proposals: Sequence[Mapping[str, Any]],
+        draft_id: str = "",
+    ) -> dict[str, Any]:
+        """Validate an MCP proposal and correlate its local draft to the turn."""
+        session, job_id = self._active_workflow(workflow_id)
+        self._require_active_environment(session, environment)
+        if session.refining_draft_id and draft_id != session.refining_draft_id:
+            raise ValueError(
+                "Уточнение должно обновить переданный draft_id, а не создать новый"
+            )
+        draft = self._drafts.prepare(
+            workflow_id=workflow_id,
+            form_id=str(form_id),
+            environment=str(environment),
+            version=str(form_version),
+            proposals=proposals,
+            draft_id=str(draft_id),
+            cancel_event=session.cancel_event,
+        )
+        with session.condition:
+            if session.job_id != job_id:
+                if not draft_id:
+                    self._drafts.delete(draft.id, workflow_id=workflow_id)
+                raise RuntimeError("Запрос подготовки черновика уже не активен")
+            session.turn_draft_id = draft.id
+            if draft.id not in session.turn_draft_ids:
+                session.turn_draft_ids.append(draft.id)
+            session.turn_draft_job_id = job_id
+        snapshot = draft.snapshot()
+        result = snapshot.get("result") or {}
+        return {
+            "draft_id": draft.id,
+            "form_id": draft.form_id,
+            "environment": draft.environment,
+            "form_version": draft.form_version,
+            "revision": draft.revision,
+            "status": draft.status,
+            "valid": bool(result.get("valid")),
+            "proposal_count": len(result.get("fields") or []),
+            "validation_errors": copy_json(result.get("errors") or [])[:30],
+            "warnings": list(result.get("warnings") or [])[:30],
+            "review_url": f"/forms/{draft.form_id}",
+            "submitted": False,
+        }
+
+    def research_repository(
+        self,
+        workflow_id: str,
+        *,
+        question: str,
+        environment: str,
+        required_facts: Sequence[str] = (),
+        depth: str = "focused",
+    ) -> dict[str, Any]:
+        """Delegate one bounded complex lookup without polluting chat memory."""
+        session, job_id = self._active_workflow(workflow_id)
+        self._require_active_environment(session, environment)
+        repository_mcp = session.copilot.repository_mcp
+        if not repository_mcp:
+            raise RuntimeError("JSON Repository MCP не подключён к Copilot")
+        clean_depth = str(depth).strip().casefold()
+        if clean_depth not in {"focused", "deep"}:
+            raise ValueError("depth должен быть focused или deep")
+        desired = "xhigh" if clean_depth == "deep" else "low"
+        variant = self._best_variant(session.variants, desired)
+        client = self.container.opencode_manager.client
+        if client is None:
+            raise RuntimeError("OpenCode Server не подключён")
+        researcher = RepositoryResearcher(client)
+        part_states: dict[str, str] = {}
+
+        def research_event(raw: dict[str, Any]) -> None:
+            event_type = str(raw.get("type") or "")
+            properties = raw.get("properties")
+            values = properties if isinstance(properties, Mapping) else {}
+            if event_type == "client.sse.disconnected":
+                session.emit("agent_event", dataclasses.asdict(ConversationEvent(
+                    "warning", "Поток Researcher переподключается"
+                )))
+                return
+            if event_type != "message.part.updated":
+                return
+            part = values.get("part")
+            if not isinstance(part, Mapping) or part.get("type") != "tool":
+                return
+            state = part.get("state") if isinstance(part.get("state"), Mapping) else {}
+            status = str(state.get("status") or "updated")
+            part_id = str(part.get("id") or part.get("callID") or "")
+            previous = part_states.get(part_id) if part_id else None
+            if part_id:
+                part_states[part_id] = status
+            if status == "pending" or (
+                status == "completed" and previous in {"running", "completed"}
+            ) or status == previous:
+                return
+            title = str(part.get("tool") or state.get("title") or "MCP tool")
+            detail = state.get("error") if status == "error" else state.get("input", "")
+            session.emit("agent_event", dataclasses.asdict(ConversationEvent(
+                "error" if status == "error" else "tool",
+                f"Researcher · {title}",
+                self._safe_detail(detail),
+            )))
+
+        with session.condition:
+            if session.job_id != job_id:
+                raise RuntimeError("Запрос исследования уже не активен")
+            session.active_researcher = researcher
+        try:
+            result = researcher.research(
+                question=question,
+                environment=environment,
+                required_facts=required_facts,
+                repository_mcp=repository_mcp,
+                provider_id=session.provider_id,
+                model_id=session.model_id,
+                variant=variant,
+                cancel_event=session.cancel_event,
+                on_event=research_event,
+            )
+            return {
+                "summary": result.summary,
+                "thinking": result.thinking,
+                "opencode_seconds": result.opencode_seconds,
+                "generation_seconds": result.generation_seconds,
+                "evidence_only": True,
+            }
+        finally:
+            with session.condition:
+                if session.active_researcher is researcher:
+                    session.active_researcher = None
+
+    def draft(self, draft_id: str) -> dict[str, Any]:
+        return self._drafts.require(draft_id).snapshot()
+
+    def delete_draft(self, draft_id: str) -> None:
+        self._drafts.delete(draft_id)
+
+    def refine_draft(
+        self,
+        draft_id: str,
+        *,
+        guidance: str,
+        current_values: Mapping[str, Any],
+        pending_fields: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        draft = self._drafts.require(draft_id)
+        session = self._session(draft.workflow_id)
+        with session.condition:
+            if session.busy:
+                raise RuntimeError("Copilot уже выполняет другой запрос")
+        draft = self._drafts.begin_refinement(
+            draft_id,
+            current_values=current_values,
+            pending_fields=pending_fields,
+        )
+        snapshot = draft.snapshot()
+        result = snapshot.get("result") or {}
+        context = {
+            "draft_id": draft.id,
+            "form_id": draft.form_id,
+            "environment": draft.environment,
+            "form_version": draft.form_version,
+            "current_values": copy_json(current_values),
+            "previous_proposals": [
+                copy_json(item)
+                for item in result.get("fields") or []
+                if not pending_fields or item.get("key") in pending_fields
+            ],
+        }
+        try:
+            started = self.start_message(
+                draft.workflow_id,
+                message=str(guidance),
+                environment=draft.environment,
+                ticket_id=None,
+                provider_id=session.provider_id,
+                model_id=session.model_id,
+                thinking="auto",
+                draft_context=context,
+                refining_draft_id=draft.id,
+            )
+        except Exception as exc:
+            self._drafts.fail(draft.id, str(exc))
+            raise
+        return {**draft.snapshot(), "job_id": started["job_id"]}
 
     def events_after(self, session_id: str, sequence: int, timeout: float = 15.0) -> list[WebEvent]:
         return self._session(session_id).after(sequence, timeout)
@@ -513,6 +812,65 @@ class WebAIService:
                 job.error = "Операция отменена" if job.cancel_event.is_set() else str(exc)
 
     def _outcome_payload(self, session: WebCopilotSession, outcome: CopilotOutcome) -> dict[str, Any]:
+        if session.copilot.mcp_native:
+            job_id = session.job_id
+            candidates = (
+                session.turn_candidates
+                if session.turn_candidates_job_id == job_id
+                else []
+            )
+            draft_ids = (
+                list(session.turn_draft_ids)
+                if session.turn_draft_job_id == job_id
+                else []
+            )
+            drafts = [
+                draft
+                for draft_id in draft_ids
+                if (draft := self._drafts.get(draft_id)) is not None
+            ]
+            draft_items = [
+                {
+                    "draft_id": draft.id,
+                    "form_id": draft.form_id,
+                    "environment": draft.environment,
+                    "valid": draft.valid,
+                    "revision": draft.revision,
+                }
+                for draft in drafts
+            ]
+            single_draft = drafts[0] if len(drafts) == 1 else None
+            return {
+                "text": outcome.answer,
+                "question": None,
+                "intent": (
+                    "execution_plan"
+                    if len(drafts) > 1
+                    else "single_form"
+                    if single_draft is not None
+                    else "clarification" if candidates else "conversation"
+                ),
+                "selected_form_id": single_draft.form_id if single_draft else None,
+                "draft_id": single_draft.id if single_draft else None,
+                "drafts": draft_items,
+                "handoff_token": None,
+                "form_candidates": [
+                    {
+                        "form_id": item.get("form_id"),
+                        "title": item.get("title"),
+                        "score": item.get("score"),
+                        "reason": item.get("reason"),
+                    }
+                    for item in candidates
+                ],
+                "repository_items": [],
+                "diagnostics": None,
+                "plan": [],
+                "warnings": [],
+                "opencode_seconds": outcome.opencode_seconds,
+                "generation_seconds": outcome.generation_seconds,
+            }
+
         handoff_token = None
         if outcome.selected_form_id and outcome.extraction and outcome.context is not None:
             context = self._context_with_operator_history(
@@ -614,6 +972,59 @@ class WebAIService:
             if item.provider_id == provider_id and item.model_id == model_id:
                 return tuple(item.variants)
         raise ValueError("Выбранная модель отсутствует в opencode.json")
+
+    def _active_workflow(self, workflow_id: str) -> tuple[WebCopilotSession, str]:
+        session = self._session(str(workflow_id))
+        with session.condition:
+            if not session.copilot.mcp_native:
+                raise RuntimeError("Эта AI-сессия не поддерживает MCP workflow")
+            if not session.busy or not session.job_id or session.cancel_event is None:
+                raise RuntimeError("Для workflow сейчас нет активного Copilot-запроса")
+            if session.cancel_event.is_set():
+                raise RuntimeError("Copilot-запрос отменён")
+            return session, session.job_id
+
+    @staticmethod
+    def _require_active_environment(
+        session: WebCopilotSession,
+        environment: str,
+    ) -> None:
+        if str(environment) != session.active_environment:
+            raise ValueError(
+                "MCP-вызов должен использовать окружение текущего запроса: "
+                + session.active_environment
+            )
+
+    @staticmethod
+    def _exact_variant(variants: Sequence[str], desired: str) -> str:
+        mapping = {
+            str(item).strip().casefold(): str(item).strip()
+            for item in variants
+            if str(item).strip()
+        }
+        return mapping.get(str(desired).casefold(), "")
+
+    @classmethod
+    def _best_variant(cls, variants: Sequence[str], desired: str) -> str:
+        orders = {
+            "xhigh": ("xhigh", "medium", "low", "none"),
+            "medium": ("medium", "low", "none", "xhigh"),
+            "low": ("low", "none", "medium", "xhigh"),
+            "none": ("none", "low", "medium", "xhigh"),
+        }
+        for candidate in orders.get(desired, (desired, "low", "none")):
+            value = cls._exact_variant(variants, candidate)
+            if value:
+                return value
+        raise RuntimeError("У выбранной модели нет подходящего thinking variant")
+
+    @staticmethod
+    def _safe_detail(value: Any) -> str:
+        try:
+            rendered = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            rendered = str(value)
+        return redact_text(rendered)[:2000]
 
     def _session(self, session_id: str) -> WebCopilotSession:
         with self._lock:

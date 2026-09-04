@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from config.form_routing import build_form_catalog
 from config.mcp_profiles import (
+    AUTODEPLOY_MCP_NAME,
     choose_repository_mcp,
     repository_tool_allowlist,
     repository_tool_asklist,
@@ -34,8 +35,11 @@ from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSou
 from opencode_integration.manager import AUTODEPLOY_COPILOT_AGENT
 from opencode_integration.prompts import (
     COPILOT_SYSTEM_RULES,
+    MCP_COPILOT_SYSTEM_RULES,
     build_copilot_conversation_prompt,
     build_copilot_environment_context,
+    build_mcp_copilot_prompt,
+    build_mcp_copilot_session_context,
     build_copilot_prompt,
     build_copilot_session_context,
     build_copilot_ticket_context,
@@ -415,13 +419,20 @@ class UnifiedCopilot:
         allow_repository_git_pull: bool = True,
         max_context_chars: int = 120_000,
         trusted_mcp_tools: Optional[Mapping[str, Sequence[str]]] = None,
+        workflow_id: str = "",
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
             itsm_service, tfs_service, max_context_chars=max_context_chars
         )
         self._forms = tuple(forms)
-        self._catalog = build_form_catalog(self._forms)
+        self._workflow_id = str(workflow_id).strip()
+        # Legacy desktop callers keep the old structured route until their UI
+        # migrates. The web MCP-native route never constructs or stores the
+        # catalog in the main Copilot session.
+        self._catalog = (
+            build_form_catalog(self._forms) if not self._workflow_id else []
+        )
         self._form_ids = tuple(item["form_id"] for item in self._catalog)
         self._allowed_mcp = tuple(allowed_mcp)
         self._configured_repository_mcp = repository_mcp.strip()
@@ -448,7 +459,7 @@ class UnifiedCopilot:
         self._operation_lock = threading.Lock()
         self._session_context_initialized = False
         self._sent_ticket_contexts: set[str] = set()
-        self._sent_environments: set[str] = set()
+        self._current_environment = ""
 
     @property
     def session_id(self) -> Optional[str]:
@@ -470,6 +481,10 @@ class UnifiedCopilot:
     def server_url(self) -> str:
         return self._client.base_url
 
+    @property
+    def mcp_native(self) -> bool:
+        return bool(self._workflow_id)
+
     def ask(
         self,
         message: str,
@@ -484,6 +499,7 @@ class UnifiedCopilot:
         on_progress: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[ConversationEvent], None]] = None,
         on_session: Optional[Callable[[Optional[str]], None]] = None,
+        draft_context: Any = None,
     ) -> CopilotOutcome:
         with self._operation_lock:
             text = redact_text(str(message).strip())
@@ -538,6 +554,52 @@ class UnifiedCopilot:
                 context=context,
                 notify=notify,
             )
+
+            if self._workflow_id:
+                notify("Copilot анализирует запрос и выбирает нужные инструменты…")
+                message_result = self._client.send_chat_message(
+                    session_id=self._require_session(),
+                    prompt=build_mcp_copilot_prompt(
+                        operator_message=text,
+                        diagnostic_data=self._bounded_diagnostic_data(diagnostic_data),
+                        draft_context=draft_context,
+                    ),
+                    system=MCP_COPILOT_SYSTEM_RULES,
+                    agent=AUTODEPLOY_COPILOT_AGENT,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    variant=variant,
+                    cancel_event=cancel_event,
+                    on_event=self._handle_raw_event,
+                )
+                answer = message_result.text.strip()
+                if not answer:
+                    raise OpenCodeError("OpenCode вернул пустой ответ")
+                outcome = CopilotOutcome(
+                    intent="conversation",
+                    answer=answer,
+                    question=None,
+                    selected_form_id=None,
+                    form_candidates=(),
+                    extraction=None,
+                    plan=(),
+                    repository_items=(),
+                    diagnostics=None,
+                    warnings=(),
+                    context=context,
+                    elapsed_seconds=time.monotonic() - started,
+                    opencode_seconds=opencode_message_duration(message_result.info),
+                    generation_seconds=opencode_text_generation_duration(
+                        message_result.parts
+                    ),
+                )
+                _log.info(
+                    "mcp-native copilot success session=%s ticket=%s duration=%.2fs",
+                    self._session_id,
+                    context.ticket_id if context else "none",
+                    time.monotonic() - started,
+                )
+                return outcome
 
             if diagnostic_data is None and is_casual_conversation(text):
                 notify("OpenCode готовит ответ…")
@@ -651,6 +713,17 @@ class UnifiedCopilot:
         self._client.require_agent(AUTODEPLOY_COPILOT_AGENT, timeout=timeout)
         self._client.require_provider(self._provider_id, timeout=timeout)
         statuses = self._client.list_mcp_servers(timeout=timeout)
+        unavailable_trusted = [
+            name
+            for name in self._trusted_mcp_tools
+            if statuses.get(name, {}).get("status") != "connected"
+        ]
+        if unavailable_trusted:
+            raise OpenCodeError(
+                "Встроенный AutoDeploy MCP включён, но OpenCode не подключил "
+                "сервер: " + ", ".join(unavailable_trusted)
+                + ". Проверьте /api/mcp, переподключите OpenCode и создайте новый чат."
+            )
         self._active_repository_mcp = choose_repository_mcp(
             self._configured_repository_mcp,
             self._allowed_mcp,
@@ -715,41 +788,58 @@ class UnifiedCopilot:
         context: Optional[BuiltContext],
         notify: Callable[[str], None],
     ) -> None:
-        """Сохраняет каталог и внешние данные в session один раз через noReply."""
+        """Stores stable context once; MCP-native web mode excludes the catalog."""
         ticket_id = context.ticket_id if context is not None else ""
         if not self._session_context_initialized:
             notify("Один раз сохраняю контекст в истории AI-сессии…")
-            prompt = build_copilot_session_context(
-                environment=environment,
-                form_catalog=self._catalog,
-                repository_mcp=self._active_repository_mcp,
-                other_mcp=tuple(
+            common = {
+                "environment": environment,
+                "repository_mcp": self._active_repository_mcp,
+                "other_mcp": tuple(
                     name
                     for name in self._active_mcp
                     if name != self._active_repository_mcp
                 ),
-                allow_repository_git_pull=self._allow_repository_git_pull,
-                itsm_data=context.itsm if context else None,
-                ado_data=context.ado if context else None,
-                context_warnings=context.warnings if context else (),
+                "allow_repository_git_pull": self._allow_repository_git_pull,
+                "itsm_data": context.itsm if context else None,
+                "ado_data": context.ado if context else None,
+                "context_warnings": context.warnings if context else (),
+            }
+            prompt = (
+                build_mcp_copilot_session_context(
+                    workflow_id=self._workflow_id,
+                    autodeploy_mcp_available=(
+                        AUTODEPLOY_MCP_NAME in self._active_mcp
+                    ),
+                    **common,
+                )
+                if self._workflow_id
+                else build_copilot_session_context(
+                    form_catalog=self._catalog,
+                    **common,
+                )
             )
             self._client.add_session_context(
                 session_id=self._require_session(),
                 prompt=prompt,
-                system=COPILOT_SYSTEM_RULES,
+                system=(
+                    MCP_COPILOT_SYSTEM_RULES
+                    if self._workflow_id
+                    else COPILOT_SYSTEM_RULES
+                ),
                 agent=AUTODEPLOY_COPILOT_AGENT,
                 provider_id=self._provider_id,
                 model_id=self._model_id,
                 variant=self._variant,
             )
             self._session_context_initialized = True
-            self._sent_environments.add(environment)
+            self._current_environment = environment
             if ticket_id:
                 self._sent_ticket_contexts.add(ticket_id)
             return
 
         updates: list[str] = []
-        if environment not in self._sent_environments:
+        if environment != self._current_environment:
             updates.append(build_copilot_environment_context(environment))
         if context is not None and ticket_id not in self._sent_ticket_contexts:
             updates.append(build_copilot_ticket_context(
@@ -765,13 +855,17 @@ class UnifiedCopilot:
         self._client.add_session_context(
             session_id=self._require_session(),
             prompt="\n\n".join(updates),
-            system=COPILOT_SYSTEM_RULES,
+            system=(
+                MCP_COPILOT_SYSTEM_RULES
+                if self._workflow_id
+                else COPILOT_SYSTEM_RULES
+            ),
             agent=AUTODEPLOY_COPILOT_AGENT,
             provider_id=self._provider_id,
             model_id=self._model_id,
             variant=self._variant,
         )
-        self._sent_environments.add(environment)
+        self._current_environment = environment
         if context is not None:
             self._sent_ticket_contexts.add(ticket_id)
 
@@ -805,7 +899,7 @@ class UnifiedCopilot:
         self._active_mcp = ()
         self._session_context_initialized = False
         self._sent_ticket_contexts.clear()
-        self._sent_environments.clear()
+        self._current_environment = ""
         self._part_states.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""

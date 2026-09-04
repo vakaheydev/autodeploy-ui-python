@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, post } from '../api'
 import { ArrowLeft, Check, FileJson, LoaderCircle, RefreshCw, Send, Sparkles, X } from '../components/Icons'
 import { ErrorBanner, Modal, Spinner } from '../components/Feedback'
@@ -7,11 +7,12 @@ import { FormFields } from '../components/FormFields'
 import { useEnvironment } from '../environment'
 import type { FormDocument, PreviewResult, SubmitResult, ValidationError, ValidationResult } from '../types'
 
-interface LocationState { values?: Record<string, unknown>; handoffToken?: string }
+interface LocationState { values?: Record<string, unknown>; handoffToken?: string; draftId?: string }
 interface AIFieldResult { key: string; proposed_value: unknown; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }
-interface ExtractionResult { values: Record<string, unknown>; fields: AIFieldResult[]; warnings: string[] }
-interface ExtractionState { id: string; status: string; progress: string; result: ExtractionResult | null; error: string }
+interface ExtractionResult { values: Record<string, unknown>; baseline?: Record<string, unknown>; fields: AIFieldResult[]; warnings: string[]; errors?: ValidationError[]; valid?: boolean }
+interface ExtractionState { id: string; workflow_id?: string; form_id?: string; environment?: string; status: string; progress: string; result: ExtractionResult | null; error: string }
 interface ReviewEntry { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }
+type AIResource = 'draft' | 'extraction' | null
 
 function pathValue(source: Record<string, unknown>, path: string): { present: boolean; value: unknown } {
   const parts = path.split('.').filter(Boolean)
@@ -60,12 +61,39 @@ export function setPathValue(current: Record<string, unknown>, path: string, val
   return root
 }
 
+export function applyReviewDecision(
+  current: Record<string, unknown>,
+  baseline: Record<string, unknown>,
+  paths: string[],
+  accept: boolean,
+) {
+  if (accept) return current
+  return paths.reduce(
+    (next, path) => restorePath(next, baseline, path),
+    current,
+  )
+}
+
+function reviewEntries(result: ExtractionResult, includeEmpty: boolean): Record<string, ReviewEntry> {
+  return Object.fromEntries(result.fields
+    .filter((field) => includeEmpty || (field.proposed_value !== null && field.proposed_value !== undefined))
+    .map((field) => [field.key, {
+      confidence: field.confidence,
+      proposedValue: field.proposed_value,
+      source: field.source,
+      reason: field.reason,
+      conflict: field.conflict,
+    }]))
+}
+
 export function FormPage() {
   const { formId = '' } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const restored = (location.state as LocationState | null)?.values
   const handoffToken = (location.state as LocationState | null)?.handoffToken
-  const { environment } = useEnvironment()
+  const draftId = (location.state as LocationState | null)?.draftId
+  const { environment, setEnvironment } = useEnvironment()
   const [document, setDocument] = useState<FormDocument | null>(null)
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [errors, setErrors] = useState<ValidationError[]>([])
@@ -79,9 +107,11 @@ export function FormPage() {
   const [result, setResult] = useState<SubmitResult | null>(null)
   const stateSequence = useRef(0)
   const handoffStarted = useRef('')
+  const draftStarted = useRef('')
   const extractionId = useRef('')
   const loadedScope = useRef('')
   const [extraction, setExtraction] = useState<ExtractionState | null>(null)
+  const [aiResource, setAIResource] = useState<AIResource>(null)
   const [review, setReview] = useState<Record<string, ReviewEntry>>({})
   const [reviewBaseline, setReviewBaseline] = useState<Record<string, unknown>>({})
   const [refineModal, setRefineModal] = useState(false)
@@ -97,7 +127,9 @@ export function FormPage() {
       extractionId.current = ''
     }
     handoffStarted.current = ''
+    draftStarted.current = ''
     setExtraction(null)
+    setAIResource(null)
     setReview({})
     setLoading(true)
     setError('')
@@ -124,7 +156,7 @@ export function FormPage() {
   useEffect(() => {
     const scope = `${formId}|${environment}|${location.key}`
     const operation = `${handoffToken ?? ''}|${scope}`
-    if (!document || !handoffToken || loadedScope.current !== scope || handoffStarted.current === operation) return
+    if (!document || draftId || !handoffToken || loadedScope.current !== scope || handoffStarted.current === operation) return
     handoffStarted.current = operation
     const baseline = { ...values }
     setReviewBaseline(baseline)
@@ -134,31 +166,67 @@ export function FormPage() {
       current_values: baseline,
     }).then(({ job_id }) => {
       extractionId.current = job_id
+      setAIResource('extraction')
       setExtraction({ id: job_id, status: 'pending', progress: 'Подготавливаю AI-предложения…', result: null, error: '' })
     })
       .catch((reason: unknown) => { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
-  }, [document, environment, formId, handoffToken, location.key])
+  }, [document, environment, formId, handoffToken, draftId, location.key])
+
+  useEffect(() => {
+    const scope = `${formId}|${environment}|${location.key}`
+    const operation = `${draftId ?? ''}|${scope}`
+    if (!document || !draftId || loadedScope.current !== scope || draftStarted.current === operation) return
+    draftStarted.current = operation
+    setBusy(true)
+    api<ExtractionState>(`/api/v1/ai/drafts/${encodeURIComponent(draftId)}`)
+      .then((next) => {
+        if (next.form_id && next.form_id !== formId) throw new Error('AI-черновик относится к другой форме')
+        if (next.environment && next.environment !== environment) {
+          draftStarted.current = ''
+          setEnvironment(next.environment)
+          return
+        }
+        setAIResource('draft')
+        setExtraction(next)
+        if (next.result) {
+          const baseline = next.result.baseline ?? { ...values }
+          setReviewBaseline(baseline)
+          setValues((current) => ({ ...current, ...next.result!.values }))
+          setReview(reviewEntries(next.result, true))
+          setErrors(next.result.errors ?? [])
+        }
+        if (next.status === 'complete') setBusy(false)
+        if (['error', 'cancelled'].includes(next.status)) {
+          setBusy(false)
+          setError(next.error || 'AI-черновик завершился ошибкой')
+        }
+      })
+      .catch((reason: unknown) => { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
+  }, [document, draftId, environment, formId, location.key, setEnvironment])
 
   useEffect(() => {
     if (!extraction || !['pending', 'running'].includes(extraction.status)) return
     const timer = window.setInterval(() => {
-      api<ExtractionState>(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}`)
+      const endpoint = aiResource === 'draft'
+        ? `/api/v1/ai/drafts/${encodeURIComponent(extraction.id)}`
+        : `/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}`
+      api<ExtractionState>(endpoint)
         .then((next) => {
           setExtraction(next)
           if (next.status === 'complete' && next.result) {
+            if (next.result.baseline) setReviewBaseline(next.result.baseline)
             setValues((current) => ({ ...current, ...next.result!.values }))
-            setReview(Object.fromEntries(next.result.fields
-              .filter((field) => field.proposed_value !== null && field.proposed_value !== undefined)
-              .map((field) => [field.key, { confidence: field.confidence, proposedValue: field.proposed_value, source: field.source, reason: field.reason, conflict: field.conflict }])))
+            setReview(reviewEntries(next.result, aiResource === 'draft'))
+            setErrors(next.result.errors ?? [])
             setBusy(false)
           } else if (['error', 'cancelled'].includes(next.status)) {
-            setBusy(false); setError(next.error || 'AI-извлечение завершилось ошибкой')
+            setBusy(false); setError(next.error || 'AI-операция завершилась ошибкой')
           }
         })
         .catch((reason: unknown) => { window.clearInterval(timer); setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
     }, 700)
     return () => window.clearInterval(timer)
-  }, [extraction?.id, extraction?.status])
+  }, [aiResource, extraction?.id, extraction?.status])
 
   useEffect(() => {
     if (!document || loading) return
@@ -254,6 +322,32 @@ export function FormPage() {
     }
   }
 
+  const closeAIResource = async (cancel = false) => {
+    if (!extraction) return
+    if (aiResource === 'draft') {
+      await api(`/api/v1/ai/drafts/${encodeURIComponent(extraction.id)}`, {
+        method: 'DELETE',
+      }).catch(() => undefined)
+    } else {
+      await api(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}?cancel=${cancel ? 'true' : 'false'}`, {
+        method: 'DELETE',
+      }).catch(() => undefined)
+      extractionId.current = ''
+    }
+    setExtraction(null)
+    setAIResource(null)
+  }
+
+  const stopAI = async () => {
+    if (!extraction) return
+    if (aiResource === 'draft' && extraction.workflow_id) {
+      await post(`/api/v1/ai/sessions/${encodeURIComponent(extraction.workflow_id)}/cancel`, {}).catch(() => undefined)
+      return
+    }
+    await closeAIResource(true)
+    setBusy(false)
+  }
+
   const closeCompletedReview = async (finalValues: Record<string, unknown>) => {
     if (!document) return
     setBusy(true); setError('')
@@ -263,9 +357,8 @@ export function FormPage() {
       })
       setValues(validation.values)
       setErrors(validation.errors)
-      if (extraction) await api(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}`, { method: 'DELETE' }).catch(() => undefined)
-      extractionId.current = ''
-      setExtraction(null)
+      await closeAIResource()
+      navigate(location.pathname, { replace: true, state: { values: validation.values } })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -276,9 +369,10 @@ export function FormPage() {
   const decideReview = (key: string, accept: boolean) => {
     const proposal = review[key]
     if (!proposal) return
-    const nextValues = accept
-      ? setPathValue(values, key, proposal.proposedValue)
-      : restorePath(values, reviewBaseline, key)
+    // The proposal is already visible in the live form.  A user may edit it
+    // before approving, so approval keeps the current value rather than
+    // restoring the original AI suggestion.
+    const nextValues = applyReviewDecision(values, reviewBaseline, [key], accept)
     const nextReview = { ...review }
     delete nextReview[key]
     setValues(nextValues)
@@ -289,12 +383,12 @@ export function FormPage() {
 
   const finishReview = async (accept: boolean) => {
     if (!document) return
-    const finalValues = accept
-      ? Object.entries(review).reduce(
-        (current, [key, item]) => setPathValue(current, key, item.proposedValue),
-        values,
-      )
-      : reviewBaseline
+    const finalValues = applyReviewDecision(
+      values,
+      reviewBaseline,
+      Object.keys(review),
+      accept,
+    )
     setBusy(true); setError('')
     try {
       const validation = await post<ValidationResult>(`/api/v1/forms/${encodeURIComponent(formId)}/validate`, {
@@ -305,9 +399,8 @@ export function FormPage() {
       setValues(validation.values)
       setErrors(validation.errors)
       setReview({})
-      if (extraction) await api(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}`, { method: 'DELETE' }).catch(() => undefined)
-      extractionId.current = ''
-      setExtraction(null)
+      await closeAIResource()
+      navigate(location.pathname, { replace: true, state: { values: validation.values } })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -317,9 +410,15 @@ export function FormPage() {
 
   const refine = async () => {
     if (!extraction || !guidance.trim()) return
-    setBusy(true); setRefineModal(false); setReview({})
+    setBusy(true); setRefineModal(false); setError('')
     try {
-      const next = await post<ExtractionState>(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}/refine`, { guidance: guidance.trim() })
+      const endpoint = aiResource === 'draft'
+        ? `/api/v1/ai/drafts/${encodeURIComponent(extraction.id)}/refine`
+        : `/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}/refine`
+      const body = aiResource === 'draft'
+        ? { guidance: guidance.trim(), current_values: values, pending_fields: Object.keys(review) }
+        : { guidance: guidance.trim() }
+      const next = await post<ExtractionState>(endpoint, body)
       setExtraction(next); setGuidance('')
     } catch (reason) { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) }
   }
@@ -360,7 +459,7 @@ export function FormPage() {
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
-      {extraction && ['pending', 'running'].includes(extraction.status) && <div className="ai-extraction-banner"><span className="ai-spinner"><Sparkles /></span><div><strong>AI заполняет форму</strong><span>{extraction.progress}</span></div><button className="button ghost small" onClick={() => { api(`/api/v1/ai/extractions/${extraction.id}?cancel=true`, { method: 'DELETE' }).catch(() => undefined); extractionId.current = ''; setBusy(false); setExtraction(null) }}>Остановить</button></div>}
+      {extraction && ['pending', 'running'].includes(extraction.status) && <div className="ai-extraction-banner"><span className="ai-spinner"><Sparkles /></span><div><strong>Copilot обновляет предложения</strong><span>{extraction.progress}</span></div><button className="button ghost small" onClick={() => void stopAI()}>Остановить</button></div>}
       {extraction?.result?.warnings.length ? <div className="alert warning"><div>{extraction.result.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div></div> : null}
       {errors.some((item) => !item.field) && <div className="alert error"><div>{errors.filter((item) => !item.field).map((item) => <p key={item.message}>{item.message}</p>)}</div></div>}
 
@@ -386,7 +485,7 @@ export function FormPage() {
       </section>}
 
       <footer className={`form-actions ${Object.keys(review).length ? 'reviewing' : ''}`}>
-        {Object.keys(review).length ? <><div className="review-summary"><Sparkles size={18} /><span><strong>Проверьте AI-предложения</strong><small>{Object.keys(review).length} ожидают решения</small></span></div><div className="button-row"><button className="button secondary" onClick={() => setRefineModal(true)}><Sparkles size={17} /> Уточнить</button><button className="button danger" onClick={() => void finishReview(false)}><X size={17} /> Отклонить всё</button><button className="button success" onClick={() => void finishReview(true)}><Check size={17} /> Принять всё</button></div></> : <>
+        {Object.keys(review).length ? <><div className="review-summary"><Sparkles size={18} /><span><strong>Проверьте AI-предложения</strong><small>{Object.keys(review).length} ожидают решения</small></span></div><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => setRefineModal(true)}><Sparkles size={17} /> Уточнить</button><button className="button danger" disabled={busy} onClick={() => void finishReview(false)}><X size={17} /> Отклонить всё</button><button className="button success" disabled={busy} onClick={() => void finishReview(true)}><Check size={17} /> Принять всё</button></div></> : <>
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
           {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => setTicketModal(true)}><Sparkles size={17} /> Подтянуть заявку</button>}

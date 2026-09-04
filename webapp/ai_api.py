@@ -24,6 +24,11 @@ class RefineRequest(StrictModel):
     guidance: str = Field(min_length=1, max_length=20_000)
 
 
+class DraftRefineRequest(RefineRequest):
+    current_values: dict[str, Any] = Field(default_factory=dict)
+    pending_fields: list[str] = Field(default_factory=list, max_length=100)
+
+
 def service(request: Request):
     return request.app.state.container.ai
 
@@ -31,6 +36,8 @@ def service(request: Request):
 def translate(exc: Exception):
     if isinstance(exc, KeyError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PermissionError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if isinstance(exc, (ValueError, RuntimeError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     raise exc
@@ -179,6 +186,40 @@ def close_extraction(
 ):
     try:
         service(request).close_extraction(job_id, cancel=cancel)
+    except Exception as exc:
+        translate(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/drafts/{draft_id}")
+def draft(draft_id: str, request: Request):
+    try:
+        return service(request).draft(draft_id)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.post("/drafts/{draft_id}/refine", status_code=status.HTTP_202_ACCEPTED)
+def refine_draft(
+    draft_id: str,
+    body: DraftRefineRequest,
+    request: Request,
+):
+    try:
+        return service(request).refine_draft(
+            draft_id,
+            guidance=body.guidance,
+            current_values=body.current_values,
+            pending_fields=body.pending_fields,
+        )
+    except Exception as exc:
+        translate(exc)
+
+
+@router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_draft(draft_id: str, request: Request):
+    try:
+        service(request).delete_draft(draft_id)
     except Exception as exc:
         translate(exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -22,7 +22,7 @@ from forms.loader import register_all_forms
 from forms.registry import FormRegistry
 from handlers.http_reference_handler import HttpReferenceHandler
 from handlers.local_reference_handler import LocalReferenceHandler
-from opencode_integration.manager import OpenCodeManager
+from opencode_integration.manager import OpenCodeManager, REQUIRED_AGENTS
 from services.submit_service import SubmitService
 from webapp.extensions import (
     extension_reference_handlers,
@@ -105,7 +105,10 @@ class ApplicationContainer:
             runtime_dir=self.settings.data_dir / "opencode-runtime",
             agent_source_dir=(
                 project_agents
-                if all((project_agents / f"{name}.md").is_file() for name in ("form-extractor", "form-router", "autodeploy-copilot"))
+                if all(
+                    (project_agents / f"{name}.md").is_file()
+                    for name in REQUIRED_AGENTS
+                )
                 else packaged_agents
             ),
             mcp_url=(

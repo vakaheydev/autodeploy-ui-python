@@ -19,3 +19,7 @@ localhost-порту. Вся схема форм, валидация, payload, �
 
 Опциональный same-port MCP и его инструменты описаны в
 [docs/MCP.md](docs/MCP.md).
+
+Архитектура Copilot, ленивого поиска форм, Python-черновиков и изолированного
+Repository Researcher зафиксирована в
+[docs/AI_AGENT_ARCHITECTURE.md](docs/AI_AGENT_ARCHITECTURE.md).

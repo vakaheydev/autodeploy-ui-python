@@ -15,12 +15,23 @@ AUTODEPLOY_MCP_TOOLS: tuple[str, ...] = (
     "get_system_status",
     "list_environments",
     "search_forms",
+    "semantic_search_forms",
     "get_form_schema",
     "calculate_form_state",
     "search_reference_options",
     "validate_form_values",
     "preview_form_submission",
+    "prepare_form_draft",
+    "research_repository",
     "search_gravitee_objects",
+)
+
+# The public MCP keeps a deterministic keyword search for external clients,
+# while the web Copilot must use its own lazy semantic-search session. Keeping
+# the distinction in the session allowlist makes that rule enforceable instead
+# of relying only on prompt wording.
+AUTODEPLOY_COPILOT_TOOLS: tuple[str, ...] = tuple(
+    tool for tool in AUTODEPLOY_MCP_TOOLS if tool != "search_forms"
 )
 
 

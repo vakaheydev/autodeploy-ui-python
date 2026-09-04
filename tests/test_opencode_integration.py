@@ -17,6 +17,9 @@ from typing import Any
 
 from core.logging_setup import redact_log_text, sanitize_server_log_line
 from config.mcp_profiles import (
+    AUTODEPLOY_COPILOT_TOOLS,
+    AUTODEPLOY_MCP_NAME,
+    AUTODEPLOY_MCP_TOOLS,
     JSON_REPOSITORY_READ_TOOLS,
     choose_repository_mcp,
     repository_tool_allowlist,
@@ -61,6 +64,8 @@ from opencode_integration.manager import (
     AUTODEPLOY_COPILOT_AGENT,
     FORM_EXTRACTOR_AGENT,
     FORM_ROUTER_AGENT,
+    FORM_SEARCH_AGENT,
+    REPOSITORY_RESEARCHER_AGENT,
     OpenCodeManager,
 )
 from opencode_integration.prompts import (
@@ -976,6 +981,8 @@ class _Handler(BaseHTTPRequestHandler):
                 {"name": FORM_EXTRACTOR_AGENT, "mode": "primary"},
                 {"name": FORM_ROUTER_AGENT, "mode": "primary"},
                 {"name": AUTODEPLOY_COPILOT_AGENT, "mode": "primary"},
+                {"name": FORM_SEARCH_AGENT, "mode": "primary"},
+                {"name": REPOSITORY_RESEARCHER_AGENT, "mode": "primary"},
             ])
         elif self.path == "/provider":
             self._json(200, {"all": [], "connected": ["openai"]})
@@ -2210,6 +2217,68 @@ class _CopilotClient:
 
 
 class CopilotWorkflowTests(unittest.TestCase):
+    def test_mcp_native_copilot_keeps_catalog_out_of_main_session(self) -> None:
+        client = _CopilotClient(_copilot_payload())
+        client.list_mcp_servers = lambda **_kwargs: {  # type: ignore[method-assign]
+            AUTODEPLOY_MCP_NAME: {"status": "connected"}
+        }
+        copilot = UnifiedCopilot(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(),
+            _FakeTFS(),
+            forms=_all_forms(),
+            allowed_mcp=[AUTODEPLOY_MCP_NAME],
+            trusted_mcp_tools={AUTODEPLOY_MCP_NAME: AUTODEPLOY_COPILOT_TOOLS},
+            workflow_id="workflow-12345678901234567890",
+        )
+
+        outcome = copilot.ask(
+            "Создай API Orders",
+            environment="test_int",
+            provider_id="corp",
+            model_id="weak-model",
+            variant="none",
+        )
+
+        self.assertEqual(outcome.intent, "conversation")
+        self.assertEqual(client.chat_calls, 1)
+        self.assertEqual(client.structured_calls, 0)
+        self.assertEqual(client.session_count, 1)
+        self.assertEqual(len(client.context_prompts), 1)
+        self.assertNotIn("TRUSTED_FORM_CATALOG", client.context_prompts[0])
+        self.assertIn("workflow-12345678901234567890", client.context_prompts[0])
+        self.assertEqual(client.created["mcp_names"], [AUTODEPLOY_MCP_NAME])
+        self.assertEqual(
+            client.created["mcp_tool_allowlist"],
+            {AUTODEPLOY_MCP_NAME: AUTODEPLOY_COPILOT_TOOLS},
+        )
+        self.assertNotIn("search_forms", AUTODEPLOY_COPILOT_TOOLS)
+
+    def test_mcp_session_records_every_actual_environment_switch(self) -> None:
+        client = _CopilotClient(_copilot_payload())
+        client.list_mcp_servers = lambda **_kwargs: {  # type: ignore[method-assign]
+            AUTODEPLOY_MCP_NAME: {"status": "connected"}
+        }
+        copilot = UnifiedCopilot(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(),
+            _FakeTFS(),
+            forms=_all_forms(),
+            allowed_mcp=[AUTODEPLOY_MCP_NAME],
+            trusted_mcp_tools={AUTODEPLOY_MCP_NAME: AUTODEPLOY_COPILOT_TOOLS},
+            workflow_id="workflow-12345678901234567890",
+        )
+
+        copilot.ask("Первый ход", environment="test_int")
+        copilot.ask("Переключись", environment="prod_int")
+        copilot.ask("Вернись", environment="test_int")
+
+        self.assertEqual(len(client.context_prompts), 3)
+        self.assertIn("AUTODEPLOY_ENVIRONMENT_CONTEXT_UPDATE", client.context_prompts[1])
+        self.assertIn('"prod_int"', client.context_prompts[1])
+        self.assertIn("AUTODEPLOY_ENVIRONMENT_CONTEXT_UPDATE", client.context_prompts[2])
+        self.assertIn('"test_int"', client.context_prompts[2])
+
     def test_greeting_uses_plain_chat_without_schema_or_structured_output(self) -> None:
         client = _CopilotClient(_copilot_payload())
         copilot = UnifiedCopilot(
@@ -2595,7 +2664,7 @@ class ManagerPolicyTests(unittest.TestCase):
             )
             client = manager.create(port=43123)
             self.assertEqual(client.base_url, "http://127.0.0.1:43123")
-            self.assertEqual(client.agent_checks, 3)
+            self.assertEqual(client.agent_checks, 5)
             self.assertEqual(manager.status.ownership, "owned")
             manager.stop()
             self.assertEqual(len(manager.terminated), 1)
@@ -2611,7 +2680,7 @@ class ManagerPolicyTests(unittest.TestCase):
             manager.connect()
             self.assertEqual(manager.status.ownership, "external")
             assert manager.fake_client is not None
-            self.assertEqual(manager.fake_client.agent_checks, 3)
+            self.assertEqual(manager.fake_client.agent_checks, 5)
             manager.stop()
             self.assertEqual(manager.terminated, [])
             self.assertEqual(manager.status.state, "stopped")
@@ -2686,6 +2755,8 @@ class ServiceAbstractionTests(unittest.TestCase):
             (agent_dir / "form-extractor.md").write_text("agent", encoding="utf-8")
             (agent_dir / "form-router.md").write_text("router", encoding="utf-8")
             (agent_dir / "autodeploy-copilot.md").write_text("copilot", encoding="utf-8")
+            (agent_dir / "form-search.md").write_text("search", encoding="utf-8")
+            (agent_dir / "repository-researcher.md").write_text("researcher", encoding="utf-8")
             executable = root / "opencode"
             executable.write_text(fake_source, encoding="utf-8")
             executable.chmod(0o700)
@@ -2735,6 +2806,8 @@ class ServiceAbstractionTests(unittest.TestCase):
                             {"name": "form-extractor", "mode": "primary"},
                             {"name": "form-router", "mode": "primary"},
                             {"name": "autodeploy-copilot", "mode": "primary"},
+                            {"name": "form-search", "mode": "primary"},
+                            {"name": "repository-researcher", "mode": "primary"},
                         ]
                     else:
                         self.send_response(404)
@@ -2778,6 +2851,12 @@ class ServiceAbstractionTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     (runtime / ".opencode" / "agents" / "autodeploy-copilot.md").is_file()
+                )
+                self.assertTrue(
+                    (runtime / ".opencode" / "agents" / "form-search.md").is_file()
+                )
+                self.assertTrue(
+                    (runtime / ".opencode" / "agents" / "repository-researcher.md").is_file()
                 )
                 self.assertEqual(Path(client.directory), runtime.resolve())
             finally:

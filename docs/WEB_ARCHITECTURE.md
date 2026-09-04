@@ -13,7 +13,7 @@ source of truth for:
 - `pre_submit()` and all network side effects;
 - confirmation, result formatting, polling and run history;
 - ITSM/TFS/Gravitee and private corporate integrations;
-- AI routing/extraction and the mandatory human review boundary.
+- AI orchestration, Python-owned drafts and the mandatory human review boundary.
 
 The same FastAPI process serves both `/api/v1/*` and the prebuilt static React
 application. There is no Node process on a user's machine.
@@ -121,9 +121,10 @@ Important resources are:
 - `/forms/{id}/fields/{path}/options` and `/ticket`;
 - `/forms/{id}/actions/{action_id}`;
 - `/runs`, `/submissions/{id}/poll`, `/search`;
-- `/opencode/*` and `/ai/*` for the existing OpenCode assistant.
+- `/opencode/*` and `/ai/*` for OpenCode chat, draft review and compatibility
+  extraction endpoints;
 - `/settings` for whitelisted configuration with write-only secrets;
-- `/api/mcp` for the optional stateless Streamable HTTP MCP endpoint.
+- `/api/mcp` for the optional Streamable HTTP MCP endpoint.
 
 All request models reject unknown properties. Breaking API changes require a new
 prefix (`/api/v2`), so future MCP or other clients can rely on `/api/v1`.
@@ -144,7 +145,13 @@ prefix (`/api/v2`), so future MCP or other clients can rely on `/api/v1`.
   atomic pointer write; failed startup triggers rollback to the previous version.
 
 The optional MCP delegates to this same `FormRuntime`, so it cannot bypass form
-versions, reference resolution or Python validation. Built-in tools are
-read-only and stop at request preview; submission remains a human action in the
-web UI. Enable it with `AUTODEPLOY_MCP_ENABLED=true`; detailed tool guidance is
-in [MCP.md](MCP.md).
+versions, reference resolution or Python validation. It can store an expiring
+non-submitting draft; submission remains a separate human action in the web UI.
+Enable it with `AUTODEPLOY_MCP_ENABLED=true`; detailed tool guidance is in
+[MCP.md](MCP.md).
+
+The web Copilot starts without the form catalog. On demand it invokes a separate
+persistent `none`-thinking form-search session, then creates Python-validated
+drafts directly through MCP. An isolated short-lived Researcher handles only
+complex JSON Repository investigations. The old extractor path remains for
+desktop compatibility. See [AI_AGENT_ARCHITECTURE.md](AI_AGENT_ARCHITECTURE.md).

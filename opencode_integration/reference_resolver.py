@@ -273,8 +273,14 @@ class LocalReferenceResolver:
         for path, field_def in self._reference_fields(form.fields):
             self._check_cancel(cancel_event)
             display_key = ".".join(path)
-            notify(f"Сопоставляю справочник: {field_def.label}…")
             query = self._get_path(form_values, path)
+            # A draft may contain dozens of untouched reference fields. Loading
+            # their catalogs cannot change an empty value and is especially
+            # expensive for remote HTTP dictionaries, so resolve only values
+            # that the operator/model actually proposed.
+            if query in (None, "", [], {}):
+                continue
+            notify(f"Сопоставляю справочник: {field_def.label}…")
             items, load_error = self._load_items(
                 field_def,
                 environment=environment,
@@ -287,9 +293,6 @@ class LocalReferenceResolver:
                 warnings.append(
                     f"{field_def.label}: справочник недоступен ({load_error})"
                 )
-            if query is None:
-                continue
-
             if field_def.field_type == FieldType.SELECT:
                 match = self._match_one(query, items, field_def.reference)
                 candidates[display_key] = self._candidate_pairs(match.candidates)

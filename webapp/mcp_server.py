@@ -1,4 +1,4 @@
-"""Stateless Streamable HTTP MCP façade over the public AutoDeploy API core.
+"""Streamable HTTP MCP façade over the public AutoDeploy API core.
 
 The tools deliberately stop before submission.  An agent can discover a form,
 resolve references, validate values and prepare a preview, while the browser
@@ -6,9 +6,10 @@ still owns the explicit human confirmation and submit step.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -39,6 +40,23 @@ def _object_schema(properties: dict[str, Any], required: tuple[str, ...] = ()) -
 _ENV = {"type": "string", "description": "Environment key returned by list_environments."}
 _FORM = {"type": "string", "minLength": 1, "description": "Stable form id returned by search_forms."}
 _VALUES = {"type": "object", "description": "Current form values keyed exactly as in get_form_schema."}
+_WORKFLOW = {
+    "type": "string",
+    "minLength": 20,
+    "maxLength": 200,
+    "description": "Opaque workflow id supplied in the trusted Copilot session context.",
+}
+_JSON_VALUE = {
+    "description": "JSON value matching the selected field type.",
+    "anyOf": [
+        {"type": "string", "maxLength": 100000},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "null"},
+        {"type": "array", "maxItems": 1000},
+        {"type": "object", "maxProperties": 500},
+    ],
+}
 
 TOOLS: tuple[dict[str, Any], ...] = (
     {
@@ -53,12 +71,21 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "search_forms",
-        "description": "Search the Python form catalog by words from the user task, title, id, category, field label or field key. Call this when the correct form is not already known. An empty query lists forms.",
+        "description": "Deterministic keyword search over the Python form catalog. External MCP clients may use it directly; Gravitee Copilot should prefer semantic_search_forms when it has a workflow id.",
         "inputSchema": _object_schema({
             "query": {"type": "string", "default": "", "maxLength": 500},
             "category": {"type": "string", "default": "", "maxLength": 80},
             "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
         }),
+    },
+    {
+        "name": "semantic_search_forms",
+        "description": "Ask the workflow's long-lived, none-thinking semantic search session for relevant forms. Use when a user request may require a form and no exact form id is already established. The returned entries are authoritative catalog descriptions enriched with semantic score/reason. Do not call for greetings or ordinary conversation.",
+        "inputSchema": _object_schema({
+            "workflow_id": _WORKFLOW,
+            "query": {"type": "string", "minLength": 1, "maxLength": 10000},
+            "limit": {"type": "integer", "default": 5, "minimum": 1, "maximum": 10},
+        }, ("workflow_id", "query")),
     },
     {
         "name": "get_form_schema",
@@ -93,6 +120,46 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "inputSchema": _object_schema({"form_id": _FORM, "environment": _ENV, "values": _VALUES, "form_version": {"type": "string"}}, ("form_id", "environment", "values", "form_version")),
     },
     {
+        "name": "prepare_form_draft",
+        "description": "Create or revise an expiring local form draft after get_form_schema. Pass only evidenced field proposals, using exact field paths and the live form version. Python resolves references, recalculates state and validates. This never submits or calls an external write. Use draft_id only when revising an existing draft.",
+        "inputSchema": _object_schema({
+            "workflow_id": _WORKFLOW,
+            "form_id": _FORM,
+            "environment": _ENV,
+            "form_version": {"type": "string", "minLength": 1, "maxLength": 128},
+            "draft_id": {"type": "string", "default": "", "maxLength": 200},
+            "proposals": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": _object_schema({
+                    "field_path": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "value": _JSON_VALUE,
+                    "confidence": {"type": "string", "enum": ["high", "medium", "low", "unknown"]},
+                    "source": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "reason": {"type": "string", "default": "", "maxLength": 1000},
+                    "conflict": {"type": "string", "default": "", "maxLength": 1000},
+                }, ("field_path", "value", "confidence", "source")),
+            },
+        }, ("workflow_id", "form_id", "environment", "form_version", "proposals")),
+    },
+    {
+        "name": "research_repository",
+        "description": "Delegate a genuinely complex multi-file JSON Repository investigation to a separate short-lived read-only Researcher session. Use only for a concrete missing fact that cannot be answered by a simple targeted lookup. Never use for form discovery, form dictionaries, SELECT/MULTISELECT resolution or facts already provided by the operator.",
+        "inputSchema": _object_schema({
+            "workflow_id": _WORKFLOW,
+            "question": {"type": "string", "minLength": 1, "maxLength": 20000},
+            "environment": _ENV,
+            "required_facts": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "maxItems": 30,
+                "default": [],
+            },
+            "depth": {"type": "string", "enum": ["focused", "deep"], "default": "focused"},
+        }, ("workflow_id", "question", "environment")),
+    },
+    {
         "name": "search_gravitee_objects",
         "description": "Search APIs or applications through the configured read-only corporate reference service. Use only for repository facts, not for small form dictionaries already returned by get_form_schema.",
         "inputSchema": _object_schema({
@@ -106,10 +173,14 @@ TOOLS: tuple[dict[str, Any], ...] = (
 
 for _tool in TOOLS:
     _tool["annotations"] = {
-        "readOnlyHint": True,
+        "readOnlyHint": _tool["name"] != "prepare_form_draft",
         "destructiveHint": False,
+        # Draft creation is content-addressed per workflow; provider retries
+        # return the same draft instead of multiplying local state.
         "idempotentHint": True,
-        "openWorldHint": _tool["name"] == "search_gravitee_objects",
+        "openWorldHint": _tool["name"] in {
+            "search_gravitee_objects", "research_repository",
+        },
     }
 
 
@@ -169,6 +240,13 @@ class MCPTools:
         ranked.sort(key=lambda item: (-item[0], item[1]["title"]))
         return {"items": [item for _, item in ranked[: int(limit)]], "total": len(ranked)}
 
+    def semantic_search_forms(
+        self, workflow_id: str, query: str, limit: int = 5
+    ) -> dict[str, Any]:
+        return self.container.ai.semantic_search_forms(
+            workflow_id, query=str(query), limit=int(limit)
+        )
+
     def get_form_schema(self, form_id: str, environment: str) -> Any:
         return self.container.forms.describe(form_id, environment)
 
@@ -183,6 +261,40 @@ class MCPTools:
 
     def preview_form_submission(self, form_id: str, environment: str, values: Mapping[str, Any], form_version: str) -> Any:
         return self.container.forms.preview(form_id, environment, values, form_version)
+
+    def prepare_form_draft(
+        self,
+        workflow_id: str,
+        form_id: str,
+        environment: str,
+        form_version: str,
+        proposals: list[Mapping[str, Any]],
+        draft_id: str = "",
+    ) -> Any:
+        return self.container.ai.prepare_form_draft(
+            workflow_id,
+            form_id=form_id,
+            environment=environment,
+            form_version=form_version,
+            proposals=proposals,
+            draft_id=draft_id,
+        )
+
+    def research_repository(
+        self,
+        workflow_id: str,
+        question: str,
+        environment: str,
+        required_facts: Optional[list[str]] = None,
+        depth: str = "focused",
+    ) -> Any:
+        return self.container.ai.research_repository(
+            workflow_id,
+            question=question,
+            environment=environment,
+            required_facts=required_facts or [],
+            depth=depth,
+        )
 
     def search_gravitee_objects(self, kind: str, environments: list[str], query: str, limit: int = 50) -> Any:
         return self.container.forms.search(kind, environments, query, int(limit), False)
@@ -202,7 +314,7 @@ def _handle_call(request: Request, message: Mapping[str, Any]) -> dict[str, Any]
             "protocolVersion": requested,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "gravitee-autodeploy", "version": request.app.version},
-            "instructions": "Discover forms first, read their live schema, resolve select values via reference tools, validate and preview. Never claim submission: this MCP intentionally requires the human to submit in the web UI.",
+            "instructions": "For an AI workflow, discover forms lazily with semantic_search_forms, read the chosen live schema, resolve select values through form options, then prepare_form_draft. Use research_repository only for a bounded complex JSON Repository question. Never claim submission: every draft requires human review and the web UI owns submit.",
         })
     if method == "ping":
         return _jsonrpc(identifier, {})
@@ -241,7 +353,13 @@ async def mcp(request: Request):
     messages = payload if isinstance(payload, list) else [payload]
     if not messages or not all(isinstance(item, dict) for item in messages):
         return JSONResponse(_jsonrpc(None, error={"code": -32600, "message": "Invalid Request"}), status_code=400)
-    replies = [reply for item in messages if (reply := _handle_call(request, item)) is not None]
+    # Some tools intentionally orchestrate a separate OpenCode session. Keep
+    # those blocking HTTP calls off FastAPI's event loop.
+    replies = []
+    for item in messages:
+        reply = await asyncio.to_thread(_handle_call, request, item)
+        if reply is not None:
+            replies.append(reply)
     if not replies:
         return Response(status_code=202)
     return JSONResponse(replies if isinstance(payload, list) else replies[0])

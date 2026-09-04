@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const python = process.env.AUTODEPLOY_TEST_PYTHON || (process.platform === 'win32' ? 'python' : path.join(repository, '.venv/bin/python'))
+const reuseExternalServer = process.env.AUTODEPLOY_E2E_REUSE_SERVER === 'true'
 
 export default defineConfig({
   testDir: './e2e',
@@ -22,7 +23,10 @@ export default defineConfig({
     command: `"${python}" -m webapp`,
     cwd: repository,
     url: 'http://127.0.0.1:8899/api/v1/health',
-    reuseExistingServer: false,
+    // Lets CI/containerized browsers exercise a server started by the host
+    // Python environment without requiring Python dependencies in the browser
+    // image. Normal local runs still start a fresh isolated server.
+    reuseExistingServer: reuseExternalServer,
     timeout: 30_000,
     env: {
       ...process.env,

@@ -61,10 +61,19 @@ Use the options endpoint and respect Python validation.
 
 The optional same-port endpoint is `/api/mcp` and is controlled by
 `AUTODEPLOY_MCP_ENABLED`. Tools should be narrowly described, schema-constrained
-and safe by default. Current built-in tools are read-only and stop at preview;
-do not add an autonomous submit/deploy/write tool without an explicit product
-decision and a one-time human confirmation design. Copilot receives an exact
-tool allowlist only when MCP is enabled. Keep external data untrusted.
+and safe by default. Most built-in tools are read-only. `prepare_form_draft`
+may create idempotent, expiring in-memory state, but it is non-destructive and
+cannot preview-submit, deploy or write externally. Do not add an autonomous
+submit/deploy/write tool without an explicit product decision and a one-time
+human confirmation design. Copilot receives an exact tool allowlist only when
+MCP is enabled. Keep external data untrusted.
+
+The web AI topology is documented in `docs/AI_AGENT_ARCHITECTURE.md`. Keep the
+main Copilot catalog-free, create the form-search session only on its first MCP
+search, reuse it for the life of the Copilot workflow, and force that helper to
+the configured `none` thinking variant. Repository Researcher sessions are
+bounded, read-only and short-lived. New web flows must use Python drafts rather
+than adding another model-to-model extractor handoff.
 
 ## Development workflow
 

@@ -194,8 +194,23 @@ def test_streamable_http_mcp_lists_and_calls_documented_tools(server: str) -> No
         body={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     )
     tools = json.loads(content)["result"]["tools"]
-    assert {tool["name"] for tool in tools} >= {"search_forms", "get_form_schema", "preview_form_submission"}
+    assert {tool["name"] for tool in tools} >= {
+        "search_forms",
+        "semantic_search_forms",
+        "get_form_schema",
+        "prepare_form_draft",
+        "research_repository",
+        "preview_form_submission",
+    }
     assert all(tool["annotations"]["destructiveHint"] is False for tool in tools)
+    assert next(
+        tool for tool in tools if tool["name"] == "prepare_form_draft"
+    )["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
 
     status, _, content = request(
         server, "/api/mcp", method="POST",
