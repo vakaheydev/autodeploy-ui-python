@@ -16,6 +16,9 @@ from config.environments import (
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
+    OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
+    OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
+    OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
     OPENCODE_REQUEST_TIMEOUT_KEY,
     OPENCODE_REPOSITORY_GIT_PULL_KEY,
     OPENCODE_REPOSITORY_MCP_KEY,
@@ -274,6 +277,21 @@ class OpenCodeSettingsScreen(BaseScreen):
             (OPENCODE_STARTUP_TIMEOUT_KEY, "Startup timeout, sec", "20"),
             (OPENCODE_REQUEST_TIMEOUT_KEY, "Request timeout, sec", "120"),
             (OPENCODE_MAX_CONTEXT_CHARS_KEY, "Max context chars", "120000"),
+            (
+                OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
+                "Inline ref max items",
+                "99",
+            ),
+            (
+                OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
+                "Inline ref max bytes",
+                "24576",
+            ),
+            (
+                OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
+                "Inline refs total bytes",
+                "49152",
+            ),
         ]
         for index, (key, label, default) in enumerate(rows):
             var = tk.StringVar(value=saved.get(key, default))
@@ -291,6 +309,20 @@ class OpenCodeSettingsScreen(BaseScreen):
                 row=index, column=1, sticky="ew", padx=(8, 0), pady=3
             )
         grid.columnconfigure(1, weight=1)
+        tk.Label(
+            card,
+            text=(
+                "Малые локальные и HTTP-справочники передаются модели целиком "
+                "только как value / label / aliases. Ограничения применяются "
+                "одновременно по числу элементов, размеру одного справочника и "
+                "общему размеру на запрос; крупные значения сопоставляет Python."
+            ),
+            wraplength=820,
+            justify=tk.LEFT,
+            font=theme.F["small"],
+            bg=theme.C["surface"],
+            fg=theme.C["text_muted"],
+        ).pack(fill=tk.X, padx=16, pady=(0, 8))
 
         actions = tk.Frame(card, bg=theme.C["surface"])
         actions.pack(fill=tk.X, padx=16, pady=(0, 12))
@@ -715,13 +747,35 @@ class OpenCodeSettingsScreen(BaseScreen):
             max_context = int(
                 self._vars[OPENCODE_MAX_CONTEXT_CHARS_KEY].get()
             )
+            inline_max_items = int(
+                self._vars[OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY].get()
+            )
+            inline_max_bytes = int(
+                self._vars[OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY].get()
+            )
+            inline_total_bytes = int(
+                self._vars[OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY].get()
+            )
         except ValueError as exc:
-            raise ValueError("Timeout и max context должны быть числами.") from exc
+            raise ValueError(
+                "Timeout, max context и лимиты справочников должны быть числами."
+            ) from exc
         timeouts = (connect_timeout, startup_timeout, request_timeout)
         if any(not math.isfinite(value) or value <= 0 for value in timeouts):
             raise ValueError("Timeout должен быть положительным конечным числом.")
         if not 10_000 <= max_context <= 500_000:
             raise ValueError("Max context должен быть от 10000 до 500000.")
+        if not 1 <= inline_max_items <= 10_000:
+            raise ValueError("Inline ref max items должен быть от 1 до 10000.")
+        if not 256 <= inline_max_bytes <= 2 * 1024 * 1024:
+            raise ValueError(
+                "Inline ref max bytes должен быть от 256 до 2097152."
+            )
+        if not inline_max_bytes <= inline_total_bytes <= 4 * 1024 * 1024:
+            raise ValueError(
+                "Inline refs total bytes должен быть не меньше лимита одного "
+                "справочника и не больше 4194304."
+            )
         provider = self._vars[OPENCODE_PROVIDER_ID_KEY].get().strip()
         model = self._vars[OPENCODE_MODEL_ID_KEY].get().strip()
         if bool(provider) != bool(model):

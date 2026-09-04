@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import json
 import logging
 import threading
 import unicodedata
@@ -14,6 +15,11 @@ from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from opencode_integration.client import OpenCodeCancelled
 
 _log = logging.getLogger("opencode.references")
+
+
+DEFAULT_INLINE_REFERENCE_MAX_ITEMS = 99
+DEFAULT_INLINE_REFERENCE_MAX_BYTES = 24 * 1024
+DEFAULT_INLINE_REFERENCE_TOTAL_BYTES = 48 * 1024
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,15 @@ class ReferenceResolutionResult:
 
 
 @dataclass(frozen=True)
+class InlineReferenceCatalog:
+    """Безопасная компактная проекция справочников для доверенного prompt."""
+
+    fields: Dict[str, Dict[str, Any]]
+    reference_values: Dict[str, list[str]]
+    total_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class _Match:
     value: Optional[str]
     candidates: tuple[ReferenceCandidate, ...]
@@ -45,11 +60,191 @@ def _normalize(value: Any) -> str:
 
 
 class LocalReferenceResolver:
-    """Ни одного элемента справочника не отправляет в OpenCode."""
+    """Сопоставляет reference-поля и готовит малые полные enum для OpenCode."""
 
     def __init__(self, resolver: Any, *, candidate_limit: int = 5) -> None:
         self._resolver = resolver
         self._candidate_limit = max(1, min(20, int(candidate_limit)))
+
+    def build_inline_catalog(
+        self,
+        *,
+        form: BaseForm,
+        environment: str,
+        current_values: Optional[Mapping[str, Any]] = None,
+        max_items: int = DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
+        max_bytes: int = DEFAULT_INLINE_REFERENCE_MAX_BYTES,
+        total_bytes: int = DEFAULT_INLINE_REFERENCE_TOTAL_BYTES,
+        cancel_event: Optional[threading.Event] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> InlineReferenceCatalog:
+        """Встраивает только доказанно полный и компактный справочник.
+
+        Размер считается по UTF-8 представлению нормализованной компактной JSON
+        проекции. Исходные записи не передаются: только value, label и aliases.
+        Лимит количества включительный сверху, поэтому значение по умолчанию 99
+        реализует правило «меньше 100 элементов».
+        """
+        item_limit = max(1, min(10_000, int(max_items)))
+        field_byte_limit = max(256, min(2 * 1024 * 1024, int(max_bytes)))
+        total_byte_limit = max(256, min(4 * 1024 * 1024, int(total_bytes)))
+        effective = dict(current_values or {})
+        for field_def in form.fields:
+            if (
+                effective.get(field_def.key) in (None, "", [], {})
+                and field_def.default not in (None, "", [], {})
+            ):
+                effective[field_def.key] = field_def.default
+
+        notify = on_progress or (lambda _message: None)
+        policies: Dict[str, Dict[str, Any]] = {}
+        candidates: list[
+            tuple[int, tuple[str, ...], FieldDefinition, list[Dict[str, Any]], int]
+        ] = []
+
+        for index, (path, field_def) in enumerate(self._reference_fields(form.fields)):
+            self._check_cancel(cancel_event)
+            display_key = ".".join(path)
+            reference = field_def.reference
+            assert reference is not None
+            base: Dict[str, Any] = {
+                "source": reference.source,
+                "resource": reference.resource,
+                "resolution": "python_after_extraction",
+                "options_complete": False,
+            }
+            missing = self._missing_dependencies(field_def, effective)
+            if missing:
+                policies[display_key] = {
+                    **base,
+                    "reason": "dependency_unresolved",
+                    "required_parameters": list(missing),
+                    "instruction": (
+                        "Return the exact semantic value requested by the operator; "
+                        "Python resolves it after dependent fields are known."
+                    ),
+                }
+                continue
+
+            notify(f"Проверяю размер справочника: {field_def.label}…")
+            items, load_error = self._load_items(
+                field_def,
+                environment=environment,
+                effective=effective,
+            )
+            if load_error:
+                policies[display_key] = {
+                    **base,
+                    "reason": "catalog_unavailable",
+                    "instruction": (
+                        "Return the exact semantic value from the request or null; "
+                        "Python will try to resolve it later."
+                    ),
+                }
+                continue
+
+            options = self._project_options(items, reference)
+            serialized_bytes = self._serialized_catalog_size(display_key, options)
+            details = {
+                "item_count": len(options),
+                "serialized_bytes": serialized_bytes,
+            }
+            if not options:
+                policies[display_key] = {
+                    **base,
+                    **details,
+                    "reason": "catalog_empty",
+                    "instruction": "Return null because the catalog has no options.",
+                }
+            elif len(options) > item_limit:
+                policies[display_key] = {
+                    **base,
+                    **details,
+                    "reason": "item_limit_exceeded",
+                    "instruction": (
+                        "Return the exact semantic value requested by the operator; "
+                        "Python resolves it against the full catalog."
+                    ),
+                }
+            elif serialized_bytes > field_byte_limit:
+                policies[display_key] = {
+                    **base,
+                    **details,
+                    "reason": "field_byte_limit_exceeded",
+                    "instruction": (
+                        "Return the exact semantic value requested by the operator; "
+                        "Python resolves it against the full catalog."
+                    ),
+                }
+            else:
+                candidates.append((index, path, field_def, options, serialized_bytes))
+
+        # При дефиците общего бюджета сначала сохраняем обязательные и
+        # безусловные поля; внутри группы остаётся порядок формы.
+        candidates.sort(key=lambda item: (
+            not item[2].required,
+            item[2].condition is not None,
+            item[0],
+        ))
+        used_bytes = 0
+        reference_values: Dict[str, list[str]] = {}
+        for _index, path, field_def, options, serialized_bytes in candidates:
+            display_key = ".".join(path)
+            reference = field_def.reference
+            assert reference is not None
+            base = {
+                "source": reference.source,
+                "resource": reference.resource,
+                "item_count": len(options),
+                "serialized_bytes": serialized_bytes,
+            }
+            if used_bytes + serialized_bytes > total_byte_limit:
+                policies[display_key] = {
+                    **base,
+                    "resolution": "python_after_extraction",
+                    "options_complete": False,
+                    "reason": "total_byte_limit_exceeded",
+                    "instruction": (
+                        "Return the exact semantic value requested by the operator; "
+                        "Python resolves it against the full catalog."
+                    ),
+                }
+                continue
+            used_bytes += serialized_bytes
+            policies[display_key] = {
+                **base,
+                "resolution": "inline_enum",
+                "options_complete": True,
+                "instruction": (
+                    "Choose only option.value. Never query MCP to enumerate, "
+                    "validate, or replace this complete catalog."
+                ),
+                "options": options,
+            }
+            # schemas.py индексирует nested reference по leaf key.
+            reference_values[field_def.key] = [
+                str(option["value"]) for option in options
+            ]
+
+        ordered_policies = {
+            ".".join(path): policies[".".join(path)]
+            for path, _field_def in self._reference_fields(form.fields)
+        }
+        _log.info(
+            "inline reference catalog fields=%d inline=%d bytes=%d "
+            "max_items=%d max_field_bytes=%d max_total_bytes=%d",
+            len(ordered_policies),
+            len(reference_values),
+            used_bytes,
+            item_limit,
+            field_byte_limit,
+            total_byte_limit,
+        )
+        return InlineReferenceCatalog(
+            fields=ordered_policies,
+            reference_values=reference_values,
+            total_bytes=used_bytes,
+        )
 
     def resolve(
         self,
@@ -226,6 +421,76 @@ class LocalReferenceResolver:
             [item for item in raw if isinstance(item, dict)][:10_000],
             "",
         )
+
+    @staticmethod
+    def _missing_dependencies(
+        field_def: FieldDefinition,
+        effective: Mapping[str, Any],
+    ) -> tuple[str, ...]:
+        reference = field_def.reference
+        assert reference is not None
+        required = reference.required_params or (
+            (field_def.depends_on,) if field_def.depends_on else ()
+        )
+        return tuple(
+            name
+            for name in required
+            if effective.get(name) in (None, "", [], {})
+        )
+
+    @classmethod
+    def _project_options(
+        cls,
+        items: Sequence[Mapping[str, Any]],
+        reference: ReferenceConfig,
+    ) -> list[Dict[str, Any]]:
+        options: list[Dict[str, Any]] = []
+        seen_values: set[str] = set()
+        search_keys = tuple(dict.fromkeys(reference.search_keys))
+        for item in items:
+            raw_value = item.get(reference.value_key)
+            if raw_value is None:
+                continue
+            value = cls._catalog_text(raw_value, max_length=4000, collapse=False)
+            if not value or value in seen_values:
+                continue
+            seen_values.add(value)
+            raw_label = item.get(reference.label_key, raw_value)
+            label = cls._catalog_text(raw_label, max_length=4000, collapse=True)
+            option: Dict[str, Any] = {"value": value, "label": label or value}
+            aliases: list[str] = []
+            for key in search_keys:
+                raw_alias = item.get(key)
+                if raw_alias in (None, ""):
+                    continue
+                alias = cls._catalog_text(raw_alias, max_length=500, collapse=True)
+                if alias and alias not in (value, option["label"]) and alias not in aliases:
+                    aliases.append(alias)
+            if aliases:
+                option["aliases"] = aliases
+            options.append(option)
+        return options
+
+    @staticmethod
+    def _catalog_text(value: Any, *, max_length: int, collapse: bool) -> str:
+        text = unicodedata.normalize("NFKC", str(value)).strip()
+        if collapse:
+            text = " ".join(text.split())
+        return text[:max_length]
+
+    @staticmethod
+    def _serialized_catalog_size(
+        display_key: str,
+        options: Sequence[Mapping[str, Any]],
+    ) -> int:
+        rendered = json.dumps(
+            {"field": display_key, "options": options},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return len(rendered.encode("utf-8"))
 
     def _match_one(
         self,

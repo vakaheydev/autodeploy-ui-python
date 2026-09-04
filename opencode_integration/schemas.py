@@ -366,8 +366,14 @@ def build_routing_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
     }
 
 
-def describe_form(form: BaseForm, environment: str) -> Dict[str, Any]:
+def describe_form(
+    form: BaseForm,
+    environment: str,
+    reference_context: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Компактное доверенное описание формы для prompt."""
+    references = reference_context or {}
+
     def json_safe_default(value: Any) -> Any:
         try:
             json.dumps(value, allow_nan=False)
@@ -375,7 +381,10 @@ def describe_form(form: BaseForm, environment: str) -> Dict[str, Any]:
             return str(value)[:500]
         return value
 
-    def describe_field(field: FieldDefinition) -> Dict[str, Any]:
+    def describe_field(
+        field: FieldDefinition,
+        path: tuple[str, ...],
+    ) -> Dict[str, Any]:
         description: Dict[str, Any] = {
             "key": field.key,
             "label": field.label,
@@ -391,15 +400,31 @@ def describe_form(form: BaseForm, environment: str) -> Dict[str, Any]:
             "plural_max": field.plural_max,
             "reference_backed": field.reference is not None,
         }
+        if field.reference is not None:
+            display_key = ".".join(path)
+            description["reference_catalog"] = dict(
+                references.get(display_key, {
+                    "resolution": "python_after_extraction",
+                    "options_complete": False,
+                    "reason": "not_preloaded",
+                    "instruction": (
+                        "Return the exact semantic value requested by the operator; "
+                        "Python resolves it against the catalog."
+                    ),
+                })
+            )
         if field.block_fields:
-            description["fields"] = [describe_field(item) for item in field.block_fields]
+            description["fields"] = [
+                describe_field(item, (*path, item.key))
+                for item in field.block_fields
+            ]
         return description
 
     return {
         "form_id": form.form_id,
         "title": form.title,
         "environment": environment,
-        "fields": [describe_field(field) for field in form.fields],
+        "fields": [describe_field(field, (field.key,)) for field in form.fields],
     }
 
 

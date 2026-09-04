@@ -137,6 +137,7 @@ class AIAssistantDialog:
         )
         self._timeline.pack(fill=tk.BOTH, expand=True)
         timeline_scroll.config(command=self._timeline.yview)
+        self._bind_local_wheel(self._timeline, self._timeline)
         self._configure_tags()
         content.add(timeline_card, minsize=250, stretch="always")
 
@@ -167,6 +168,7 @@ class AIAssistantDialog:
         )
         self._input.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         self._input.bind("<Control-Return>", lambda _event: self._send())
+        self._bind_local_wheel(self._input, self._input)
 
         buttons = tk.Frame(lower, bg=theme.C["surface"])
         buttons.pack(fill=tk.X, padx=10, pady=10)
@@ -199,6 +201,11 @@ class AIAssistantDialog:
         ).pack(side=tk.RIGHT)
         content.add(lower, minsize=190, stretch="never")
 
+        # Колесо над рамками/заголовком окна прокручивает его timeline. Оно не
+        # должно доходить до глобального canvas основной формы.
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._dlg.bind(sequence, self._scroll_dialog, add="+")
+
         self.append_event(
             ConversationEvent(
                 "system",
@@ -208,6 +215,36 @@ class AIAssistantDialog:
             )
         )
         self.set_busy(True)
+
+    def _bind_local_wheel(self, widget: tk.Widget, target: tk.Text) -> None:
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(
+                sequence,
+                lambda event, scroll_target=target: self._scroll_widget(
+                    scroll_target,
+                    event,
+                ),
+                add="+",
+            )
+
+    def _scroll_dialog(self, event: tk.Event) -> str:
+        return self._scroll_widget(self._timeline, event)
+
+    @staticmethod
+    def _scroll_widget(widget: tk.Text, event: tk.Event) -> str:
+        number = getattr(event, "num", None)
+        if number == 4:
+            units = -1
+        elif number == 5:
+            units = 1
+        else:
+            delta = getattr(event, "delta", 0)
+            units = int(-1 * (delta / 120)) if delta else 0
+            if units == 0 and delta:
+                units = -1 if delta > 0 else 1
+        if units:
+            widget.yview_scroll(units, "units")
+        return "break"
 
     def _configure_tags(self) -> None:
         self._timeline.tag_configure(

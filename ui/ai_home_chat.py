@@ -21,8 +21,15 @@ from config.environments import (
 from config.mcp_profiles import setting_enabled
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent
-from opencode_integration.client import OpenCodeCancelled, OpenCodeModel
+from opencode_integration.client import (
+    OpenCodeCancelled,
+    OpenCodeError,
+    OpenCodeModel,
+    OpenCodeModelCatalog,
+    OpenCodeModelSelection,
+)
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot
+from opencode_integration.manager import AUTODEPLOY_COPILOT_AGENT
 from ui.dialogs import ask_ticket_id, show_confirm, show_error
 
 
@@ -56,6 +63,8 @@ class AIHomeChat(tk.Frame):
         self._models_loading = False
         self._models_address = ""
         self._model_by_label: dict[str, OpenCodeModel] = {}
+        self._default_model: Optional[OpenCodeModel] = None
+        self._default_selection: Optional[OpenCodeModelSelection] = None
         self._spinner_after_id: Optional[str] = None
         self._spinner_angle = 0
         self._build()
@@ -333,11 +342,14 @@ class AIHomeChat(tk.Frame):
 
         def worker() -> None:
             try:
-                models = client.list_configured_models(timeout=10.0)
+                catalog = client.configured_model_catalog(
+                    agent_name=AUTODEPLOY_COPILOT_AGENT,
+                    timeout=10.0,
+                )
             except Exception as exc:
                 self._queue.put(("models_error", (address, exc)))
             else:
-                self._queue.put(("models", (address, models)))
+                self._queue.put(("models", (address, catalog)))
 
         threading.Thread(
             target=worker,
@@ -352,20 +364,33 @@ class AIHomeChat(tk.Frame):
             f"{model.model_name} · {model.provider_id}/{model.model_id}"
         )
 
-    def _apply_models(self, address: str, models: list[OpenCodeModel]) -> None:
+    def _apply_models(self, address: str, catalog: OpenCodeModelCatalog) -> None:
         self._models_loading = False
         if address != self._connected_address:
             return
+        models = list(catalog.models)
         previous = self._model_by_label.get(self._model_var.get())
         self._models_address = address
         self._model_by_label = {
             self._model_label(model): model
             for model in models
         }
-        labels = [_DEFAULT_MODEL_LABEL, *self._model_by_label]
+        self._default_selection = catalog.default
+        self._default_model = next(
+            (
+                item for item in models
+                if catalog.default is not None
+                and (item.provider_id, item.model_id)
+                == (catalog.default.provider_id, catalog.default.model_id)
+            ),
+            None,
+        )
+        labels = list(self._model_by_label)
+        if self._default_model is not None:
+            labels.insert(0, _DEFAULT_MODEL_LABEL)
         self._model_combo.configure(values=labels)
 
-        selected = _DEFAULT_MODEL_LABEL
+        selected = _DEFAULT_MODEL_LABEL if self._default_model is not None else ""
         preferred_variant = self._variant_var.get()
         if previous is not None:
             selected = next(
@@ -394,6 +419,8 @@ class AIHomeChat(tk.Frame):
                 ),
                 selected,
             )
+        if not selected and labels:
+            selected = labels[0]
         self._model_var.set(selected)
         self._sync_variant_choices()
         selected_model = self._model_by_label.get(selected)
@@ -403,13 +430,20 @@ class AIHomeChat(tk.Frame):
         ):
             self._variant_var.set(preferred_variant)
         self._set_model_controls_enabled(True)
-        if models and not self._busy:
+        if models and catalog.default is not None and not self._busy:
             self._status(
-                f"Загружено моделей из opencode.json: {len(models)}."
+                "Default OpenCode разрешён явно: "
+                f"{catalog.default.provider_id}/{catalog.default.model_id}."
+            )
+        elif models and not self._busy:
+            self._status(
+                "Не удалось однозначно определить default; выбрана первая "
+                "доступная модель. Проверьте выбор перед отправкой.",
+                error=True,
             )
         elif not models and not self._busy:
             self._status(
-                "В opencode.json нет доступных моделей; используется выбор OpenCode.",
+                "В opencode.json нет доступных моделей. Отправка в AI отключена.",
                 error=True,
             )
 
@@ -418,6 +452,8 @@ class AIHomeChat(tk.Frame):
         if address != self._connected_address:
             return
         self._model_by_label.clear()
+        self._default_model = None
+        self._default_selection = None
         self._model_combo.configure(values=(_DEFAULT_MODEL_LABEL,))
         self._model_var.set(_DEFAULT_MODEL_LABEL)
         self._sync_variant_choices()
@@ -428,7 +464,8 @@ class AIHomeChat(tk.Frame):
         )
         if not self._busy:
             self._status(
-                "Не удалось прочитать модели из opencode.json; используется default OpenCode.",
+                "Не удалось прочитать модели из opencode.json. Обновите список; "
+                "до этого отправка в AI отключена.",
                 error=True,
             )
 
@@ -436,7 +473,7 @@ class AIHomeChat(tk.Frame):
         self._sync_variant_choices()
 
     def _sync_variant_choices(self) -> None:
-        model = self._model_by_label.get(self._model_var.get())
+        model = self._current_model()
         variants = model.variants if model is not None else ()
         values = (_DEFAULT_VARIANT_LABEL, *variants)
         current = self._variant_var.get()
@@ -452,15 +489,30 @@ class AIHomeChat(tk.Frame):
         )
 
     def _selected_model(self) -> tuple[str, str, str]:
-        model = self._model_by_label.get(self._model_var.get())
+        model = self._current_model()
         if model is not None:
             variant = self._variant_var.get().strip()
             if variant == _DEFAULT_VARIANT_LABEL or variant not in model.variants:
-                variant = ""
+                variant = (
+                    self._default_selection.variant
+                    if self._model_var.get() == _DEFAULT_MODEL_LABEL
+                    and self._default_selection is not None
+                    else ""
+                )
             return model.provider_id, model.model_id, variant
         if self._models_loading and self._copilot is not None:
-            return self._copilot.model_selection
-        return "", "", ""
+            remembered = self._copilot.model_selection
+            if remembered[0] and remembered[1]:
+                return remembered
+        raise OpenCodeError(
+            "Не удалось определить модель OpenCode. Обновите список и выберите "
+            "конкретную модель перед отправкой."
+        )
+
+    def _current_model(self) -> Optional[OpenCodeModel]:
+        if self._model_var.get() == _DEFAULT_MODEL_LABEL:
+            return self._default_model
+        return self._model_by_label.get(self._model_var.get())
 
     def _consume_pending_request(self) -> None:
         if self._destroying or not self._connected_address:
@@ -489,31 +541,41 @@ class AIHomeChat(tk.Frame):
     def _send(self) -> None:
         if self._busy:
             return
+        if self._models_loading:
+            self._status(
+                "Подождите: загружаю модель и настройки thinking из OpenCode…"
+            )
+            return
         message = self._input.get("1.0", "end-1c").strip()
         if not message:
             self._status("Введите вопрос, задачу или номер заявки.", error=True)
             return
-        self._input.delete("1.0", tk.END)
-        self._start(message)
+        if self._start(message):
+            self._input.delete("1.0", tk.END)
 
     def _start(
         self, message: str, *, ticket_id: Optional[str] = None,
         diagnostic_data: Any = None,
-    ) -> None:
+    ) -> bool:
         if self._busy:
-            return
+            return False
         client = self.app.opencode_manager.client
         if client is None:
             self._append("error", "Соединение с OpenCode потеряно.")
             self._status("Подключитесь к OpenCode Server.", error=True)
-            return
+            return False
+        try:
+            provider_id, model_id, variant = self._selected_model()
+        except OpenCodeError as exc:
+            self._append("error", str(exc), remember=False)
+            self._status(str(exc), error=True)
+            return False
         self._clear_actions()
         self._clear_permissions()
         self._outcome = None
         self._outcome_model = ("", "", "")
         self._append("user", message)
         settings = self.app.env_manager.load()
-        provider_id, model_id, variant = self._selected_model()
         self._running_model = (provider_id, model_id, variant)
         allowed_mcp = self._parse_mcp(settings.get(OPENCODE_ALLOWED_MCP_KEY, ""))
         repository_mcp = settings.get(OPENCODE_REPOSITORY_MCP_KEY, "").strip()
@@ -566,6 +628,7 @@ class AIHomeChat(tk.Frame):
 
         threading.Thread(target=worker, name="opencode-unified-copilot", daemon=True).start()
         self._schedule_poll()
+        return True
 
     def _schedule_poll(self) -> None:
         if self._poll_id is None and not self._destroying:
@@ -583,8 +646,8 @@ class AIHomeChat(tk.Frame):
                 elif event == "session":
                     self._set_session(str(payload) if payload else "")
                 elif event == "models":
-                    address, models = payload
-                    self._apply_models(str(address), list(models))
+                    address, catalog = payload
+                    self._apply_models(str(address), catalog)
                 elif event == "models_error":
                     address, error = payload
                     self._models_failed(str(address), error)

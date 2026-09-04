@@ -103,6 +103,23 @@ class OpenCodeModel:
     variants: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class OpenCodeModelSelection:
+    """Эффективный default, разрешённый в явные OpenCode identifiers."""
+
+    provider_id: str
+    model_id: str
+    variant: str = ""
+
+
+@dataclass(frozen=True)
+class OpenCodeModelCatalog:
+    """Модели активной конфигурации и default конкретного агента."""
+
+    models: tuple[OpenCodeModel, ...]
+    default: Optional[OpenCodeModelSelection]
+
+
 def _unwrap_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value and set(value).intersection({"data", "error"}):
         return value["data"]
@@ -291,9 +308,127 @@ class OpenCodeClient:
         ):
             raise OpenCodeError("Некорректный ответ /config/providers")
 
+        return self._parse_configured_models(payload)
+
+    def configured_model_catalog(
+        self,
+        *,
+        agent_name: str = "",
+        timeout: Optional[float] = None,
+    ) -> OpenCodeModelCatalog:
+        """Возвращает каталог и явно разрешённый default для первого prompt.
+
+        OpenCode Web перед каждым prompt передаёт конкретные ``providerID`` и
+        ``modelID``. Если их опустить, server выбирает модель через собственное
+        состояние recent/default; для некоторых OpenAI-compatible providers этот
+        путь в 1.18.18 завершается HTTP 500 на первом сообщении session.
+
+        Приоритет повторяет OpenCode: модель агента, затем ``config.model``, затем
+        однозначный provider default. Из ответа ``/config`` сохраняется только
+        строка model; provider options и возможные секреты не логируются.
+        """
+        payload = _unwrap_data(
+            self._request("GET", "/config/providers", timeout=timeout)
+        )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("providers"), list
+        ):
+            raise OpenCodeError("Некорректный ответ /config/providers")
+        models = tuple(self._parse_configured_models(payload))
+
+        selection: Optional[OpenCodeModelSelection] = None
+        if agent_name:
+            for agent in self.list_agents(timeout=timeout):
+                if agent.get("name") != agent_name and agent.get("id") != agent_name:
+                    continue
+                raw_model = agent.get("model")
+                if isinstance(raw_model, dict):
+                    provider_id = str(raw_model.get("providerID") or "").strip()
+                    model_id = str(
+                        raw_model.get("modelID") or raw_model.get("id") or ""
+                    ).strip()
+                    if provider_id and model_id:
+                        selection = OpenCodeModelSelection(
+                            provider_id=provider_id,
+                            model_id=model_id,
+                            variant=str(agent.get("variant") or "").strip(),
+                        )
+                break
+
+        config: Dict[str, Any] = {}
+        if selection is None:
+            raw_config = _unwrap_data(self._request("GET", "/config", timeout=timeout))
+            if not isinstance(raw_config, dict):
+                raise OpenCodeError("Некорректный ответ /config")
+            config = raw_config
+            selection = self._selection_from_config_model(config.get("model"))
+
+        if selection is None:
+            defaults = payload.get("default")
+            if isinstance(defaults, dict):
+                candidates = [
+                    OpenCodeModelSelection(str(provider_id), str(model_id))
+                    for provider_id, model_id in defaults.items()
+                    if str(provider_id).strip() and str(model_id).strip()
+                ]
+                configured_provider_ids = {
+                    item.provider_id for item in models
+                }
+                candidates = [
+                    item for item in candidates
+                    if item.provider_id in configured_provider_ids
+                ]
+                if len(candidates) == 1:
+                    selection = candidates[0]
+
+        if selection is not None and not any(
+            (item.provider_id, item.model_id)
+            == (selection.provider_id, selection.model_id)
+            for item in models
+        ):
+            _log.warning(
+                "configured default model absent from catalog provider=%s model=%s",
+                selection.provider_id,
+                selection.model_id,
+            )
+            selection = None
+        elif selection is not None and selection.variant:
+            selected_model = next(
+                item for item in models
+                if (item.provider_id, item.model_id)
+                == (selection.provider_id, selection.model_id)
+            )
+            if selection.variant not in selected_model.variants:
+                selection = OpenCodeModelSelection(
+                    provider_id=selection.provider_id,
+                    model_id=selection.model_id,
+                )
+
+        _log.info(
+            "configured model default resolved provider=%s model=%s variant=%s",
+            selection.provider_id if selection else "unresolved",
+            selection.model_id if selection else "unresolved",
+            selection.variant if selection and selection.variant else "default",
+        )
+        return OpenCodeModelCatalog(models=models, default=selection)
+
+    @staticmethod
+    def _selection_from_config_model(value: Any) -> Optional[OpenCodeModelSelection]:
+        if not isinstance(value, str):
+            return None
+        provider_id, separator, model_id = value.strip().partition("/")
+        if not separator or not provider_id or not model_id:
+            return None
+        return OpenCodeModelSelection(provider_id=provider_id, model_id=model_id)
+
+    @staticmethod
+    def _parse_configured_models(payload: Mapping[str, Any]) -> list[OpenCodeModel]:
+        providers = payload.get("providers")
+        if not isinstance(providers, list):
+            raise OpenCodeError("Некорректный ответ /config/providers")
         result: list[OpenCodeModel] = []
         seen: set[tuple[str, str]] = set()
-        for provider in payload["providers"]:
+        for provider in providers:
             if not isinstance(provider, dict):
                 continue
             provider_id = str(provider.get("id") or "").strip()

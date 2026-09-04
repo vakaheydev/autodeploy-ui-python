@@ -36,6 +36,7 @@ from opencode_integration.client import (
     OpenCodeHealth,
     OpenCodeMessage,
     OpenCodeModel,
+    OpenCodeModelSelection,
     OpenCodeStructuredOutputError,
     build_session_permissions,
 )
@@ -223,13 +224,19 @@ class SchemaAndValidatorTests(unittest.TestCase):
                 payload, form=self.form, reference_values=self.refs, schema=self.schema
             )
 
-    def test_secret_like_value_is_rejected(self) -> None:
+    def test_secret_like_technical_text_is_not_blocked_by_heuristics(self) -> None:
         payload = valid_payload()
         payload["form"]["description"] = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
-        with self.assertRaises(ResponseValidationError):
-            self.validator.validate(
-                payload, form=self.form, reference_values=self.refs, schema=self.schema
-            )
+        payload["meta"]["sources"]["description"] = "ITSM.fields.description"
+        payload["meta"]["confidence"]["description"] = "high"
+        payload["meta"]["reasons"]["description"] = None
+        response = self.validator.validate(
+            payload, form=self.form, reference_values=self.refs, schema=self.schema
+        )
+        self.assertEqual(
+            response.form_data["description"],
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        )
 
     def test_null_value_requires_unknown_confidence_and_reason(self) -> None:
         payload = valid_payload()
@@ -423,6 +430,64 @@ class _RecordingClient(OpenCodeClient):
         return True
 
 
+class _CatalogClient(OpenCodeClient):
+    def __init__(
+        self,
+        *,
+        config_model: str = "corp/Qwen3.8-27B-FP8",
+        agent_model: dict[str, str] | None = None,
+        agent_variant: str = "",
+    ) -> None:
+        super().__init__("http://127.0.0.1:4096")
+        self.config_model = config_model
+        self.agent_model = agent_model
+        self.agent_variant = agent_variant
+
+    def _request(  # type: ignore[override]
+        self,
+        _method: str,
+        path: str,
+        _payload: Any = None,
+        **_kwargs: Any,
+    ) -> Any:
+        if path == "/config/providers":
+            return {
+                "providers": [{
+                    "id": "corp",
+                    "name": "Corporate",
+                    "models": {
+                        "Qwen3.8-27B-FP8": {
+                            "id": "Qwen3.8-27B-FP8",
+                            "name": "Qwen 3.8 27B",
+                            "variants": {"high": {}, "xhigh": {}},
+                        },
+                        "team/model-v1": {
+                            "id": "team/model-v1",
+                            "name": "Team model",
+                            "variants": {"high": {}},
+                        },
+                    },
+                }],
+                "default": {"corp": "Qwen3.8-27B-FP8"},
+            }
+        if path == "/agent":
+            agent: dict[str, Any] = {
+                "name": AUTODEPLOY_COPILOT_AGENT,
+                "mode": "primary",
+            }
+            if self.agent_model is not None:
+                agent["model"] = self.agent_model
+            if self.agent_variant:
+                agent["variant"] = self.agent_variant
+            return [agent]
+        if path == "/config":
+            return {
+                "model": self.config_model,
+                "provider": {"corp": {"options": {"apiKey": "secret"}}},
+            }
+        raise AssertionError(f"unexpected request: {path}")
+
+
 class OpenCodeContractTests(unittest.TestCase):
     def test_11818_uses_distinct_session_and_prompt_model_shapes(self) -> None:
         client = _RecordingClient()
@@ -458,6 +523,33 @@ class OpenCodeContractTests(unittest.TestCase):
         self.assertNotIn("format", message_body)
         self.assertIn("AUTODEPLOY_VALIDATED_JSON_PROTOCOL", message_body["system"])
         self.assertEqual(result, {"ok": True})
+
+    def test_config_default_is_resolved_to_explicit_model(self) -> None:
+        catalog = _CatalogClient().configured_model_catalog(
+            agent_name=AUTODEPLOY_COPILOT_AGENT,
+        )
+        self.assertEqual(
+            catalog.default,
+            OpenCodeModelSelection("corp", "Qwen3.8-27B-FP8"),
+        )
+        self.assertEqual(len(catalog.models), 2)
+
+    def test_agent_model_and_thinking_override_global_default(self) -> None:
+        catalog = _CatalogClient(
+            agent_model={"providerID": "corp", "modelID": "team/model-v1"},
+            agent_variant="high",
+        ).configured_model_catalog(agent_name=AUTODEPLOY_COPILOT_AGENT)
+        self.assertEqual(
+            catalog.default,
+            OpenCodeModelSelection("corp", "team/model-v1", "high"),
+        )
+
+    def test_config_model_parser_preserves_slashes_in_model_id(self) -> None:
+        self.assertEqual(
+            OpenCodeClient._selection_from_config_model("corp/team/model-v1"),
+            OpenCodeModelSelection("corp", "team/model-v1"),
+        )
+        self.assertIsNone(OpenCodeClient._selection_from_config_model("broken"))
 
     def test_invalid_json_is_repaired_locally_without_native_format(self) -> None:
         class RepairClient(OpenCodeClient):
@@ -609,12 +701,22 @@ class ContextTests(unittest.TestCase):
 
 
 class _ReferenceBackend:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
     def resolve(self, config: Any, environment: str, extra_params: Any = None) -> list[dict[str, str]]:
-        del environment, extra_params
+        del environment
+        self.calls.append((config.resource, extra_params))
         if config.resource == "api_categories.json":
             return [
-                {"id": "internal", "name": "Внутреннее АПИ"},
-                {"id": "external", "name": "Внешнее АПИ"},
+                {
+                    "id": "internal", "name": "Внутреннее АПИ",
+                    "must_not_be_sent": "confidential details",
+                },
+                {
+                    "id": "external", "name": "Внешнее АПИ",
+                    "must_not_be_sent": "confidential details",
+                },
             ]
         if config.resource == "endpoint_types.json":
             return [
@@ -626,10 +728,145 @@ class _ReferenceBackend:
                 {"id": "app-billing", "name": "Billing", "azp": "billing"},
                 {"id": "app-payments", "name": "Payments", "azp": "payments"},
             ]
+        if config.resource == "gravitee_api_ingresses":
+            return [
+                {"id": "public", "name": "Public"},
+                {"id": "private", "name": "Private"},
+            ]
+        if config.resource == "ingress_types.json":
+            return [
+                {"id": "platformeco", "name": "Platform Eco"},
+                {"id": "nova", "name": "Nova"},
+            ]
+        if config.resource == "channel_types.json":
+            return [{"id": "external", "name": "External"}]
         return []
 
 
 class ReferenceResolverTests(unittest.TestCase):
+    def test_small_catalog_is_projected_and_constrains_select_schema(self) -> None:
+        catalog = LocalReferenceResolver(_ReferenceBackend()).build_inline_catalog(
+            form=CreateApiForm(),
+            environment="test_int",
+        )
+        category = catalog.fields["category"]
+        self.assertEqual(category["resolution"], "inline_enum")
+        self.assertTrue(category["options_complete"])
+        self.assertEqual(
+            category["options"],
+            [
+                {"value": "internal", "label": "Внутреннее АПИ"},
+                {"value": "external", "label": "Внешнее АПИ"},
+            ],
+        )
+        self.assertNotIn("must_not_be_sent", json.dumps(category))
+        schema = build_form_schema(
+            CreateApiForm(), catalog.reference_values, strict_references=False
+        )
+        self.assertEqual(
+            schema["properties"]["form"]["properties"]["category"]
+            ["anyOf"][0]["enum"],
+            ["internal", "external"],
+        )
+
+    def test_multiselect_uses_projected_aliases_and_item_enum(self) -> None:
+        catalog = LocalReferenceResolver(_ReferenceBackend()).build_inline_catalog(
+            form=DisableIngressForm(),
+            environment="test_int",
+        )
+        apps = catalog.fields["apps"]
+        self.assertEqual(apps["options"][0]["aliases"], ["billing"])
+        schema = build_form_schema(
+            DisableIngressForm(), catalog.reference_values, strict_references=False
+        )
+        app_schema = schema["properties"]["form"]["properties"]["apps"]
+        self.assertEqual(
+            app_schema["anyOf"][0]["items"]["enum"],
+            ["app-billing", "app-payments"],
+        )
+
+    def test_catalog_with_100_items_is_not_inlined(self) -> None:
+        class LargeBackend(_ReferenceBackend):
+            def resolve(self, config: Any, environment: str, extra_params: Any = None) -> list[dict[str, str]]:
+                if config.resource == "api_categories.json":
+                    return [
+                        {"id": f"id-{index}", "name": f"Category {index}"}
+                        for index in range(100)
+                    ]
+                return super().resolve(config, environment, extra_params)
+
+        catalog = LocalReferenceResolver(LargeBackend()).build_inline_catalog(
+            form=CreateApiForm(), environment="test_int"
+        )
+        self.assertEqual(
+            catalog.fields["category"]["reason"], "item_limit_exceeded"
+        )
+        self.assertNotIn("options", catalog.fields["category"])
+        self.assertNotIn("category", catalog.reference_values)
+
+    def test_small_item_count_still_respects_byte_and_total_budgets(self) -> None:
+        class VerboseBackend(_ReferenceBackend):
+            def resolve(self, config: Any, environment: str, extra_params: Any = None) -> list[dict[str, str]]:
+                if config.resource in {"api_categories.json", "endpoint_types.json"}:
+                    prefix = "category" if config.resource.startswith("api_") else "endpoint"
+                    return [{"id": prefix, "name": prefix + "-" + "x" * 600}]
+                return super().resolve(config, environment, extra_params)
+
+        resolver = LocalReferenceResolver(VerboseBackend())
+        byte_limited = resolver.build_inline_catalog(
+            form=CreateApiForm(), environment="test_int", max_bytes=256
+        )
+        self.assertEqual(
+            byte_limited.fields["category"]["reason"],
+            "field_byte_limit_exceeded",
+        )
+
+        baseline = resolver.build_inline_catalog(
+            form=CreateApiForm(),
+            environment="test_int",
+            max_bytes=4096,
+            total_bytes=8192,
+        )
+        category_size = baseline.fields["category"]["serialized_bytes"]
+        aggregate_limited = resolver.build_inline_catalog(
+            form=CreateApiForm(),
+            environment="test_int",
+            max_bytes=4096,
+            total_bytes=category_size,
+        )
+        self.assertEqual(
+            aggregate_limited.fields["category"]["resolution"], "inline_enum"
+        )
+        self.assertEqual(
+            aggregate_limited.fields["endpoint_type"]["reason"],
+            "total_byte_limit_exceeded",
+        )
+
+    def test_dependent_http_catalog_is_inlined_only_with_parent_value(self) -> None:
+        backend = _ReferenceBackend()
+        resolver = LocalReferenceResolver(backend)
+        unresolved = resolver.build_inline_catalog(
+            form=EnableIngressForm(), environment="test_int"
+        )
+        self.assertEqual(
+            unresolved.fields["ingresses"]["reason"], "dependency_unresolved"
+        )
+        self.assertFalse(any(call[0] == "gravitee_api_ingresses" for call in backend.calls))
+
+        resolved = resolver.build_inline_catalog(
+            form=EnableIngressForm(),
+            environment="test_int",
+            current_values={"apis": "api-1"},
+        )
+        ingresses = resolved.fields["ingresses"]
+        self.assertEqual(ingresses["source"], "http")
+        self.assertEqual(ingresses["resolution"], "inline_enum")
+        self.assertEqual(resolved.reference_values["ingresses"], ["public", "private"])
+        self.assertIn(
+            ("gravitee_api_ingresses", {"apis": "api-1"}),
+            backend.calls,
+        )
+
     def test_semantic_labels_are_resolved_to_ids_only_in_python(self) -> None:
         result = LocalReferenceResolver(_ReferenceBackend()).resolve(
             valid_payload(semantic_references=True),
@@ -738,6 +975,13 @@ class _Handler(BaseHTTPRequestHandler):
                     },
                 }],
                 "default": {"corp": "Qwen3.8-27B-FP8"},
+            })
+        elif self.path == "/config":
+            # Реальный endpoint также содержит provider options. Клиент обязан
+            # взять отсюда только model и никогда не переносить options в UI.
+            self._json(200, {
+                "model": "corp/Qwen3.8-27B-FP8",
+                "provider": {"corp": {"options": {"apiKey": "secret"}}},
             })
         elif self.path == "/mcp":
             self._json(200, {
@@ -1048,6 +1292,7 @@ class _AgentClient:
     def __init__(self) -> None:
         self.created: dict[str, Any] = {}
         self.chat_prompts: list[str] = []
+        self.structured_requests: list[dict[str, Any]] = []
         self.deleted: list[str] = []
 
     def require_agent(self, *_args: Any, **_kwargs: Any) -> None:
@@ -1070,8 +1315,9 @@ class _AgentClient:
         self.chat_prompts.append(kwargs["prompt"])
         return OpenCodeMessage("Найдены значения; владелец неясен.", {}, ())
 
-    def send_structured_message(self, **_kwargs: Any) -> dict[str, Any]:
-        return valid_payload(semantic_references=True)
+    def send_structured_message(self, **kwargs: Any) -> dict[str, Any]:
+        self.structured_requests.append(kwargs)
+        return valid_payload()
 
     def respond_permission(self, *_args: Any, **_kwargs: Any) -> None:
         pass
@@ -1107,7 +1353,17 @@ class AgentWorkflowTests(unittest.TestCase):
         self.assertIn("Найдены", second.text)
         self.assertEqual(client.created["mcp_names"], ["ado"])
         self.assertEqual(len(client.chat_prompts), 2)
-        self.assertNotIn("Внешнее АПИ", client.chat_prompts[0])
+        self.assertIn("Внешнее АПИ", client.chat_prompts[0])
+        self.assertIn('"resolution":"inline_enum"', client.chat_prompts[0])
+        self.assertIn(
+            "Do not use MCP to enumerate, validate, or second-guess",
+            client.chat_prompts[0],
+        )
+        category_schema = client.structured_requests[0]["schema"]["properties"]
+        category_schema = category_schema["form"]["properties"]["category"]
+        self.assertEqual(
+            category_schema["anyOf"][0]["enum"], ["internal", "external"]
+        )
         self.assertEqual(result.form_data["category"], "external")
         self.assertEqual(result.form_data["endpoint_type"], "rest")
         self.assertEqual(client.deleted, ["ses_agent"])

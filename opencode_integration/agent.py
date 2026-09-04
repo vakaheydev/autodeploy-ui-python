@@ -28,7 +28,12 @@ from opencode_integration.prompts import (
     build_analysis_prompt,
     build_finalization_prompt,
 )
-from opencode_integration.reference_resolver import LocalReferenceResolver
+from opencode_integration.reference_resolver import (
+    DEFAULT_INLINE_REFERENCE_MAX_BYTES,
+    DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
+    DEFAULT_INLINE_REFERENCE_TOTAL_BYTES,
+    LocalReferenceResolver,
+)
 from opencode_integration.response_validator import ResponseValidator, ValidatedResponse
 from opencode_integration.schemas import build_form_schema, describe_form
 
@@ -59,6 +64,9 @@ class FormExtractorAgent:
         *,
         reference_resolver: Any,
         max_context_chars: int = 120_000,
+        inline_reference_max_items: int = DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
+        inline_reference_max_bytes: int = DEFAULT_INLINE_REFERENCE_MAX_BYTES,
+        inline_reference_total_bytes: int = DEFAULT_INLINE_REFERENCE_TOTAL_BYTES,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
@@ -67,6 +75,9 @@ class FormExtractorAgent:
             max_context_chars=max_context_chars,
         )
         self._reference_resolver = LocalReferenceResolver(reference_resolver)
+        self._inline_reference_max_items = inline_reference_max_items
+        self._inline_reference_max_bytes = inline_reference_max_bytes
+        self._inline_reference_total_bytes = inline_reference_total_bytes
         self._validator = ResponseValidator()
         self._session_id: Optional[str] = None
         self._cancel_event: Optional[threading.Event] = None
@@ -89,6 +100,8 @@ class FormExtractorAgent:
         self._started = 0.0
         self._pr_id: Optional[str] = None
         self._reference_values: dict[str, list[str]] = {}
+        self._inline_reference_context: dict[str, dict[str, Any]] = {}
+        self._inline_reference_values: dict[str, list[str]] = {}
 
     @property
     def session_id(self) -> Optional[str]:
@@ -165,6 +178,20 @@ class FormExtractorAgent:
             self._client.require_agent(FORM_EXTRACTOR_AGENT, timeout=timeout)
             self._client.require_provider(provider_id, timeout=timeout)
 
+            self._on_progress("Подготавливаю справочники формы…")
+            inline_catalog = self._reference_resolver.build_inline_catalog(
+                form=form,
+                environment=environment,
+                current_values=current_values,
+                max_items=self._inline_reference_max_items,
+                max_bytes=self._inline_reference_max_bytes,
+                total_bytes=self._inline_reference_total_bytes,
+                cancel_event=cancel_event,
+                on_progress=self._on_progress,
+            )
+            self._inline_reference_context = inline_catalog.fields
+            self._inline_reference_values = inline_catalog.reference_values
+
             enabled_mcp = self._available_mcp(allowed_mcp, timeout)
             active_repository_mcp = choose_repository_mcp(
                 repository_mcp,
@@ -203,7 +230,11 @@ class FormExtractorAgent:
                 )
             )
             prompt = build_analysis_prompt(
-                form_description=describe_form(form, environment),
+                form_description=describe_form(
+                    form,
+                    environment,
+                    reference_context=self._inline_reference_context,
+                ),
                 itsm_data=context.itsm,
                 ado_data=context.ado,
                 context_warnings=self._context_warnings,
@@ -259,7 +290,11 @@ class FormExtractorAgent:
             form = self._form
             assert form is not None
             self._check_cancel()
-            semantic_schema = build_form_schema(form, strict_references=False)
+            semantic_schema = build_form_schema(
+                form,
+                self._inline_reference_values,
+                strict_references=False,
+            )
             self._on_progress("Формирую структурированные предложения…")
             structured = self._client.send_structured_message(
                 session_id=session_id,

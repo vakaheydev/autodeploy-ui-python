@@ -21,7 +21,6 @@ from opencode_integration.client import OpenCodeCancelled, OpenCodeClient, OpenC
 from opencode_integration.context_builder import (
     BuiltContext,
     ContextBuilder,
-    contains_secret,
     redact_text,
     sanitize,
 )
@@ -158,9 +157,6 @@ def validate_copilot_output(
     errors = _schema_errors(payload, schema)
     if errors:
         raise CopilotValidationError("Некорректный ответ помощника:\n" + "\n".join(errors))
-    if contains_secret(payload):
-        raise CopilotValidationError("Ответ помощника содержит данные, похожие на секрет")
-
     candidates = tuple(
         CopilotFormCandidate(
             form_id=str(item["form_id"]),
@@ -426,10 +422,6 @@ class UnifiedCopilot:
                 answer = message_result.text.strip()
                 if not answer:
                     raise OpenCodeError("OpenCode вернул пустой ответ")
-                if contains_secret(answer):
-                    raise CopilotValidationError(
-                        "Ответ помощника содержит данные, похожие на секрет"
-                    )
                 outcome = CopilotOutcome(
                     intent="conversation",
                     answer=answer,

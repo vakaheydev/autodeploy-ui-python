@@ -97,24 +97,6 @@ def redact_text(value: str) -> str:
     return value
 
 
-def contains_secret(value: Any, *, key: str = "") -> bool:
-    """Консервативная проверка результата модели перед применением."""
-    if key and is_secret_key(key) and value not in (None, "", "[REDACTED]"):
-        return True
-    if isinstance(value, dict):
-        return any(contains_secret(v, key=str(k)) for k, v in value.items())
-    if isinstance(value, (list, tuple, set)):
-        return any(contains_secret(v) for v in value)
-    if not isinstance(value, str):
-        return False
-    return (
-        bool(_PEM_RE.search(value))
-        or bool(_AUTH_RE.search(value))
-        or bool(_JWT_RE.search(value))
-        or bool(_ASSIGNMENT_RE.search(value))
-    )
-
-
 def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
     """Приводит произвольный ответ API к JSON-совместимому очищенному объекту."""
     if key and is_secret_key(key):

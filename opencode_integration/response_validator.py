@@ -8,7 +8,6 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from forms.base_form import BaseForm
 from forms.fields import FieldType
-from opencode_integration.context_builder import contains_secret
 from opencode_integration.schemas import build_form_schema, field_value_schema
 
 try:
@@ -105,7 +104,7 @@ def _is_empty(value: Any) -> bool:
 
 
 class ResponseValidator:
-    """Проверяет schema, секреты и зависимые поля, готовит preview."""
+    """Проверяет schema и зависимые поля, готовит preview."""
 
     def validate(
         self,
@@ -137,8 +136,6 @@ class ResponseValidator:
             self._domain_issues(domain_values, form) if check_domain else []
         )
         domain_issues.extend(self._metadata_issues(decoded, form))
-        if contains_secret(decoded):
-            domain_issues.append("$: результат содержит значение, похожее на секрет")
         if domain_issues:
             raise ResponseValidationError(domain_issues)
 
@@ -204,8 +201,6 @@ class ResponseValidator:
                     strict_references=True,
                 ),
             )
-            if contains_secret(value, key=key):
-                errors.append("Значение похоже на секрет")
             if errors:
                 result[key] = errors
 

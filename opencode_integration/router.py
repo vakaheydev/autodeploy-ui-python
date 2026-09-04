@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 from config.form_routing import build_form_catalog
 from forms.base_form import BaseForm
 from opencode_integration.client import OpenCodeCancelled, OpenCodeClient
-from opencode_integration.context_builder import BuiltContext, ContextBuilder, contains_secret
+from opencode_integration.context_builder import BuiltContext, ContextBuilder
 from opencode_integration.data_sources import AzureDevOpsDataSource, ITSMDataSource
 from opencode_integration.manager import FORM_ROUTER_AGENT
 from opencode_integration.prompts import ROUTER_SYSTEM_RULES, build_routing_prompt
@@ -107,9 +107,6 @@ def validate_routing_output(
             path = ".".join(str(part) for part in error.absolute_path) or "$"
             rendered.append(f"{path}: {error.message}")
         raise FormRoutingError("Некорректный выбор формы:\n" + "\n".join(rendered))
-    if contains_secret(payload):
-        raise FormRoutingError("Ответ маршрутизатора содержит данные, похожие на секрет")
-
     candidates = tuple(sorted(
         (
             RoutingCandidate(

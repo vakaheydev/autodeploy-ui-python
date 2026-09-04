@@ -21,12 +21,20 @@ from config.environments import (
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
+    OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
+    OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
+    OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
     OPENCODE_REPOSITORY_GIT_PULL_KEY,
     OPENCODE_REPOSITORY_MCP_KEY,
 )
 from config.mcp_profiles import setting_enabled
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.context_builder import BuiltContext
+from opencode_integration.reference_resolver import (
+    DEFAULT_INLINE_REFERENCE_MAX_BYTES,
+    DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
+    DEFAULT_INLINE_REFERENCE_TOTAL_BYTES,
+)
 from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeStructuredOutputError,
@@ -231,23 +239,37 @@ class FormScreen(BaseScreen):
             on_done=lambda _: self._render_fields(self._fields_frame),
         )
 
-    def _route_mousewheel(self, event: tk.Event) -> None:
+    def _route_mousewheel(self, event: tk.Event) -> Optional[str]:
         """
         Глобальный обработчик колеса мыши.
         Если курсор над виджетом с меткой _scroll_target — скроллим его,
         иначе скроллим основной канвас формы.
         """
+        try:
+            # bind_all видит также события дочерних Toplevel. Они принадлежат
+            # собственным диалогам и не должны прокручивать форму под ними.
+            if str(event.widget.winfo_toplevel()) != str(self.winfo_toplevel()):
+                return "break"
+        except (AttributeError, tk.TclError):
+            return None
+        delta = getattr(event, "delta", 0)
+        if not delta:
+            return None
+        units = int(-1 * (delta / 120))
+        if units == 0:
+            units = -1 if delta > 0 else 1
         w = event.widget
         while w is not None:
             target = getattr(w, "_scroll_target", None)
             if target is not None:
-                target.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return
+                target.yview_scroll(units, "units")
+                return "break"
             try:
                 w = w.master
             except AttributeError:
                 break
-        self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._scroll_canvas.yview_scroll(units, "units")
+        return "break"
 
     def _render_fields(self, parent: tk.Frame) -> None:
         """
@@ -1094,6 +1116,29 @@ class FormScreen(BaseScreen):
             )
         except ValueError:
             max_context = 120_000
+        try:
+            inline_max_items = int(settings.get(
+                OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
+                str(DEFAULT_INLINE_REFERENCE_MAX_ITEMS),
+            ))
+            inline_max_bytes = int(settings.get(
+                OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
+                str(DEFAULT_INLINE_REFERENCE_MAX_BYTES),
+            ))
+            inline_total_bytes = int(settings.get(
+                OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
+                str(DEFAULT_INLINE_REFERENCE_TOTAL_BYTES),
+            ))
+            if not 1 <= inline_max_items <= 10_000:
+                raise ValueError
+            if not 256 <= inline_max_bytes <= 2 * 1024 * 1024:
+                raise ValueError
+            if not inline_max_bytes <= inline_total_bytes <= 4 * 1024 * 1024:
+                raise ValueError
+        except (TypeError, ValueError):
+            inline_max_items = DEFAULT_INLINE_REFERENCE_MAX_ITEMS
+            inline_max_bytes = DEFAULT_INLINE_REFERENCE_MAX_BYTES
+            inline_total_bytes = DEFAULT_INLINE_REFERENCE_TOTAL_BYTES
         allowed_mcp = self._parse_allowed_mcp(
             settings.get(OPENCODE_ALLOWED_MCP_KEY, "")
         )
@@ -1111,6 +1156,9 @@ class FormScreen(BaseScreen):
             self.app.tfs_service,
             reference_resolver=self.app.reference_resolver,
             max_context_chars=max_context,
+            inline_reference_max_items=inline_max_items,
+            inline_reference_max_bytes=inline_max_bytes,
+            inline_reference_total_bytes=inline_total_bytes,
         )
         self._ai_cancel_event = cancel_event
         self._ai_queue = result_queue
