@@ -225,7 +225,10 @@ class HomeScreen(BaseScreen):
                 pass
             self._status_poll_id = None
         self._unbind_mousewheel()
-        self._ai_chat.shutdown()
+        # HomeScreen уничтожается и при обычной навигации к форме. Главная
+        # OpenCode session живёт на уровне Application и закрывается только
+        # при завершении приложения.
+        self._ai_chat.detach_for_navigation()
 
     def _bind_mousewheel(self) -> None:
         """Маршрутизирует колесо с любого дочернего виджета в canvas экрана."""

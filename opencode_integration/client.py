@@ -92,6 +92,17 @@ class OpenCodeMessage:
     parts: tuple[Dict[str, Any], ...]
 
 
+@dataclass(frozen=True)
+class OpenCodeModel:
+    """Модель и её variants из уже загруженной конфигурации OpenCode."""
+
+    provider_id: str
+    model_id: str
+    provider_name: str
+    model_name: str
+    variants: tuple[str, ...]
+
+
 def _unwrap_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value and set(value).intersection({"data", "error"}):
         return value["data"]
@@ -262,6 +273,72 @@ class OpenCodeClient:
             raise OpenCodeError("Некорректный ответ /provider")
         return payload
 
+    def list_configured_models(
+        self, timeout: Optional[float] = None
+    ) -> list[OpenCodeModel]:
+        """Читает только модели/variants активного ``opencode.json`` через API.
+
+        В отличие от ``/provider``, endpoint ``/config/providers`` не добавляет
+        весь публичный каталог models.dev: он возвращает providers, реально
+        загруженные для текущей OpenCode directory. Значения options намеренно
+        отбрасываются, чтобы конфигурационные секреты не попадали в UI/логи.
+        """
+        payload = _unwrap_data(
+            self._request("GET", "/config/providers", timeout=timeout)
+        )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("providers"), list
+        ):
+            raise OpenCodeError("Некорректный ответ /config/providers")
+
+        result: list[OpenCodeModel] = []
+        seen: set[tuple[str, str]] = set()
+        for provider in payload["providers"]:
+            if not isinstance(provider, dict):
+                continue
+            provider_id = str(provider.get("id") or "").strip()
+            if not provider_id:
+                continue
+            provider_name = str(provider.get("name") or provider_id).strip()[:200]
+            models = provider.get("models")
+            if not isinstance(models, dict):
+                continue
+            for key, model in models.items():
+                if not isinstance(model, dict):
+                    continue
+                model_id = str(model.get("id") or key).strip()
+                identity = (provider_id, model_id)
+                if not model_id or identity in seen:
+                    continue
+                seen.add(identity)
+                raw_variants = model.get("variants")
+                variants = tuple(
+                    dict.fromkeys(
+                        str(value).strip()
+                        for value in (
+                            raw_variants.keys()
+                            if isinstance(raw_variants, dict)
+                            else ()
+                        )
+                        if str(value).strip()
+                    )
+                )
+                result.append(OpenCodeModel(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    provider_name=provider_name or provider_id,
+                    model_name=str(model.get("name") or model_id).strip()[:200]
+                    or model_id,
+                    variants=variants,
+                ))
+        _log.info(
+            "configured model catalog loaded providers=%d models=%d variants=%d",
+            len({item.provider_id for item in result}),
+            len(result),
+            sum(len(item.variants) for item in result),
+        )
+        return result
+
     def require_provider(
         self,
         provider_id: str = "",
@@ -311,6 +388,7 @@ class OpenCodeClient:
         agent: str = "",
         provider_id: str = "",
         model_id: str = "",
+        variant: str = "",
         mcp_names: Sequence[str] = (),
         mcp_tool_allowlist: Optional[Mapping[str, Sequence[str]]] = None,
         mcp_tool_asklist: Optional[Mapping[str, Sequence[str]]] = None,
@@ -319,6 +397,10 @@ class OpenCodeClient:
         if bool(provider_id) != bool(model_id):
             raise OpenCodeProviderError(
                 "Для явного выбора модели нужны оба значения: provider ID и model ID"
+            )
+        if variant and not provider_id:
+            raise OpenCodeProviderError(
+                "Для явного выбора thinking нужны provider ID и model ID"
             )
         body: Dict[str, Any] = {
             "title": title[:200],
@@ -335,6 +417,8 @@ class OpenCodeClient:
             # В CreateInput OpenCode 1.18.18 поле модели называется `id`.
             # В PromptInput ниже контракт другой: там используется `modelID`.
             body["model"] = {"providerID": provider_id, "id": model_id}
+            if variant:
+                body["model"]["variant"] = variant
         payload = _unwrap_data(self._request("POST", "/session", body))
         if not isinstance(payload, dict) or not payload.get("id"):
             raise OpenCodeError("OpenCode не вернул ID созданной session")
@@ -388,6 +472,7 @@ class OpenCodeClient:
         agent: str,
         provider_id: str = "",
         model_id: str = "",
+        variant: str = "",
         cancel_event: Optional[threading.Event] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_response: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -398,6 +483,7 @@ class OpenCodeClient:
             agent=agent,
             provider_id=provider_id,
             model_id=model_id,
+            variant=variant,
         )
         response = self._send_message(
             session_id=session_id,
@@ -424,6 +510,41 @@ class OpenCodeClient:
             parts=parts,
         )
 
+    def add_session_context(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        system: str = "",
+        agent: str,
+        provider_id: str = "",
+        model_id: str = "",
+        variant: str = "",
+    ) -> None:
+        """Один раз сохраняет контекст как user message без запуска модели."""
+        body = self._message_body(
+            prompt=prompt,
+            system=system,
+            agent=agent,
+            provider_id=provider_id,
+            model_id=model_id,
+            variant=variant,
+        )
+        body["noReply"] = True
+        response = _unwrap_data(self._request(
+            "POST",
+            f"/session/{urllib.parse.quote(session_id, safe='')}/message",
+            body,
+        ))
+        if not isinstance(response, dict):
+            raise OpenCodeError("OpenCode не сохранил контекст session")
+        self._raise_message_error(response)
+        _log.info(
+            "session context stored id=%s bytes=%d",
+            session_id,
+            len(prompt.encode("utf-8")),
+        )
+
     def send_structured_message(
         self,
         *,
@@ -434,6 +555,7 @@ class OpenCodeClient:
         agent: str,
         provider_id: str = "",
         model_id: str = "",
+        variant: str = "",
         retry_count: int = 2,
         cancel_event: Optional[threading.Event] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -459,11 +581,12 @@ class OpenCodeClient:
         )
         _log.info(
             "validated-json request session=%s agent=%s provider=%s model=%s "
-            "schema_bytes=%d retries=%d",
+            "variant=%s schema_bytes=%d retries=%d",
             session_id,
             agent,
             provider_id or "default",
             model_id or "default",
+            variant or "default",
             schema_size,
             attempts - 1,
         )
@@ -484,6 +607,7 @@ class OpenCodeClient:
                 agent=agent,
                 provider_id=provider_id,
                 model_id=model_id,
+                variant=variant,
             )
             response = self._send_message(
                 session_id=session_id,
@@ -589,6 +713,7 @@ class OpenCodeClient:
         agent: str,
         provider_id: str,
         model_id: str,
+        variant: str = "",
     ) -> Dict[str, Any]:
         if bool(provider_id) != bool(model_id):
             raise OpenCodeProviderError(
@@ -602,6 +727,8 @@ class OpenCodeClient:
             body["system"] = system
         if provider_id and model_id:
             body["model"] = {"providerID": provider_id, "modelID": model_id}
+        if variant:
+            body["variant"] = variant
         return body
 
     def _send_message(

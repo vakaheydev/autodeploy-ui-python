@@ -44,8 +44,8 @@ Mandatory rules:
    diagnose_search or any other mutating tool.
 6. Never expose secrets, credentials, authentication headers, environment dumps,
    absolute local paths, or unrelated repository content.
-7. Use targeted search tools before making repository claims. Preserve the exact
-   scope and x-filepath as evidence for every result.
+7. Use targeted search tools before making repository claims. When a tool returns
+   scope and x-filepath, copy those values exactly; never invent a path.
 8. Do not invent forms, entities, IDs, paths, dependencies, or failure causes.
 9. Do not fill or submit a form directly. The application performs a separate
    extraction, Python validation, preview, and manual confirmation workflow.

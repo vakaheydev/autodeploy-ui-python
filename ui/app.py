@@ -118,6 +118,9 @@ class Application:
         self._pending_ai_handoff: tuple[str, AIFormHandoff] | None = None
         self.execution_plan: Optional[ExecutionPlanState] = None
         self.copilot_history: list[tuple[str, str]] = []
+        # Главный copilot принадлежит приложению, а не временному HomeScreen:
+        # навигация к форме не должна обнулять историю OpenCode session.
+        self.home_copilot = None
         self._pending_copilot_request: Optional[tuple[str, Any, Optional[str]]] = None
         self._opencode_events: "queue.Queue[tuple[str, object]]" = queue.Queue()
 
@@ -199,6 +202,9 @@ class Application:
         plan_id: str = "",
         step_id: str = "",
         guidance: str = "",
+        provider_id: str = "",
+        model_id: str = "",
+        variant: str = "",
     ) -> None:
         """Передаёт очищенный контекст выбранной форме ровно один раз."""
         from forms.registry import FormRegistry
@@ -212,6 +218,9 @@ class Application:
                 plan_id=plan_id,
                 step_id=step_id,
                 guidance=guidance,
+                provider_id=provider_id,
+                model_id=model_id,
+                variant=variant,
             ),
         )
         try:
@@ -238,6 +247,9 @@ class Application:
         steps: tuple[PlannedFormStep, ...],
         title: str,
         shared_guidance: str = "",
+        provider_id: str = "",
+        model_id: str = "",
+        variant: str = "",
     ) -> ExecutionPlanState:
         """Сохраняет только явно принятый пользователем план."""
         self.execution_plan = ExecutionPlanState.from_specs(
@@ -245,6 +257,9 @@ class Application:
             specs=steps,
             title=title,
             shared_guidance=shared_guidance,
+            provider_id=provider_id,
+            model_id=model_id,
+            variant=variant,
         )
         return self.execution_plan
 
@@ -271,6 +286,9 @@ class Application:
             plan_id=handoff.plan_id,
             step_id=handoff.step_id,
             guidance=handoff.guidance,
+            provider_id=handoff.provider_id,
+            model_id=handoff.model_id,
+            variant=handoff.variant,
         )
 
     def mark_execution_plan_step(
@@ -494,18 +512,27 @@ class Application:
         self._closing = True
         self._pending_ai_handoff = None
         self._pending_copilot_request = None
-        ai_agent = None
+        ai_agents = []
         detach = getattr(self._current_screen, "detach_ai_for_shutdown", None)
         if callable(detach):
-            ai_agent = detach()
+            current_agent = detach()
+            if current_agent is not None:
+                ai_agents.append(current_agent)
+        if self.home_copilot is not None and all(
+            agent is not self.home_copilot for agent in ai_agents
+        ):
+            ai_agents.append(self.home_copilot)
+        self.home_copilot = None
         self._root.withdraw()
         finished = threading.Event()
 
         def worker() -> None:
             try:
-                if ai_agent is not None:
-                    ai_agent.cancel()
-                    ai_agent.close()
+                for ai_agent in ai_agents:
+                    try:
+                        ai_agent.cancel()
+                    finally:
+                        ai_agent.close()
                 self.opencode_manager.stop()
             finally:
                 finished.set()

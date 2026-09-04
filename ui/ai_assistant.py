@@ -29,6 +29,8 @@ class AIAssistantDialog:
         self._permission_rows: Dict[str, tk.Frame] = {}
         self._answered_permissions: set[str] = set()
         self._cancelled = False
+        self._spinner_after_id: Optional[str] = None
+        self._spinner_angle = 0
 
         self._dlg = tk.Toplevel(parent)
         self._dlg.title("OpenCode — помощник заполнения формы")
@@ -85,19 +87,27 @@ class AIAssistantDialog:
         status_card.pack(fill=tk.X, padx=20, pady=(0, 10))
         status_inner = tk.Frame(status_card, bg=theme.C["surface"])
         status_inner.pack(fill=tk.X, padx=1, pady=1)
+        status_line = tk.Frame(status_inner, bg=theme.C["surface"])
+        status_line.pack(fill=tk.X, padx=10, pady=8)
+        self._spinner = tk.Canvas(
+            status_line,
+            width=20,
+            height=20,
+            bg=theme.C["surface"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self._spinner.pack(side=tk.LEFT, padx=(0, 8))
         self._status_var = tk.StringVar(value="Подготавливаю операцию…")
         self._status_label = tk.Label(
-            status_inner,
+            status_line,
             textvariable=self._status_var,
             font=theme.F["body"],
             bg=theme.C["surface"],
             fg=theme.C["warning"],
             anchor="w",
         )
-        self._status_label.pack(fill=tk.X, padx=12, pady=(8, 4))
-        self._progress = ttk.Progressbar(status_inner, mode="indeterminate")
-        self._progress.pack(fill=tk.X, padx=12, pady=(0, 8))
-        self._progress.start(12)
+        self._status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         content = tk.PanedWindow(
             self._dlg,
@@ -193,7 +203,8 @@ class AIAssistantDialog:
             ConversationEvent(
                 "system",
                 "Безопасная сессия",
-                "Файлы и shell запрещены. Read-only MCP-вызовы требуют подтверждения; изменения запрещены.",
+                "Файлы и shell запрещены. Проверенные read-only JSON Repository "
+                "MCP-вызовы разрешены; изменения запрещены.",
             )
         )
         self.set_busy(True)
@@ -247,10 +258,47 @@ class AIAssistantDialog:
         self._input.config(state=state)
         self._stop_btn.config(state=tk.NORMAL if busy else tk.DISABLED)
         if busy:
-            self._progress.start(12)
+            self._spinner.pack(side=tk.LEFT, padx=(0, 8), before=self._status_label)
+            self._start_spinner()
         else:
-            self._progress.stop()
+            self._stop_spinner()
+            self._spinner.pack_forget()
             self._status_label.config(fg=theme.C["success"])
+
+    def _start_spinner(self) -> None:
+        if self._spinner_after_id is None and self.exists:
+            self._animate_spinner()
+
+    def _animate_spinner(self) -> None:
+        self._spinner_after_id = None
+        if not self.exists or str(self._stop_btn.cget("state")) == tk.DISABLED:
+            return
+        self._spinner.delete("all")
+        self._spinner.create_arc(
+            3,
+            3,
+            17,
+            17,
+            start=self._spinner_angle,
+            extent=255,
+            style=tk.ARC,
+            outline=theme.C["primary"],
+            width=3,
+        )
+        self._spinner_angle = (self._spinner_angle + 24) % 360
+        self._spinner_after_id = self._dlg.after(55, self._animate_spinner)
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_after_id is not None:
+            try:
+                self._dlg.after_cancel(self._spinner_after_id)
+            except tk.TclError:
+                pass
+            self._spinner_after_id = None
+        try:
+            self._spinner.delete("all")
+        except tk.TclError:
+            pass
 
     def append_message(self, role: str, text: str) -> None:
         clean = text.strip() or "Ответ не содержит текстовой части."
@@ -392,7 +440,7 @@ class AIAssistantDialog:
     def close(self) -> None:
         if not self.exists:
             return
-        self._progress.stop()
+        self._stop_spinner()
         try:
             self._dlg.grab_release()
         except tk.TclError:

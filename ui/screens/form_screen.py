@@ -65,6 +65,9 @@ class FormScreen(BaseScreen):
             self._ai_handoff.step_id if self._ai_handoff else plan_step_id
         )
         self._ai_plan_guidance = self._ai_handoff.guidance if self._ai_handoff else ""
+        self._ai_provider_id = self._ai_handoff.provider_id if self._ai_handoff else ""
+        self._ai_model_id = self._ai_handoff.model_id if self._ai_handoff else ""
+        self._ai_variant = self._ai_handoff.variant if self._ai_handoff else ""
         self._ai_autostart_pending = self._ai_prepared_context is not None
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
@@ -1076,8 +1079,15 @@ class FormScreen(BaseScreen):
                 return
 
         settings = self.app.env_manager.load()
-        provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
-        model_id = settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
+        provider_id = (
+            self._ai_provider_id
+            or settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
+        )
+        model_id = (
+            self._ai_model_id
+            or settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
+        )
+        variant = self._ai_variant if self._ai_model_id else ""
         try:
             max_context = int(
                 settings.get(OPENCODE_MAX_CONTEXT_CHARS_KEY, "120000")
@@ -1138,6 +1148,7 @@ class FormScreen(BaseScreen):
                 plan_guidance=self._ai_plan_guidance,
                 provider_id=provider_id,
                 model_id=model_id,
+                variant=variant,
                 cancel_event=cancel_event,
                 prepared_context=prepared_context,
                 on_progress=progress,

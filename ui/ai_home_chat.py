@@ -15,20 +15,20 @@ import ui.theme as theme
 from config.environments import (
     OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
-    OPENCODE_MODEL_ID_KEY,
-    OPENCODE_PROVIDER_ID_KEY,
     OPENCODE_REPOSITORY_GIT_PULL_KEY,
     OPENCODE_REPOSITORY_MCP_KEY,
 )
 from config.mcp_profiles import setting_enabled
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent
-from opencode_integration.client import OpenCodeCancelled
+from opencode_integration.client import OpenCodeCancelled, OpenCodeModel
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot
 from ui.dialogs import ask_ticket_id, show_confirm, show_error
 
 
 _log = logging.getLogger("opencode.home_chat")
+_DEFAULT_MODEL_LABEL = "По умолчанию из opencode.json"
+_DEFAULT_VARIANT_LABEL = "По умолчанию"
 
 
 class AIHomeChat(tk.Frame):
@@ -39,8 +39,12 @@ class AIHomeChat(tk.Frame):
         self.app = app
         self._queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         self._cancel_event: Optional[threading.Event] = None
-        self._copilot: Optional[UnifiedCopilot] = None
+        self._copilot: Optional[UnifiedCopilot] = getattr(
+            app, "home_copilot", None
+        )
         self._outcome: Optional[CopilotOutcome] = None
+        self._running_model: tuple[str, str, str] = ("", "", "")
+        self._outcome_model: tuple[str, str, str] = ("", "", "")
         self._poll_id: Optional[str] = None
         self._busy = False
         self._destroying = False
@@ -49,7 +53,14 @@ class AIHomeChat(tk.Frame):
         self._last_status_key = ""
         self._permission_rows: dict[str, tk.Frame] = {}
         self._pending_checked = False
+        self._models_loading = False
+        self._models_address = ""
+        self._model_by_label: dict[str, OpenCodeModel] = {}
+        self._spinner_after_id: Optional[str] = None
+        self._spinner_angle = 0
         self._build()
+        if self._copilot is not None and self._copilot.session_id:
+            self._set_session(self._copilot.session_id)
 
     def _build(self) -> None:
         surface = tk.Frame(self, bg=theme.C["surface"])
@@ -93,7 +104,44 @@ class AIHomeChat(tk.Frame):
             ),
             wraplength=820, justify=tk.LEFT, font=theme.F["small"],
             bg=hero_bg, fg=theme.C["text_label"],
-        ).pack(fill=tk.X, padx=18, pady=(2, 14))
+        ).pack(fill=tk.X, padx=18, pady=(2, 8))
+
+        model_row = tk.Frame(hero, bg=hero_bg)
+        model_row.pack(fill=tk.X, padx=18, pady=(0, 14))
+        tk.Label(
+            model_row, text="Модель", font=theme.F["small"],
+            bg=hero_bg, fg=theme.C["text_label"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        self._model_var = tk.StringVar(value="Загрузка из opencode.json…")
+        self._model_combo = ttk.Combobox(
+            model_row,
+            textvariable=self._model_var,
+            state="disabled",
+            width=43,
+        )
+        self._model_combo.pack(side=tk.LEFT, padx=(0, 12))
+        self._model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+        tk.Label(
+            model_row, text="Thinking", font=theme.F["small"],
+            bg=hero_bg, fg=theme.C["text_label"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        self._variant_var = tk.StringVar(value=_DEFAULT_VARIANT_LABEL)
+        self._variant_combo = ttk.Combobox(
+            model_row,
+            textvariable=self._variant_var,
+            values=(_DEFAULT_VARIANT_LABEL,),
+            state="disabled",
+            width=15,
+        )
+        self._variant_combo.pack(side=tk.LEFT)
+        self._reload_models_button = ttk.Button(
+            model_row,
+            text="↻",
+            width=3,
+            style="Chip.TButton",
+            command=self._reload_models,
+        )
+        self._reload_models_button.pack(side=tk.LEFT, padx=(6, 0))
 
         quick = tk.Frame(surface, bg=theme.C["surface"])
         quick.pack(fill=tk.X, padx=16, pady=(12, 9))
@@ -151,6 +199,14 @@ class AIHomeChat(tk.Frame):
             bg=theme.C["chat_status"], fg=theme.C["success"],
         )
         self._status_dot.pack(side=tk.LEFT, padx=(10, 6), pady=7)
+        self._spinner = tk.Canvas(
+            self._status_panel,
+            width=20,
+            height=20,
+            bg=theme.C["chat_status"],
+            highlightthickness=0,
+            bd=0,
+        )
         self._status_var = tk.StringVar(value="Готов к работе")
         self._status_label = tk.Label(
             self._status_panel, textvariable=self._status_var, font=theme.F["small"],
@@ -161,8 +217,6 @@ class AIHomeChat(tk.Frame):
             self._status_panel, text="Остановить", style="DangerGhost.TButton",
             command=self._cancel_request,
         )
-        self._progress = ttk.Progressbar(surface, mode="indeterminate", maximum=100)
-
         self._input_row = tk.Frame(surface, bg=theme.C["border_focus"])
         self._input_row.pack(fill=tk.X, padx=16, pady=(9, 4))
         composer = tk.Frame(self._input_row, bg=theme.C["input_bg"])
@@ -225,6 +279,17 @@ class AIHomeChat(tk.Frame):
         )
 
     def connected(self, address: str) -> None:
+        if self._copilot is not None and self._copilot.server_url != address:
+            previous = self._copilot
+            self._copilot = None
+            if getattr(self.app, "home_copilot", None) is previous:
+                self.app.home_copilot = None
+            self._set_session("")
+            threading.Thread(
+                target=previous.close,
+                name="opencode-previous-server-session-cleanup",
+                daemon=True,
+            ).start()
         self._connected_address = address
         short_address = (address or "OpenCode").removeprefix("http://")
         self._connection_label.config(
@@ -232,6 +297,10 @@ class AIHomeChat(tk.Frame):
             bg=theme.C["success_soft"],
             fg=theme.C["success"],
         )
+        if address != self._models_address:
+            self._load_models_from_opencode(address)
+        elif not self._models_loading:
+            self._set_model_controls_enabled(True)
         if not self._pending_checked:
             self._pending_checked = True
             self.after(120, self._consume_pending_request)
@@ -241,8 +310,157 @@ class AIHomeChat(tk.Frame):
         self._connection_label.config(
             text="●  Нет соединения", bg=theme.C["chat_error"], fg=theme.C["error"]
         )
+        self._set_model_controls_enabled(False)
         if self._busy:
             self._cancel_request()
+
+    def _reload_models(self) -> None:
+        if self._connected_address and not self._models_loading:
+            self._load_models_from_opencode(self._connected_address, force=True)
+
+    def _load_models_from_opencode(self, address: str, *, force: bool = False) -> None:
+        if self._destroying or self._models_loading:
+            return
+        if not force and address == self._models_address and self._model_by_label:
+            return
+        client = self.app.opencode_manager.client
+        if client is None:
+            return
+        self._models_loading = True
+        self._models_address = address
+        self._model_var.set("Загрузка из opencode.json…")
+        self._set_model_controls_enabled(False)
+
+        def worker() -> None:
+            try:
+                models = client.list_configured_models(timeout=10.0)
+            except Exception as exc:
+                self._queue.put(("models_error", (address, exc)))
+            else:
+                self._queue.put(("models", (address, models)))
+
+        threading.Thread(
+            target=worker,
+            name="opencode-model-catalog",
+            daemon=True,
+        ).start()
+        self._schedule_poll()
+
+    @staticmethod
+    def _model_label(model: OpenCodeModel) -> str:
+        return (
+            f"{model.model_name} · {model.provider_id}/{model.model_id}"
+        )
+
+    def _apply_models(self, address: str, models: list[OpenCodeModel]) -> None:
+        self._models_loading = False
+        if address != self._connected_address:
+            return
+        previous = self._model_by_label.get(self._model_var.get())
+        self._models_address = address
+        self._model_by_label = {
+            self._model_label(model): model
+            for model in models
+        }
+        labels = [_DEFAULT_MODEL_LABEL, *self._model_by_label]
+        self._model_combo.configure(values=labels)
+
+        selected = _DEFAULT_MODEL_LABEL
+        preferred_variant = self._variant_var.get()
+        if previous is not None:
+            selected = next(
+                (
+                    label
+                    for label, item in self._model_by_label.items()
+                    if (item.provider_id, item.model_id)
+                    == (previous.provider_id, previous.model_id)
+                ),
+                selected,
+            )
+        else:
+            remembered = (
+                self._copilot.model_selection
+                if self._copilot is not None
+                else ("", "", "")
+            )
+            configured = remembered[:2]
+            if remembered[1]:
+                preferred_variant = remembered[2] or _DEFAULT_VARIANT_LABEL
+            selected = next(
+                (
+                    label
+                    for label, item in self._model_by_label.items()
+                    if (item.provider_id, item.model_id) == configured
+                ),
+                selected,
+            )
+        self._model_var.set(selected)
+        self._sync_variant_choices()
+        selected_model = self._model_by_label.get(selected)
+        if (
+            selected_model is not None
+            and preferred_variant in selected_model.variants
+        ):
+            self._variant_var.set(preferred_variant)
+        self._set_model_controls_enabled(True)
+        if models and not self._busy:
+            self._status(
+                f"Загружено моделей из opencode.json: {len(models)}."
+            )
+        elif not models and not self._busy:
+            self._status(
+                "В opencode.json нет доступных моделей; используется выбор OpenCode.",
+                error=True,
+            )
+
+    def _models_failed(self, address: str, error: Exception) -> None:
+        self._models_loading = False
+        if address != self._connected_address:
+            return
+        self._model_by_label.clear()
+        self._model_combo.configure(values=(_DEFAULT_MODEL_LABEL,))
+        self._model_var.set(_DEFAULT_MODEL_LABEL)
+        self._sync_variant_choices()
+        self._set_model_controls_enabled(True)
+        _log.warning(
+            "failed to load OpenCode model catalog error_type=%s",
+            type(error).__name__,
+        )
+        if not self._busy:
+            self._status(
+                "Не удалось прочитать модели из opencode.json; используется default OpenCode.",
+                error=True,
+            )
+
+    def _on_model_selected(self, _event: Optional[tk.Event] = None) -> None:
+        self._sync_variant_choices()
+
+    def _sync_variant_choices(self) -> None:
+        model = self._model_by_label.get(self._model_var.get())
+        variants = model.variants if model is not None else ()
+        values = (_DEFAULT_VARIANT_LABEL, *variants)
+        current = self._variant_var.get()
+        self._variant_combo.configure(values=values)
+        self._variant_var.set(current if current in values else _DEFAULT_VARIANT_LABEL)
+
+    def _set_model_controls_enabled(self, enabled: bool) -> None:
+        active = enabled and bool(self._connected_address) and not self._busy
+        self._model_combo.configure(state="readonly" if active else "disabled")
+        self._variant_combo.configure(state="readonly" if active else "disabled")
+        self._reload_models_button.configure(
+            state=tk.NORMAL if active and not self._models_loading else tk.DISABLED
+        )
+
+    def _selected_model(self) -> tuple[str, str, str]:
+        model = self._model_by_label.get(self._model_var.get())
+        if model is not None:
+            variant = self._variant_var.get().strip()
+            if variant == _DEFAULT_VARIANT_LABEL or variant not in model.variants:
+                variant = ""
+            return model.provider_id, model.model_id, variant
+        if self._models_loading and self._copilot is not None:
+            return self._copilot.model_selection
+        return "", "", ""
 
     def _consume_pending_request(self) -> None:
         if self._destroying or not self._connected_address:
@@ -292,10 +510,11 @@ class AIHomeChat(tk.Frame):
         self._clear_actions()
         self._clear_permissions()
         self._outcome = None
+        self._outcome_model = ("", "", "")
         self._append("user", message)
         settings = self.app.env_manager.load()
-        provider_id = settings.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
-        model_id = settings.get(OPENCODE_MODEL_ID_KEY, "").strip()
+        provider_id, model_id, variant = self._selected_model()
+        self._running_model = (provider_id, model_id, variant)
         allowed_mcp = self._parse_mcp(settings.get(OPENCODE_ALLOWED_MCP_KEY, ""))
         repository_mcp = settings.get(OPENCODE_REPOSITORY_MCP_KEY, "").strip()
         allow_repository_git_pull = setting_enabled(
@@ -313,6 +532,7 @@ class AIHomeChat(tk.Frame):
                 allow_repository_git_pull=allow_repository_git_pull,
                 max_context_chars=max_context_chars,
             )
+            self.app.home_copilot = self._copilot
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         self._set_busy(True)
@@ -335,6 +555,7 @@ class AIHomeChat(tk.Frame):
                     message, environment=self.app.current_environment.get(),
                     ticket_id=ticket_id, diagnostic_data=diagnostic_data,
                     provider_id=provider_id, model_id=model_id,
+                    variant=variant,
                     cancel_event=cancel_event, on_progress=progress,
                     on_event=conversation, on_session=session_changed,
                 )
@@ -361,6 +582,12 @@ class AIHomeChat(tk.Frame):
                     self._handle_conversation_event(payload)
                 elif event == "session":
                     self._set_session(str(payload) if payload else "")
+                elif event == "models":
+                    address, models = payload
+                    self._apply_models(str(address), list(models))
+                elif event == "models_error":
+                    address, error = payload
+                    self._models_failed(str(address), error)
                 elif event == "permission_answered":
                     self._permission_answered(*payload)
                 elif event == "result":
@@ -369,7 +596,7 @@ class AIHomeChat(tk.Frame):
                     self._fail(payload)
         except queue.Empty:
             pass
-        if self._busy and not self._destroying:
+        if (self._busy or self._models_loading) and not self._destroying:
             self._schedule_poll()
 
     def _handle_conversation_event(self, event: ConversationEvent) -> None:
@@ -446,6 +673,7 @@ class AIHomeChat(tk.Frame):
     def _finish(self, outcome: CopilotOutcome) -> None:
         self._cancel_event = None
         self._outcome = outcome
+        self._outcome_model = self._running_model
         self._set_busy(False)
         self._clear_permissions()
         text = outcome.answer
@@ -521,7 +749,7 @@ class AIHomeChat(tk.Frame):
             button.config(state=tk.DISABLED)
             tk.Label(
                 self._action_frame,
-                text="Для запуска плана сначала укажите номер ITSM-заявки.",
+                text="Не удалось подготовить безопасный контекст для шагов плана.",
                 font=theme.F["small"], bg=theme.C["surface"], fg=theme.C["warning"],
             ).pack(anchor=tk.E, pady=(2, 0))
 
@@ -539,8 +767,15 @@ class AIHomeChat(tk.Frame):
             return
         self.app.accept_execution_plan(
             context=outcome.context, steps=outcome.plan,
-            title=f"Заявка {outcome.context.ticket_id}",
+            title=(
+                f"Заявка {outcome.context.ticket_id}"
+                if outcome.context.ticket_id
+                else "План из AI-чата"
+            ),
             shared_guidance=self._outcome_guidance(outcome),
+            provider_id=self._outcome_model[0],
+            model_id=self._outcome_model[1],
+            variant=self._outcome_model[2],
         )
         self._clear_actions()
         self._render_active_plan()
@@ -680,6 +915,9 @@ class AIHomeChat(tk.Frame):
                 form_id,
                 outcome.context,
                 guidance=self._outcome_guidance(outcome),
+                provider_id=self._outcome_model[0],
+                model_id=self._outcome_model[1],
+                variant=self._outcome_model[2],
             )
             return
         from ui.screens.form_screen import FormScreen
@@ -722,17 +960,9 @@ class AIHomeChat(tk.Frame):
         self._cancel_event = None
         self._set_busy(False)
         self._clear_permissions()
-        copilot = self._copilot
-        self._copilot = None
         if isinstance(error, OpenCodeCancelled):
             self._append("assistant", "Текущий запрос остановлен. Внешние системы не изменялись.")
             self._status("Запрос отменён.")
-            if copilot is not None:
-                threading.Thread(
-                    target=copilot.close,
-                    name="opencode-copilot-cancel-cleanup",
-                    daemon=True,
-                ).start()
         else:
             _log.error(
                 "unified copilot request failed error_type=%s session=%s",
@@ -747,13 +977,12 @@ class AIHomeChat(tk.Frame):
                 )
             else:
                 self._status("Ошибка AI-помощника. Можно повторить запрос.", error=True)
-            # Ошибочную session намеренно не удаляем: пользователь может открыть
-            # её в OpenCode Web и увидеть tool calls, retries и provider error.
-            # Следующий запрос получит новый UnifiedCopilot и новую session.
-            if copilot is not None:
+            # Session остаётся активной: следующий запрос продолжит тот же
+            # диалог и сможет опираться на уже сохранённый контекст.
+            if self._copilot is not None:
                 _log.info(
                     "failed copilot session preserved id=%s",
-                    copilot.session_id or self._session_id or "unknown",
+                    self._copilot.session_id or self._session_id or "unknown",
                 )
 
     def _cancel_request(self) -> None:
@@ -776,22 +1005,67 @@ class AIHomeChat(tk.Frame):
         self._send_button.config(state=state)
         if busy:
             self._status_panel.config(bg=theme.C["chat_status"])
-            self._status_dot.config(
-                text="●", bg=theme.C["chat_status"], fg=theme.C["primary"]
+            self._status_dot.pack_forget()
+            self._spinner.config(bg=theme.C["chat_status"])
+            self._spinner.pack(
+                side=tk.LEFT,
+                padx=(9, 5),
+                pady=5,
+                before=self._status_label,
             )
+            self._start_spinner()
             self._status_label.config(bg=theme.C["chat_status"])
             self._cancel_button.pack(side=tk.RIGHT, padx=6, pady=2)
-            self._progress.pack(fill=tk.X, padx=16, pady=(2, 0), before=self._input_row)
-            self._progress.start(10)
         else:
             self._cancel_button.pack_forget()
-            self._progress.stop()
-            self._progress.pack_forget()
+            self._stop_spinner()
+            self._spinner.pack_forget()
+            if not self._status_dot.winfo_ismapped():
+                self._status_dot.pack(
+                    side=tk.LEFT,
+                    padx=(10, 6),
+                    pady=7,
+                    before=self._status_label,
+                )
+        self._set_model_controls_enabled(True)
+
+    def _start_spinner(self) -> None:
+        if self._spinner_after_id is None and not self._destroying:
+            self._animate_spinner()
+
+    def _animate_spinner(self) -> None:
+        self._spinner_after_id = None
+        if not self._busy or self._destroying:
+            return
+        self._spinner.delete("all")
+        self._spinner.create_arc(
+            3,
+            3,
+            17,
+            17,
+            start=self._spinner_angle,
+            extent=255,
+            style=tk.ARC,
+            outline=theme.C["primary"],
+            width=3,
+        )
+        self._spinner_angle = (self._spinner_angle + 24) % 360
+        self._spinner_after_id = self.after(55, self._animate_spinner)
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_after_id is not None:
+            try:
+                self.after_cancel(self._spinner_after_id)
+            except tk.TclError:
+                pass
+            self._spinner_after_id = None
+        self._spinner.delete("all")
 
     def _status(self, message: str, *, error: bool = False) -> None:
         self._status_var.set(message)
         background = theme.C["chat_error"] if error else theme.C["chat_status"]
         self._status_panel.config(bg=background)
+        self._spinner.config(bg=background)
         self._status_dot.config(
             bg=background,
             fg=theme.C["error"] if error else (
@@ -918,10 +1192,13 @@ class AIHomeChat(tk.Frame):
 
     def detach_for_shutdown(self) -> Optional[UnifiedCopilot]:
         self._destroying = True
+        self._stop_spinner()
         if self._cancel_event is not None:
             self._cancel_event.set()
         copilot = self._copilot
         self._copilot = None
+        if getattr(self.app, "home_copilot", None) is copilot:
+            self.app.home_copilot = None
         if self._poll_id is not None:
             try:
                 self.after_cancel(self._poll_id)
@@ -929,6 +1206,25 @@ class AIHomeChat(tk.Frame):
                 pass
             self._poll_id = None
         return copilot
+
+    def detach_for_navigation(self) -> None:
+        """Отделяет Tk-виджет, сохраняя долгоживущую OpenCode session в app."""
+        self._destroying = True
+        self._stop_spinner()
+        if self._poll_id is not None:
+            try:
+                self.after_cancel(self._poll_id)
+            except tk.TclError:
+                pass
+            self._poll_id = None
+        if self._busy and self._cancel_event is not None:
+            self._cancel_event.set()
+            if self._copilot is not None:
+                threading.Thread(
+                    target=self._copilot.cancel,
+                    name="opencode-home-navigation-abort",
+                    daemon=True,
+                ).start()
 
     def shutdown(self) -> None:
         copilot = self.detach_for_shutdown()

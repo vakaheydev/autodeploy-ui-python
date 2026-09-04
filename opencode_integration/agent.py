@@ -76,6 +76,7 @@ class FormExtractorAgent:
         self._current_values: Mapping[str, Any] = {}
         self._provider_id = ""
         self._model_id = ""
+        self._variant = ""
         self._context_warnings: list[str] = []
         self._on_progress: Callable[[str], None] = lambda _message: None
         self._on_event: Callable[[ConversationEvent], None] = lambda _event: None
@@ -110,6 +111,7 @@ class FormExtractorAgent:
         plan_guidance: str = "",
         provider_id: str = "",
         model_id: str = "",
+        variant: str = "",
         cancel_event: Optional[threading.Event] = None,
         prepared_context: Optional[BuiltContext] = None,
         on_progress: Optional[Callable[[str], None]] = None,
@@ -126,6 +128,7 @@ class FormExtractorAgent:
             self._current_values = dict(current_values)
             self._provider_id = provider_id
             self._model_id = model_id
+            self._variant = variant
             self._cancel_event = cancel_event
             self._on_progress = on_progress or (lambda _message: None)
             self._on_event = on_event or (lambda _event: None)
@@ -137,7 +140,11 @@ class FormExtractorAgent:
                     raise ValueError(
                         "Подготовленный контекст относится к другой ITSM-заявке"
                     )
-                self._on_progress("Использую уже проверенный контекст заявки и PR…")
+                self._on_progress(
+                    "Использую уже подготовленный контекст…"
+                    if self._ticket_id
+                    else "Использую контекст AI-чата и MCP-источники…"
+                )
                 context = prepared_context
             else:
                 try:
@@ -166,10 +173,15 @@ class FormExtractorAgent:
             )
             self._check_cancel()
             self._session_id = self._client.create_session(
-                f"AutoDeploy form assistant: {context.ticket_id}",
+                (
+                    f"AutoDeploy form assistant: {context.ticket_id}"
+                    if context.ticket_id
+                    else "AutoDeploy form assistant: chat request"
+                ),
                 agent=FORM_EXTRACTOR_AGENT,
                 provider_id=provider_id,
                 model_id=model_id,
+                variant=variant,
                 mcp_names=enabled_mcp,
                 mcp_tool_allowlist=repository_tool_allowlist(active_repository_mcp),
                 mcp_tool_asklist=repository_tool_asklist(
@@ -200,7 +212,7 @@ class FormExtractorAgent:
                 allow_repository_git_pull=allow_repository_git_pull,
                 plan_guidance=plan_guidance,
             )
-            self._on_progress("Агент анализирует заявку и PR…")
+            self._on_progress("Агент анализирует данные для формы…")
             try:
                 return self._client.send_chat_message(
                     session_id=self._session_id,
@@ -209,6 +221,7 @@ class FormExtractorAgent:
                     agent=FORM_EXTRACTOR_AGENT,
                     provider_id=provider_id,
                     model_id=model_id,
+                    variant=variant,
                     cancel_event=cancel_event,
                     on_event=self._handle_raw_event,
                 )
@@ -235,6 +248,7 @@ class FormExtractorAgent:
                 agent=FORM_EXTRACTOR_AGENT,
                 provider_id=self._provider_id,
                 model_id=self._model_id,
+                variant=self._variant,
                 cancel_event=self._cancel_event,
                 on_event=self._handle_raw_event,
             )
@@ -255,6 +269,7 @@ class FormExtractorAgent:
                 agent=FORM_EXTRACTOR_AGENT,
                 provider_id=self._provider_id,
                 model_id=self._model_id,
+                variant=self._variant,
                 retry_count=2,
                 cancel_event=self._cancel_event,
                 on_event=self._handle_raw_event,
@@ -470,11 +485,23 @@ class FormExtractorAgent:
             part_id = str(part.get("id") or part.get("callID") or "")
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
             status = str(state.get("status") or "updated")
-            if part_id and self._part_states.get(part_id) == status:
-                return
+            previous = self._part_states.get(part_id) if part_id else None
             if part_id:
                 self._part_states[part_id] = status
             tool = str(part.get("tool") or state.get("title") or "MCP tool")
+            if status == "pending":
+                return
+            if status == "completed" and previous in {"running", "completed"}:
+                return
+            if status == "error" and previous in {"running", "completed"}:
+                self._emit(ConversationEvent(
+                    "status",
+                    f"Ошибка инструмента {tool}",
+                    self._safe_detail(state.get("error", "")),
+                ))
+                return
+            if previous == status:
+                return
             detail_value = (
                 state.get("error")
                 if status == "error"
@@ -482,7 +509,7 @@ class FormExtractorAgent:
             )
             self._emit(ConversationEvent(
                 "tool" if status != "error" else "error",
-                f"{tool}: {status}",
+                tool,
                 self._safe_detail(detail_value),
             ))
 

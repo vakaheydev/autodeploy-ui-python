@@ -28,13 +28,14 @@ from forms.api.create_api_form import CreateApiForm
 from forms.apps.deploy_app_form import DeployAppForm
 from forms.other.disable_ingress_form import DisableIngressForm
 from forms.other.enable_ingress_form import EnableIngressForm
-from opencode_integration.agent import FormExtractorAgent
+from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.client import (
     OpenCodeClient,
     OpenCodeError,
     OpenCodeHttpError,
     OpenCodeHealth,
     OpenCodeMessage,
+    OpenCodeModel,
     OpenCodeStructuredOutputError,
     build_session_permissions,
 )
@@ -60,6 +61,7 @@ from opencode_integration.manager import (
 )
 from opencode_integration.prompts import (
     build_copilot_prompt,
+    build_copilot_session_context,
     build_extraction_prompt,
     build_routing_prompt,
 )
@@ -429,6 +431,7 @@ class OpenCodeContractTests(unittest.TestCase):
             agent=FORM_EXTRACTOR_AGENT,
             provider_id="openai",
             model_id="gpt-test",
+            variant="high",
             mcp_names=["ado"],
         )
         result = client.send_structured_message(
@@ -439,17 +442,19 @@ class OpenCodeContractTests(unittest.TestCase):
             agent=FORM_EXTRACTOR_AGENT,
             provider_id="openai",
             model_id="gpt-test",
+            variant="high",
         )
         session_body = client.requests[0][2]
         message_body = client.requests[1][2]
         self.assertEqual(
             session_body["model"],
-            {"providerID": "openai", "id": "gpt-test"},
+            {"providerID": "openai", "id": "gpt-test", "variant": "high"},
         )
         self.assertEqual(
             message_body["model"],
             {"providerID": "openai", "modelID": "gpt-test"},
         )
+        self.assertEqual(message_body["variant"], "high")
         self.assertNotIn("format", message_body)
         self.assertIn("AUTODEPLOY_VALIDATED_JSON_PROTOCOL", message_body["system"])
         self.assertEqual(result, {"ok": True})
@@ -495,6 +500,21 @@ class OpenCodeContractTests(unittest.TestCase):
             client.requests,
             [("POST", "/permission/per_1/reply", {"reply": "once"})],
         )
+
+    def test_session_context_uses_no_reply_without_running_model(self) -> None:
+        client = _RecordingClient()
+        client.add_session_context(
+            session_id="ses_contract",
+            prompt="trusted context",
+            agent=AUTODEPLOY_COPILOT_AGENT,
+            provider_id="corp",
+            model_id="qwen",
+            variant="xhigh",
+        )
+        body = client.requests[0][2]
+        self.assertTrue(body["noReply"])
+        self.assertEqual(body["model"], {"providerID": "corp", "modelID": "qwen"})
+        self.assertEqual(body["variant"], "xhigh")
 
 
 class _FakeITSM:
@@ -700,6 +720,25 @@ class _Handler(BaseHTTPRequestHandler):
             ])
         elif self.path == "/provider":
             self._json(200, {"all": [], "connected": ["openai"]})
+        elif self.path == "/config/providers":
+            self._json(200, {
+                "providers": [{
+                    "id": "corp",
+                    "name": "Corporate",
+                    "models": {
+                        "Qwen3.8-27B-FP8": {
+                            "id": "Qwen3.8-27B-FP8",
+                            "providerID": "corp",
+                            "name": "Qwen 3.8 27B",
+                            "variants": {
+                                "high": {"reasoningEffort": "high"},
+                                "xhigh": {"reasoningEffort": "xhigh"},
+                            },
+                        },
+                    },
+                }],
+                "default": {"corp": "Qwen3.8-27B-FP8"},
+            })
         elif self.path == "/mcp":
             self._json(200, {
                 "ado": {"status": "connected"},
@@ -891,6 +930,16 @@ class ClientTests(unittest.TestCase):
         self.client.require_agent(FORM_EXTRACTOR_AGENT)
         self.client.require_provider("openai")
         self.assertEqual(self.client.list_mcp_servers()["ado"]["status"], "connected")
+        self.assertEqual(
+            self.client.list_configured_models(),
+            [OpenCodeModel(
+                provider_id="corp",
+                model_id="Qwen3.8-27B-FP8",
+                provider_name="Corporate",
+                model_name="Qwen 3.8 27B",
+                variants=("high", "xhigh"),
+            )],
+        )
 
         health = next(item for item in _Handler.requests if item[1] == "/global/health")
         agent = next(item for item in _Handler.requests if item[1] == "/agent")
@@ -1095,6 +1144,68 @@ class AgentWorkflowTests(unittest.TestCase):
         )
         agent.close()
         self.assertIn("Create API", client.chat_prompts[0])
+
+    def test_chat_context_needs_no_ticket_and_preserves_model_variant(self) -> None:
+        class FailingSource:
+            def get_ticket(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ITSM must not be called for a chat request")
+
+            def get_pull_request(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ADO must not be called for a chat request")
+
+        client = _AgentClient()
+        source = FailingSource()
+        agent = FormExtractorAgent(
+            client,  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            reference_resolver=_ReferenceBackend(),
+        )
+        agent.begin(
+            form=CreateApiForm(),
+            ticket_id="",
+            environment="test_int",
+            current_values={},
+            prepared_context=BuiltContext(
+                ticket_id="",
+                itsm={"source": "chat", "operator_request": "Create API"},
+                ado=None,
+                warnings=[],
+            ),
+            provider_id="corp",
+            model_id="qwen",
+            variant="xhigh",
+        )
+        self.assertEqual(client.created["variant"], "xhigh")
+        agent.close()
+
+    def test_form_agent_tool_lifecycle_is_rendered_as_one_call(self) -> None:
+        agent = FormExtractorAgent(
+            _AgentClient(),  # type: ignore[arg-type]
+            _FakeITSM(),
+            _FakeTFS(),
+            reference_resolver=_ReferenceBackend(),
+        )
+        events: list[ConversationEvent] = []
+        agent._on_event = events.append
+        for status in ("pending", "running", "completed"):
+            agent._handle_raw_event({
+                "type": "message.part.updated",
+                "properties": {
+                    "part": {
+                        "id": "part_1",
+                        "type": "tool",
+                        "tool": "gravitee_repo_get_api",
+                        "state": {
+                            "status": status,
+                            "input": {"id": "api-1", "scope": "test_int"},
+                        },
+                    },
+                },
+            })
+        tool_events = [event for event in events if event.kind == "tool"]
+        self.assertEqual(len(tool_events), 1)
+        self.assertEqual(tool_events[0].title, "gravitee_repo_get_api")
 
     def test_form_agent_applies_repository_git_pull_ui_policy(self) -> None:
         client = _AgentClient()
@@ -1356,8 +1467,7 @@ class CopilotContractTests(unittest.TestCase):
             validate_copilot_output(payload, form_ids=self.form_ids)
 
     def test_prompt_documents_real_mcp_tools_and_untrusted_boundaries(self) -> None:
-        prompt = build_copilot_prompt(
-            operator_message="найди API",
+        prompt = build_copilot_session_context(
             environment="test_int",
             form_catalog=build_form_catalog(_all_forms()),
             repository_mcp="gravitee_repo",
@@ -1369,14 +1479,23 @@ class CopilotContractTests(unittest.TestCase):
         self.assertEqual(prompt.count("END_UNTRUSTED_ITSM_DATA"), 1)
 
     def test_prompt_can_deny_git_pull_from_ui_setting(self) -> None:
-        prompt = build_copilot_prompt(
-            operator_message="найди API",
+        prompt = build_copilot_session_context(
             environment="test_int",
             form_catalog=build_form_catalog(_all_forms()),
             repository_mcp="gravitee_repo",
             allow_repository_git_pull=False,
         )
         self.assertIn('"git_pull_policy": "deny"', prompt)
+
+    def test_turn_prompt_does_not_repeat_catalog_or_ticket_context(self) -> None:
+        prompt = build_copilot_prompt(
+            operator_message="измени путь на /new",
+            diagnostic_data=None,
+        )
+        self.assertIn("измени путь на /new", prompt)
+        self.assertNotIn("TRUSTED_FORM_CATALOG", prompt)
+        self.assertNotIn("BEGIN_UNTRUSTED_ITSM_DATA", prompt)
+        self.assertNotIn("BEGIN_UNTRUSTED_ADO_DATA", prompt)
 
 
 class WorkflowPlanTests(unittest.TestCase):
@@ -1385,6 +1504,9 @@ class WorkflowPlanTests(unittest.TestCase):
         plan = ExecutionPlanState.from_specs(
             context=context,
             shared_guidance='{"repository_items":[{"name":"Payments"}]}',
+            provider_id="corp",
+            model_id="qwen",
+            variant="high",
             specs=(
                 PlannedFormStep("create", 1, "api.create", "Create", "Requested"),
                 PlannedFormStep(
@@ -1397,6 +1519,10 @@ class WorkflowPlanTests(unittest.TestCase):
         handoff = plan.handoff("create")
         self.assertEqual(handoff.step_id, "create")
         self.assertIn("Payments", handoff.guidance)
+        self.assertEqual(
+            (handoff.provider_id, handoff.model_id, handoff.variant),
+            ("corp", "qwen", "high"),
+        )
         plan.mark("create", "prepared", form_data={"name": "Payments"})
         self.assertEqual(plan.snapshot()[0].form_data["name"], "Payments")
         plan.mark("create", "completed")
@@ -1411,16 +1537,16 @@ class _CopilotClient:
     def __init__(
         self,
         payload: dict[str, Any],
-        *,
-        evidence_tool: str = "gravitee_repo_search_api_by_name",
     ) -> None:
         self.payload = payload
-        self.evidence_tool = evidence_tool
         self.created: dict[str, Any] = {}
         self.session_count = 0
         self.deleted: list[str] = []
         self.chat_calls = 0
         self.structured_calls = 0
+        self.context_prompts: list[str] = []
+        self.structured_prompts: list[str] = []
+        self.structured_requests: list[dict[str, Any]] = []
 
     def require_agent(self, name: str, **_kwargs: Any) -> None:
         self.agent = name
@@ -1436,31 +1562,21 @@ class _CopilotClient:
         self.session_count += 1
         return "ses_copilot" if self.session_count == 1 else f"ses_copilot_{self.session_count}"
 
+    def add_session_context(self, **kwargs: Any) -> None:
+        self.context_prompts.append(str(kwargs["prompt"]))
+
     def send_structured_message(self, **kwargs: Any) -> dict[str, Any]:
         self.structured_calls += 1
-        observer = kwargs.get("on_response")
-        if observer:
-            observer({
-                "parts": [{
-                    "type": "tool",
-                    "tool": self.evidence_tool,
-                    "state": {"output": [{
-                        "scope": "test_int",
-                        "x-filepath": "INT/payments.Api.json",
-                    }]},
-                }],
-            })
+        self.structured_requests.append(dict(kwargs))
+        self.structured_prompts.append(str(kwargs["prompt"]))
         return self.payload
 
     def send_chat_message(self, **kwargs: Any) -> OpenCodeMessage:
         self.chat_calls += 1
-        observer = kwargs.get("on_response")
         response = {
             "info": {"id": "msg_chat"},
             "parts": [{"type": "text", "text": "Привет! Чем помочь?"}],
         }
-        if observer:
-            observer(response)
         return OpenCodeMessage(
             "Привет! Чем помочь?",
             {"id": "msg_chat"},
@@ -1519,7 +1635,34 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(events[0].detail, "попытка 2")
         self.assertEqual(events[1].title, "OpenCode анализирует запрос")
 
-    def test_copilot_uses_exact_repository_profile_and_verifies_sources(self) -> None:
+    def test_tool_lifecycle_is_rendered_as_one_call(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events = []
+        copilot._on_event = events.append
+        for status in ("pending", "running", "completed"):
+            copilot._handle_raw_event({
+                "type": "message.part.updated",
+                "properties": {
+                    "part": {
+                        "id": "part_1",
+                        "type": "tool",
+                        "tool": "gravitee_repo_search_api_by_name",
+                        "state": {
+                            "status": status,
+                            "input": {"name": "Payments", "scope": "test_int"},
+                        },
+                    },
+                },
+            })
+        tool_events = [event for event in events if event.kind == "tool"]
+        self.assertEqual(len(tool_events), 1)
+        self.assertEqual(tool_events[0].title, "gravitee_repo_search_api_by_name")
+        self.assertNotIn("running", tool_events[0].title)
+
+    def test_copilot_uses_exact_repository_profile(self) -> None:
         payload = _copilot_payload("repository_search")
         payload["repository_items"] = [{
             "entity_type": "api", "identifier": "api-1", "name": "Payments",
@@ -1550,7 +1693,7 @@ class CopilotWorkflowTests(unittest.TestCase):
         copilot.close()
         self.assertEqual(client.deleted, ["ses_copilot"])
 
-    def test_unobserved_repository_source_is_rejected(self) -> None:
+    def test_repository_result_does_not_depend_on_lossy_sse_events(self) -> None:
         payload = _copilot_payload("repository_search")
         payload["repository_items"] = [{
             "entity_type": "api", "identifier": "fake", "name": "Fake",
@@ -1563,26 +1706,10 @@ class CopilotWorkflowTests(unittest.TestCase):
             _FakeITSM(), _FakeTFS(), forms=_all_forms(),
             allowed_mcp=["gravitee_repo"], repository_mcp="gravitee_repo",
         )
-        with self.assertRaises(CopilotValidationError):
-            copilot.ask("найди Fake", environment="test_int")
+        outcome = copilot.ask("найди Fake", environment="test_int")
+        self.assertEqual(outcome.repository_items[0].identifier, "fake")
 
-    def test_other_mcp_cannot_forge_repository_evidence(self) -> None:
-        payload = _copilot_payload("repository_search")
-        payload["repository_items"] = [{
-            "entity_type": "api", "identifier": "api-1", "name": "Payments",
-            "scope": "test_int", "path": "INT/payments.Api.json", "score": 100,
-            "reason": "Claimed by another MCP",
-        }]
-        client = _CopilotClient(payload, evidence_tool="ado_search_api_by_name")
-        copilot = UnifiedCopilot(
-            client,  # type: ignore[arg-type]
-            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
-            allowed_mcp=["gravitee_repo"], repository_mcp="gravitee_repo",
-        )
-        with self.assertRaises(CopilotValidationError):
-            copilot.ask("найди Payments", environment="test_int")
-
-    def test_new_ticket_gets_fresh_session(self) -> None:
+    def test_new_ticket_keeps_session_and_adds_context_once(self) -> None:
         client = _CopilotClient(_copilot_payload())
         copilot = UnifiedCopilot(
             client,  # type: ignore[arg-type]
@@ -1592,8 +1719,85 @@ class CopilotWorkflowTests(unittest.TestCase):
         second = copilot.ask("REQ-2", environment="test_int")
         self.assertEqual(first.context.ticket_id, "REQ-1")
         self.assertEqual(second.context.ticket_id, "REQ-2")
-        self.assertEqual(client.session_count, 2)
-        self.assertEqual(client.deleted, ["ses_copilot"])
+        self.assertEqual(client.session_count, 1)
+        self.assertEqual(client.deleted, [])
+        self.assertEqual(len(client.context_prompts), 2)
+        self.assertIn("REQ-1", client.context_prompts[0])
+        self.assertIn("REQ-2", client.context_prompts[1])
+        self.assertNotIn("TRUSTED_FORM_CATALOG", client.structured_prompts[0])
+        self.assertNotIn("BEGIN_UNTRUSTED_ITSM_DATA", client.structured_prompts[1])
+
+    def test_same_ticket_context_is_not_resent_on_follow_up(self) -> None:
+        client = _CopilotClient(_copilot_payload())
+        copilot = UnifiedCopilot(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        copilot.ask("REQ-1", environment="test_int")
+        copilot.ask("уточни выбранную форму", environment="test_int")
+        self.assertEqual(client.session_count, 1)
+        self.assertEqual(len(client.context_prompts), 1)
+        self.assertEqual(client.structured_calls, 2)
+
+    def test_model_variant_can_change_without_recreating_chat_session(self) -> None:
+        client = _CopilotClient(_copilot_payload())
+        copilot = UnifiedCopilot(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        copilot.ask(
+            "найди Payments",
+            environment="test_int",
+            provider_id="corp",
+            model_id="qwen",
+            variant="high",
+        )
+        copilot.ask(
+            "теперь найди Billing",
+            environment="test_int",
+            provider_id="corp",
+            model_id="qwen",
+            variant="xhigh",
+        )
+        self.assertEqual(client.session_count, 1)
+        self.assertEqual(client.created["variant"], "high")
+        self.assertEqual(client.structured_requests[-1]["variant"], "xhigh")
+
+    def test_form_can_be_selected_without_itsm_ticket(self) -> None:
+        class FailingSource:
+            def get_ticket(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ITSM must not be called without an explicit ticket")
+
+            def get_pull_request(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ADO must not be called without an explicit ticket")
+
+        payload = _copilot_payload("single_form")
+        payload["selected_form_id"] = "api.create"
+        payload["form_candidates"] = [
+            {"form_id": "api.create", "score": 96, "reason": "Create requested"},
+            {"form_id": "apps.deploy", "score": 20, "reason": "Not a deploy"},
+            {
+                "form_id": "other.ingress.enable",
+                "score": 5,
+                "reason": "Not ingress",
+            },
+        ]
+        source = FailingSource()
+        copilot = UnifiedCopilot(
+            _CopilotClient(payload),  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            forms=_all_forms(),
+        )
+        outcome = copilot.ask(
+            "Создай API как Payments, но с путём /payments-v2",
+            environment="test_int",
+        )
+        self.assertEqual(outcome.selected_form_id, "api.create")
+        self.assertIsNotNone(outcome.context)
+        self.assertEqual(outcome.context.ticket_id, "")
+        self.assertIn("/payments-v2", outcome.context.itsm["operator_request"])
+        self.assertEqual(outcome.context.warnings, [])
 
     def test_diagnostic_payload_is_redacted_and_bounded(self) -> None:
         copilot = UnifiedCopilot(

@@ -38,6 +38,9 @@ class AIFormHandoff:
     plan_id: str = ""
     step_id: str = ""
     guidance: str = ""
+    provider_id: str = ""
+    model_id: str = ""
+    variant: str = ""
 
 
 @dataclass
@@ -49,6 +52,9 @@ class ExecutionPlanState:
     steps: list[RuntimePlanStep]
     title: str = "План исполнения заявки"
     shared_guidance: str = ""
+    provider_id: str = ""
+    model_id: str = ""
+    variant: str = ""
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     _lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -64,6 +70,9 @@ class ExecutionPlanState:
         specs: tuple[PlannedFormStep, ...],
         title: str = "План исполнения заявки",
         shared_guidance: str = "",
+        provider_id: str = "",
+        model_id: str = "",
+        variant: str = "",
     ) -> "ExecutionPlanState":
         return cls(
             ticket_id=context.ticket_id,
@@ -71,6 +80,9 @@ class ExecutionPlanState:
             steps=[RuntimePlanStep(spec=item) for item in specs],
             title=title,
             shared_guidance=str(shared_guidance)[:20_000],
+            provider_id=provider_id,
+            model_id=model_id,
+            variant=variant,
         )
 
     def snapshot(self) -> tuple[RuntimePlanStep, ...]:
@@ -148,4 +160,7 @@ class ExecutionPlanState:
                 plan_id=self.plan_id,
                 step_id=item.spec.step_id,
                 guidance=guidance,
+                provider_id=self.provider_id,
+                model_id=self.model_id,
+                variant=self.variant,
             )

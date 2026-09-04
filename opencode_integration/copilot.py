@@ -6,12 +6,11 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from config.form_routing import build_form_catalog
 from config.mcp_profiles import (
-    JSON_REPOSITORY_READ_TOOLS,
     choose_repository_mcp,
     repository_tool_allowlist,
     repository_tool_asklist,
@@ -31,7 +30,10 @@ from opencode_integration.manager import AUTODEPLOY_COPILOT_AGENT
 from opencode_integration.prompts import (
     COPILOT_SYSTEM_RULES,
     build_copilot_conversation_prompt,
+    build_copilot_environment_context,
     build_copilot_prompt,
+    build_copilot_session_context,
+    build_copilot_ticket_context,
 )
 from opencode_integration.schemas import build_copilot_schema
 from opencode_integration.workflow import PlannedFormStep
@@ -322,6 +324,7 @@ class UnifiedCopilot:
         self._cancel_event: Optional[threading.Event] = None
         self._provider_id = ""
         self._model_id = ""
+        self._variant = ""
         self._on_event: Callable[[ConversationEvent], None] = lambda _event: None
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
@@ -329,7 +332,9 @@ class UnifiedCopilot:
         self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
         self._operation_lock = threading.Lock()
-        self._repository_evidence: set[tuple[str, str]] = set()
+        self._session_context_initialized = False
+        self._sent_ticket_contexts: set[str] = set()
+        self._sent_environments: set[str] = set()
 
     @property
     def session_id(self) -> Optional[str]:
@@ -343,6 +348,14 @@ class UnifiedCopilot:
     def repository_mcp(self) -> str:
         return self._active_repository_mcp
 
+    @property
+    def model_selection(self) -> tuple[str, str, str]:
+        return self._provider_id, self._model_id, self._variant
+
+    @property
+    def server_url(self) -> str:
+        return self._client.base_url
+
     def ask(
         self,
         message: str,
@@ -352,6 +365,7 @@ class UnifiedCopilot:
         diagnostic_data: Any = None,
         provider_id: str = "",
         model_id: str = "",
+        variant: str = "",
         cancel_event: Optional[threading.Event] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[ConversationEvent], None]] = None,
@@ -369,6 +383,7 @@ class UnifiedCopilot:
             self._on_session = on_session or (lambda _session: None)
             self._provider_id = provider_id
             self._model_id = model_id
+            self._variant = variant
             self._last_session_status_signature = ""
             started = time.monotonic()
 
@@ -385,15 +400,15 @@ class UnifiedCopilot:
                     )
                 except InterruptedError as exc:
                     raise OpenCodeCancelled("Операция отменена пользователем") from exc
-                # Другая заявка никогда не продолжает старую conversation:
-                # контекст и MCP evidence из разных заявок не смешиваются.
-                if self._context is not None:
-                    notify("Создаю отдельную AI-сессию для новой заявки…")
-                    self._reset_session()
                 self._context = new_context
             self._check_cancel()
             self._ensure_session(notify)
             context = self._context
+            self._ensure_context_stored(
+                environment=environment,
+                context=context,
+                notify=notify,
+            )
 
             if diagnostic_data is None and is_casual_conversation(text):
                 notify("OpenCode готовит ответ…")
@@ -404,9 +419,9 @@ class UnifiedCopilot:
                     agent=AUTODEPLOY_COPILOT_AGENT,
                     provider_id=provider_id,
                     model_id=model_id,
+                    variant=variant,
                     cancel_event=cancel_event,
                     on_event=self._handle_raw_event,
-                    on_response=self._capture_response_evidence,
                 )
                 answer = message_result.text.strip()
                 if not answer:
@@ -439,29 +454,17 @@ class UnifiedCopilot:
                 session_id=self._require_session(),
                 prompt=build_copilot_prompt(
                     operator_message=text,
-                    environment=environment,
-                    form_catalog=self._catalog,
-                    repository_mcp=self._active_repository_mcp,
-                    other_mcp=tuple(
-                        name
-                        for name in self._active_mcp
-                        if name != self._active_repository_mcp
-                    ),
-                    itsm_data=context.itsm if context else None,
-                    ado_data=context.ado if context else None,
-                    context_warnings=context.warnings if context else (),
                     diagnostic_data=self._bounded_diagnostic_data(diagnostic_data),
-                    allow_repository_git_pull=self._allow_repository_git_pull,
                 ),
                 system=COPILOT_SYSTEM_RULES,
                 schema=build_copilot_schema(self._form_ids),
                 agent=AUTODEPLOY_COPILOT_AGENT,
                 provider_id=provider_id,
                 model_id=model_id,
+                variant=variant,
                 retry_count=2,
                 cancel_event=cancel_event,
                 on_event=self._handle_raw_event,
-                on_response=self._capture_response_evidence,
             )
             notify("Проверяю ответ помощника Python-валидатором…")
             outcome = validate_copilot_output(
@@ -469,7 +472,23 @@ class UnifiedCopilot:
                 form_ids=self._form_ids,
                 context=context,
             )
-            self._verify_repository_evidence(outcome)
+            if context is None and outcome.intent in {"single_form", "execution_plan"}:
+                # Запрос из главного чата может не иметь ITSM ID. Для этапа
+                # extractor достаточно очищенного текста оператора и уже
+                # валидированного handoff с MCP-путями: extractor сам прочитает
+                # нужную definition через разрешённый read-only MCP.
+                context = BuiltContext(
+                    ticket_id="",
+                    itsm={
+                        "source": "Gravitee Copilot chat",
+                        "operator_request": text,
+                    },
+                    ado=None,
+                    # Отсутствие ITSM ID в главном чате — штатный
+                    # сценарий, а не warning для preview.
+                    warnings=[],
+                )
+                outcome = replace(outcome, context=context)
             _log.info(
                 "copilot success session=%s intent=%s ticket=%s repository_items=%d "
                 "plan_steps=%d duration=%.2fs",
@@ -515,6 +534,7 @@ class UnifiedCopilot:
             agent=AUTODEPLOY_COPILOT_AGENT,
             provider_id=self._provider_id,
             model_id=self._model_id,
+            variant=self._variant,
             mcp_names=mcp_names,
             mcp_tool_allowlist=repository_tool_allowlist(self._active_repository_mcp),
             mcp_tool_asklist=repository_tool_asklist(
@@ -541,6 +561,73 @@ class UnifiedCopilot:
             ),
         ))
 
+    def _ensure_context_stored(
+        self,
+        *,
+        environment: str,
+        context: Optional[BuiltContext],
+        notify: Callable[[str], None],
+    ) -> None:
+        """Сохраняет каталог и внешние данные в session один раз через noReply."""
+        ticket_id = context.ticket_id if context is not None else ""
+        if not self._session_context_initialized:
+            notify("Один раз сохраняю контекст в истории AI-сессии…")
+            prompt = build_copilot_session_context(
+                environment=environment,
+                form_catalog=self._catalog,
+                repository_mcp=self._active_repository_mcp,
+                other_mcp=tuple(
+                    name
+                    for name in self._active_mcp
+                    if name != self._active_repository_mcp
+                ),
+                allow_repository_git_pull=self._allow_repository_git_pull,
+                itsm_data=context.itsm if context else None,
+                ado_data=context.ado if context else None,
+                context_warnings=context.warnings if context else (),
+            )
+            self._client.add_session_context(
+                session_id=self._require_session(),
+                prompt=prompt,
+                system=COPILOT_SYSTEM_RULES,
+                agent=AUTODEPLOY_COPILOT_AGENT,
+                provider_id=self._provider_id,
+                model_id=self._model_id,
+                variant=self._variant,
+            )
+            self._session_context_initialized = True
+            self._sent_environments.add(environment)
+            if ticket_id:
+                self._sent_ticket_contexts.add(ticket_id)
+            return
+
+        updates: list[str] = []
+        if environment not in self._sent_environments:
+            updates.append(build_copilot_environment_context(environment))
+        if context is not None and ticket_id not in self._sent_ticket_contexts:
+            updates.append(build_copilot_ticket_context(
+                ticket_id=ticket_id,
+                environment=environment,
+                itsm_data=context.itsm,
+                ado_data=context.ado,
+                context_warnings=context.warnings,
+            ))
+        if not updates:
+            return
+        notify("Добавляю новый контекст в текущую AI-сессию…")
+        self._client.add_session_context(
+            session_id=self._require_session(),
+            prompt="\n\n".join(updates),
+            system=COPILOT_SYSTEM_RULES,
+            agent=AUTODEPLOY_COPILOT_AGENT,
+            provider_id=self._provider_id,
+            model_id=self._model_id,
+            variant=self._variant,
+        )
+        self._sent_environments.add(environment)
+        if context is not None:
+            self._sent_ticket_contexts.add(ticket_id)
+
     def approve_permission(self, permission_id: str, *, allow: bool) -> None:
         self._client.respond_permission(
             self._require_session(), permission_id, "once" if allow else "reject"
@@ -559,7 +646,7 @@ class UnifiedCopilot:
         self._reset_session()
 
     def _reset_session(self) -> None:
-        """Удаляет session и очищает всё накопленное внешнее evidence."""
+        """Удаляет session при закрытии чата и очищает локальное состояние."""
         session_id = self._session_id
         self._session_id = None
         if session_id is not None:
@@ -569,7 +656,9 @@ class UnifiedCopilot:
                 _log.warning("copilot session delete failed id=%s", session_id, exc_info=True)
         self._active_repository_mcp = ""
         self._active_mcp = ()
-        self._repository_evidence.clear()
+        self._session_context_initialized = False
+        self._sent_ticket_contexts.clear()
+        self._sent_environments.clear()
         self._part_states.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
@@ -638,45 +727,32 @@ class UnifiedCopilot:
             part_id = str(part.get("id") or part.get("callID") or "")
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
             status = str(state.get("status") or "updated")
-            if part_id and self._part_states.get(part_id) == status:
-                return
+            previous = self._part_states.get(part_id) if part_id else None
             if part_id:
                 self._part_states[part_id] = status
             tool = str(part.get("tool") or state.get("title") or "MCP tool")
+            if status == "pending":
+                return
+            # Один tool call занимает в чате одну строку. running показывается
+            # сразу; последующий completed уже не дублирует тот же вызов. Если
+            # SSE пропустил running, строка появится на completed.
+            if status == "completed" and previous in {"running", "completed"}:
+                return
+            if status == "error" and previous in {"running", "completed"}:
+                self._emit(ConversationEvent(
+                    "status",
+                    f"Ошибка инструмента {tool}",
+                    self._safe_detail(state.get("error", "")),
+                ))
+                return
+            if previous == status:
+                return
             detail = state.get("error") if status == "error" else state.get("input", "")
-            if (
-                status != "error"
-                and "output" in state
-                and self._is_repository_read_tool(tool)
-            ):
-                self._record_repository_evidence(state.get("output"))
             self._emit(ConversationEvent(
                 "error" if status == "error" else "tool",
-                f"{tool}: {status}",
+                tool,
                 self._safe_detail(detail),
             ))
-
-    def _capture_response_evidence(self, response: Mapping[str, Any]) -> None:
-        parts = response.get("parts", ())
-        if not isinstance(parts, (list, tuple)):
-            return
-        for part in parts:
-            if not isinstance(part, Mapping) or part.get("type") != "tool":
-                continue
-            tool = str(part.get("tool") or "")
-            if not self._is_repository_read_tool(tool):
-                continue
-            state = part.get("state")
-            if isinstance(state, Mapping):
-                self._record_repository_evidence(state.get("output"))
-
-    def _is_repository_read_tool(self, tool: str) -> bool:
-        server = self._active_repository_mcp
-        if not server:
-            return False
-        return tool in {
-            f"{server}_{tool_name}" for tool_name in JSON_REPOSITORY_READ_TOOLS
-        }
 
     def _bounded_diagnostic_data(self, value: Any) -> Any:
         """Очищает диагностический payload и жёстко ограничивает его размер."""
@@ -697,38 +773,6 @@ class UnifiedCopilot:
             "_original_characters": len(rendered),
             "_json_excerpt": rendered[: max(0, budget - 120)],
         }
-
-    def _record_repository_evidence(self, value: Any) -> None:
-        if isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except (json.JSONDecodeError, ValueError):
-                return
-            self._record_repository_evidence(decoded)
-            return
-        if isinstance(value, Mapping):
-            path = value.get("x-filepath")
-            scope = value.get("scope")
-            if isinstance(path, str) and isinstance(scope, str):
-                self._repository_evidence.add((scope, path))
-            for child in value.values():
-                self._record_repository_evidence(child)
-            return
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                self._record_repository_evidence(child)
-
-    def _verify_repository_evidence(self, outcome: CopilotOutcome) -> None:
-        unsupported = [
-            f"{item.scope}:{item.path}"
-            for item in outcome.repository_items
-            if (item.scope, item.path) not in self._repository_evidence
-        ]
-        if unsupported:
-            raise CopilotValidationError(
-                "Ответ содержит репозиторные источники, которых не было в "
-                "подтверждённых MCP-результатах: " + ", ".join(unsupported[:10])
-            )
 
     @staticmethod
     def _safe_detail(value: Any) -> str:
