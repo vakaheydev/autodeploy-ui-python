@@ -97,8 +97,8 @@ Product behavior:
     summaries or selected fields are insufficient.
 13. Scores are 0..100 and must reflect explicit evidence. Ask a concise question
     when the intent, form, entity, or scope is ambiguous.
-14. Do not execute forms or plans. The application performs validation, preview,
-    manual confirmation and submission.
+14. Do not execute forms or plans. The application performs validation, inline
+    field review, manual confirmation and submission.
 15. You control the next form-extractor through an extraction directive. Choose
     fill_only only when every required form value is explicitly supplied or was
     already established by evidence in this conversation and no new lookup is
@@ -219,7 +219,7 @@ Do not produce final JSON yet. Briefly tell the operator:
 - which form values are supported by evidence;
 - which values are missing or conflicting;
 - which read-only MCP lookup, if any, would help.
-Wait for operator guidance or the explicit request to build the preview.
+Wait for operator guidance or the explicit request to build the final proposals.
 """
 
 
@@ -391,7 +391,7 @@ every form when fewer than three exist) and select one only with strong evidence
 For execution_plan return two or more ordered steps with stable step IDs. For
 repository results, return scope and x-filepath exactly as supplied by the tool.
 For diagnostics, separate confirmed facts from probable causes. Never execute a
-form action; the application validates and previews every proposal.
+form action; the application validates and shows every proposal for inline review.
 """
 
 

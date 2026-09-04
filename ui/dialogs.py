@@ -13,6 +13,7 @@ ui/dialogs.py — типовые диалоговые окна и UI-утили�
     show_polling_info(parent, title, text)  — немодальное окно после завершения опроса с кнопкой «Скопировать»
     show_item_detail(parent, title, item, detail_keys) — карточка детали элемента справочника
     ask_string(parent, title, prompt, confirm_text) → Optional[str] — диалог ввода строки
+    ask_text(parent, title, prompt, confirm_text) → Optional[str] — многострочное уточнение
     ask_dictionary(parent, title, reference, environment, app, ..., items) → Optional[str] — выбор одного элемента справочника; items — кастомный набор вместо resolver
     ask_multi_dictionary(parent, title, reference, environment, app, ...) → Optional[List[str]] — выбор нескольких элементов справочника
     ask_ticket_id(parent) → Optional[str]  — диалог ввода номера ITSM-заявки
@@ -514,6 +515,88 @@ def ask_string(
 
     _center(dlg)
     entry.focus_set()
+    dlg.wait_window()
+    return result[0]
+
+
+def ask_text(
+    parent: tk.Widget,
+    title: str,
+    prompt: str,
+    confirm_text: str = "Отправить",
+) -> Optional[str]:
+    """Тематический многострочный ввод для инструкций и AI-уточнений."""
+    result: list[Optional[str]] = [None]
+    dlg = _make_dialog(parent, title, min_width=560, min_height=280)
+    dlg.resizable(True, True)
+
+    content = tk.Frame(dlg, bg=theme.C["bg"])
+    content.pack(padx=20, pady=(16, 8), fill=tk.BOTH, expand=True)
+    tk.Label(
+        content,
+        text=prompt,
+        font=theme.F["body"],
+        bg=theme.C["bg"],
+        fg=theme.C["text"],
+        anchor="w",
+        justify=tk.LEFT,
+        wraplength=520,
+    ).pack(fill=tk.X, pady=(0, 8))
+    editor = tk.Text(
+        content,
+        height=7,
+        wrap=tk.WORD,
+        font=theme.F["body"],
+        bg=theme.C["input_bg"],
+        fg=theme.C["text"],
+        insertbackground=theme.C["text"],
+        relief="flat",
+        padx=8,
+        pady=7,
+        highlightthickness=1,
+        highlightbackground=theme.C["input_border"],
+        highlightcolor=theme.C["border_focus"],
+    )
+    editor.pack(fill=tk.BOTH, expand=True)
+    tk.Label(
+        content,
+        text="Ctrl+Enter — отправить",
+        font=theme.F["small"],
+        bg=theme.C["bg"],
+        fg=theme.C["text_muted"],
+        anchor="e",
+    ).pack(fill=tk.X, pady=(4, 0))
+
+    theme.separator(dlg, pady=6)
+    buttons = tk.Frame(dlg, bg=theme.C["bg"])
+    buttons.pack(pady=(0, 14))
+
+    def _confirm() -> None:
+        value = editor.get("1.0", "end-1c").strip()
+        if value:
+            result[0] = value
+            dlg.destroy()
+
+    def _confirm_from_keyboard(_event: tk.Event) -> str:
+        _confirm()
+        return "break"
+
+    editor.bind("<Control-Return>", _confirm_from_keyboard)
+    ttk.Button(
+        buttons,
+        text=confirm_text,
+        style="Primary.TButton",
+        command=_confirm,
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    ttk.Button(
+        buttons,
+        text="Отмена",
+        style="Secondary.TButton",
+        command=dlg.destroy,
+    ).pack(side=tk.LEFT)
+
+    _center(dlg)
+    editor.focus_set()
     dlg.wait_window()
     return result[0]
 

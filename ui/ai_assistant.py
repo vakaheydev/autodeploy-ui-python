@@ -194,7 +194,7 @@ class AIAssistantDialog:
         self._send_btn.pack(side=tk.LEFT, padx=(0, 6))
         self._finalize_btn = ttk.Button(
             buttons,
-            text="Сформировать preview",
+            text="Перенести предложения в форму",
             style="Primary.TButton",
             command=self._on_finalize,
         )
@@ -229,7 +229,7 @@ class AIAssistantDialog:
                 ),
                 (
                     "Copilot уже передал значения полей. Агент сразу формирует "
-                    "preview; поиск и инструменты технически отключены."
+                    "предложения; поиск и инструменты технически отключены."
                     if self._mode == "fill_only"
                     else "Файлы и shell запрещены. Проверенные read-only JSON "
                     "Repository MCP-вызовы разрешены; изменения запрещены."

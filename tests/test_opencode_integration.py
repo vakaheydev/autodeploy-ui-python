@@ -1336,6 +1336,7 @@ class _AgentClient:
 
     def __init__(self) -> None:
         self.created: dict[str, Any] = {}
+        self.create_count = 0
         self.chat_prompts: list[str] = []
         self.structured_requests: list[dict[str, Any]] = []
         self.deleted: list[str] = []
@@ -1353,6 +1354,7 @@ class _AgentClient:
         }
 
     def create_session(self, _title: str, **kwargs: Any) -> str:
+        self.create_count += 1
         self.created = kwargs
         return "ses_agent"
 
@@ -1458,6 +1460,30 @@ class AgentWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result.form_data["category"], "external")
         self.assertEqual(result.form_data["endpoint_type"], "rest")
+        self.assertEqual(client.deleted, ["ses_agent"])
+
+    def test_inline_clarification_reuses_existing_extractor_session(self) -> None:
+        client = _AgentClient()
+        agent = FormExtractorAgent(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(),
+            _FakeTFS(),
+            reference_resolver=_ReferenceBackend(),
+        )
+        agent.begin(
+            form=CreateApiForm(),
+            ticket_id="REQ-42",
+            environment="test_int",
+            current_values={},
+        )
+        first = agent.finalize()
+        agent.send_guidance("Используй другой context path")
+        refined = agent.finalize()
+        agent.close()
+
+        self.assertEqual(client.create_count, 1)
+        self.assertEqual(len(client.structured_requests), 2)
+        self.assertEqual(first.form_data, refined.form_data)
         self.assertEqual(client.deleted, ["ses_agent"])
 
     def test_prepared_context_is_reused_without_refetching_sources(self) -> None:

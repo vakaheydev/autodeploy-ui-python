@@ -42,9 +42,24 @@ from opencode_integration.client import (
     opencode_message_duration,
     opencode_text_generation_duration,
 )
+from opencode_integration.response_validator import (
+    ResponseValidator,
+    ValidatedResponse,
+    display_value,
+)
 from ui.ai_assistant import AIAssistantDialog
-from ui.ai_preview import show_ai_preview
-from ui.dialogs import ask_ticket_id, show_error, show_info, show_loading, show_refresh_confirm, show_submit_confirm, show_text_viewer, show_warning
+from ui.dialogs import (
+    ask_text,
+    ask_ticket_id,
+    show_error,
+    show_info,
+    show_loading,
+    show_refresh_confirm,
+    show_submit_confirm,
+    show_text_viewer,
+    show_warning,
+)
+from ui.inline_ai_review import ACCEPTED, REJECTED, InlineReviewState
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
 
@@ -91,6 +106,7 @@ class FormScreen(BaseScreen):
         self._field_containers: Dict[str, tk.Frame] = {}
         # Внутренние surface-фреймы — для пересоздания виджетов при reload
         self._field_inner_frames: Dict[str, tk.Frame] = {}
+        self._field_label_rows: Dict[str, tk.Frame] = {}
         # Порядок ключей для правильной вставки при показе
         self._field_order: List[str] = []
         # Plural: кол-во экземпляров и кнопка "+" для каждого базового ключа
@@ -111,6 +127,18 @@ class FormScreen(BaseScreen):
         self._ai_assistant: Optional[AIAssistantDialog] = None
         self._ai_agent: Optional[FormExtractorAgent] = None
         self._ai_busy = False
+        self._ai_inline_review: Optional[InlineReviewState] = None
+        self._ai_inline_response: Optional[ValidatedResponse] = None
+        self._ai_inline_reference_values: Dict[str, List[str]] = {}
+        self._ai_inline_baseline_values: Dict[str, Any] = {}
+        self._ai_inline_field_controls: Dict[str, tk.Frame] = {}
+        self._ai_inline_badges: Dict[str, tk.Label] = {}
+        self._ai_inline_buttons: Dict[str, tuple[tk.Button, tk.Button]] = {}
+        self._ai_inline_footer: Optional[tk.Frame] = None
+        self._ai_inline_approve_all_btn: Optional[ttk.Button] = None
+        self._ai_inline_reject_all_btn: Optional[ttk.Button] = None
+        self._ai_inline_refine_btn: Optional[ttk.Button] = None
+        self._ai_inline_warnings_btn: Optional[ttk.Button] = None
         self._last_submit_failure: Optional[Dict[str, Any]] = None
         super().__init__(master, app, **kwargs)
 
@@ -300,6 +328,7 @@ class FormScreen(BaseScreen):
             # Строка с меткой (и кнопкой обновления для HTTP-справочников)
             label_row = tk.Frame(inner, bg=theme.C["surface"])
             label_row.pack(fill=tk.X, padx=12, pady=(8, 3))
+            self._field_label_rows[field_def.key] = label_row
 
             req = "  *" if field_def.required else ""
             tk.Label(
@@ -375,36 +404,42 @@ class FormScreen(BaseScreen):
 
         foot = tk.Frame(self, bg=theme.C["bg"])
         foot.pack(fill=tk.X)
+        self._footer = foot
+        normal = tk.Frame(foot, bg=theme.C["bg"])
+        normal.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._normal_footer = normal
 
-        ttk.Button(
-            foot, text="  Отправить  →",
+        self._submit_button = ttk.Button(
+            normal, text="  Отправить  →",
             style="Primary.TButton",
             command=self._on_submit,
-        ).pack(side=tk.LEFT, padx=(0, 8))
+        )
+        self._submit_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(
-            foot, text="{ } Просмотр JSON",
+        self._json_preview_button = ttk.Button(
+            normal, text="{ } Просмотр JSON",
             style="Secondary.TButton",
             command=self._preview_payload,
-        ).pack(side=tk.LEFT)
+        )
+        self._json_preview_button.pack(side=tk.LEFT)
 
         if hasattr(self.app, "opencode_manager"):
             ttk.Button(
-                foot, text="✨ Подтянуть данные из заявки",
+                normal, text="✨ Подтянуть данные из заявки",
                 style="Secondary.TButton",
                 command=self._on_ai_autofill,
             ).pack(side=tk.LEFT, padx=(8, 0))
         elif self._form.itsm_support:
             # Совместимость для встраиваний, которые ещё не создают OpenCodeManager.
             ttk.Button(
-                foot, text="⬇ Подтянуть из заявки", style="Secondary.TButton",
+                normal, text="⬇ Подтянуть из заявки", style="Secondary.TButton",
                 command=self._on_fetch_from_itsm,
             ).pack(side=tk.LEFT, padx=(8, 0))
 
         for btn_def in self._form.get_custom_buttons():
             style = "Primary.TButton" if btn_def.style.lower() == "primary" else "Secondary.TButton"
             ttk.Button(
-                foot,
+                normal,
                 text=btn_def.label,
                 style=style,
                 command=lambda h=btn_def.handler: h(
@@ -413,7 +448,7 @@ class FormScreen(BaseScreen):
             ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._diagnose_submit_btn = ttk.Button(
-            foot,
+            normal,
             text="✨ Разобрать ошибку с AI",
             style="Secondary.TButton",
             command=self._open_submit_diagnostics,
@@ -511,6 +546,18 @@ class FormScreen(BaseScreen):
         """Вызывается при смене окружения. Перезагружает HTTP-справочники."""
         if not self._ready:
             return
+        if self._ai_inline_review is not None:
+            self._clear_inline_ai_review(restore=True)
+            self._close_ai_agent_session()
+            self.app.mark_execution_plan_step(
+                self._ai_plan_id,
+                self._ai_plan_step_id,
+                "pending",
+            )
+            self._set_status(
+                "AI-предложения сброшены: окружение формы изменилось.",
+                "muted",
+            )
         new_env = self.app.current_environment.get()
 
         # Верхнеуровневые HTTP SELECT/MULTISELECT
@@ -835,6 +882,13 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
 
     def _on_submit(self) -> None:
+        if self._ai_inline_review is not None:
+            show_warning(
+                self,
+                "Проверьте AI-предложения",
+                "Перед отправкой подтвердите или отклоните предложенные значения.",
+            )
+            return
         form_data = self._collect_form_data()
         environment = self.app.current_environment.get()
 
@@ -949,6 +1003,13 @@ class FormScreen(BaseScreen):
         )
 
     def _preview_payload(self) -> None:
+        if self._ai_inline_review is not None:
+            show_warning(
+                self,
+                "Проверьте AI-предложения",
+                "Сначала подтвердите или отклоните предложенные значения.",
+            )
+            return
         form_data = self._collect_form_data()
         errors = self._form.validate(form_data)
         if errors:
@@ -987,6 +1048,7 @@ class FormScreen(BaseScreen):
         # Label row с номером и кнопкой удаления
         label_row = tk.Frame(inner, bg=theme.C["surface"])
         label_row.pack(fill=tk.X, padx=12, pady=(8, 3))
+        self._field_label_rows[new_key] = label_row
 
         req = "  *" if base_def.required else ""
         tk.Label(
@@ -1037,6 +1099,7 @@ class FormScreen(BaseScreen):
         self._field_widgets.pop(key, None)
         self._field_containers.pop(key, None)
         self._field_inner_frames.pop(key, None)
+        self._field_label_rows.pop(key, None)
         if key in self._field_order:
             self._field_order.remove(key)
 
@@ -1278,12 +1341,16 @@ class FormScreen(BaseScreen):
     ) -> None:
         result_queue = self._ai_queue
         dialog = self._ai_assistant
-        if result_queue is None or dialog is None:
+        if result_queue is None or (
+            dialog is None and self._ai_inline_review is None
+        ):
             return
         self._ai_busy = True
         if self._ai_cancel_event is not None:
             self._ai_cancel_event.clear()
-        dialog.set_busy(True)
+        if dialog is not None:
+            dialog.set_busy(True)
+        self._set_inline_review_busy(True)
 
         def worker() -> None:
             try:
@@ -1396,8 +1463,11 @@ class FormScreen(BaseScreen):
             while True:
                 event, payload = result_queue.get_nowait()
                 dialog = self._ai_assistant
-                if event == "progress" and dialog is not None:
-                    dialog.set_status(str(payload))
+                if event == "progress":
+                    if dialog is not None:
+                        dialog.set_status(str(payload))
+                    elif self._ai_inline_review is not None:
+                        self._set_status(f"✨  {payload}", "muted")
                 elif event == "conversation" and dialog is not None:
                     dialog.append_event(payload)
                 elif event == "session":
@@ -1418,10 +1488,10 @@ class FormScreen(BaseScreen):
                             ),
                         )
                         dialog.set_status(
-                            "Готов к уточнениям или формированию preview."
+                            "Готов к уточнениям или переносу предложений в форму."
                         )
                         dialog.set_busy(False)
-                elif event in {"final", "fast_final"}:
+                elif event in {"final", "fast_final", "refine"}:
                     agent = self._ai_agent
                     refs = agent.reference_values if agent is not None else {}
                     final_payload = (payload, refs)
@@ -1451,11 +1521,18 @@ class FormScreen(BaseScreen):
     def _handle_ai_error(self, action: str, error: Exception) -> None:
         dialog = self._ai_assistant
         self._ai_busy = False
+        self._set_inline_review_busy(False)
         if self._ai_cancel_event is not None:
             self._ai_cancel_event.clear()
-        if dialog is None:
-            return
         if isinstance(error, OpenCodeCancelled):
+            if self._ai_inline_review is not None:
+                self._set_status(
+                    "Уточнение остановлено. Предыдущие AI-предложения сохранены.",
+                    "muted",
+                )
+                return
+            if dialog is None:
+                return
             if action in {"begin", "fast_final"} and (
                 self._ai_agent is None or self._ai_agent.session_id is None
             ):
@@ -1466,7 +1543,7 @@ class FormScreen(BaseScreen):
             dialog.append_event(ConversationEvent(
                 "warning",
                 "Запрос остановлен",
-                "Сессия сохранена: можно отправить уточнение или повторить preview.",
+                "Сессия сохранена: можно отправить уточнение или повторить результат.",
             ))
             dialog.set_status("Текущий запрос остановлен.")
             dialog.set_busy(False)
@@ -1476,6 +1553,15 @@ class FormScreen(BaseScreen):
             action,
             type(error).__name__,
         )
+        if self._ai_inline_review is not None:
+            self._set_status(
+                f"✗  Не удалось уточнить предложения: {str(error).splitlines()[0]}",
+                "error",
+            )
+            show_error(self, "Ошибка AI-уточнения", str(error))
+            return
+        if dialog is None:
+            return
         if action in {"begin", "fast_final"} and (
             self._ai_agent is None or self._ai_agent.session_id is None
         ):
@@ -1495,13 +1581,503 @@ class FormScreen(BaseScreen):
 
     def _finish_ai_result(
         self,
-        result,
+        result: ValidatedResponse,
         reference_values: Dict[str, List[str]],
     ) -> None:
-        agent = self._ai_agent
         dialog = self._ai_assistant
         if dialog is not None:
             dialog.close()
+            self._ai_assistant = None
+        self._ai_busy = False
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.clear()
+        self._show_inline_ai_review(result, reference_values)
+
+    def _show_inline_ai_review(
+        self,
+        result: ValidatedResponse,
+        reference_values: Dict[str, List[str]],
+    ) -> None:
+        if self._ai_inline_review is not None:
+            self._clear_inline_ai_review(restore=True)
+
+        current_values = self._collect_form_data()
+        review = InlineReviewState(result.preview_fields, current_values)
+        if not review.items:
+            self._close_ai_agent_session()
+            self.app.mark_execution_plan_step(
+                self._ai_plan_id,
+                self._ai_plan_step_id,
+                "pending",
+            )
+            self._set_status(
+                "OpenCode не предложил изменений относительно текущей формы.",
+                "muted",
+            )
+            return
+
+        self._ai_inline_review = review
+        self._ai_inline_response = result
+        self._ai_inline_reference_values = {
+            key: list(values) for key, values in reference_values.items()
+        }
+        self._ai_inline_baseline_values = dict(current_values)
+
+        # The values become visible in the real widgets, but submission stays
+        # disabled until every proposal has an explicit decision.
+        self.apply_form_data({
+            item.field.key: item.proposed_value for item in review.items
+        })
+        for item in review.items:
+            self._build_inline_field_controls(item.field.key)
+        self._build_inline_review_footer()
+        warning_suffix = (
+            f" · предупреждений: {len(result.warnings)}"
+            if result.warnings
+            else ""
+        )
+        self._set_status(
+            f"✨  AI подставил {len(review.items)} значений{warning_suffix}. "
+            "Подтвердите ✓ или отклоните ✕.",
+            "muted",
+        )
+        _log.info(
+            "inline review opened form=%s session=%s fields=%d warnings=%d",
+            self._form.form_id,
+            self._ai_session_id or "none",
+            len(review.items),
+            len(result.warnings),
+        )
+
+    def _build_inline_field_controls(self, key: str) -> None:
+        review = self._ai_inline_review
+        label_row = self._field_label_rows.get(key)
+        if review is None or label_row is None:
+            return
+        item = review.get(key)
+        controls = tk.Frame(label_row, bg=theme.C["surface"])
+        controls.pack(side=tk.RIGHT, padx=(8, 0))
+
+        reject = tk.Button(
+            controls,
+            text="✕",
+            width=3,
+            font=("Segoe UI", 10, "bold"),
+            bg=theme.C["chat_error"],
+            fg=theme.C["error"],
+            activebackground="#FECACA",
+            activeforeground=theme.C["error"],
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            command=lambda field_key=key: self._decide_inline_field(
+                field_key, False
+            ),
+        )
+        reject.pack(side=tk.RIGHT, padx=(3, 0))
+        approve = tk.Button(
+            controls,
+            text="✓",
+            width=3,
+            font=("Segoe UI", 10, "bold"),
+            bg=theme.C["success_soft"],
+            fg=theme.C["success"],
+            activebackground="#BBF7D0",
+            activeforeground=theme.C["success"],
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            command=lambda field_key=key: self._decide_inline_field(
+                field_key, True
+            ),
+        )
+        approve.pack(side=tk.RIGHT, padx=(3, 0))
+        source = (item.field.source or "источник не указан").strip()
+        compact_source = source if len(source) <= 34 else source[:31] + "…"
+        badge = tk.Label(
+            controls,
+            text=f"AI · {item.field.confidence.upper()} · {compact_source}",
+            font=("Segoe UI", 8, "bold"),
+            bg=theme.C["surface_alt"],
+            fg=theme.C["text_label"],
+            padx=6,
+            pady=3,
+            cursor="hand2",
+        )
+        badge.pack(side=tk.RIGHT, padx=(0, 2))
+        badge.bind(
+            "<Button-1>",
+            lambda _event, field_key=key: self._show_inline_field_details(
+                field_key
+            ),
+        )
+        self._ai_inline_field_controls[key] = controls
+        self._ai_inline_badges[key] = badge
+        self._ai_inline_buttons[key] = (approve, reject)
+        self._refresh_inline_field_controls(key)
+
+    def _build_inline_review_footer(self) -> None:
+        if self._ai_inline_footer is not None:
+            self._ai_inline_footer.destroy()
+        self._normal_footer.pack_forget()
+        footer = tk.Frame(self._footer, bg=theme.C["bg"])
+        footer.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._ai_inline_footer = footer
+        self._ai_inline_approve_all_btn = ttk.Button(
+            footer,
+            text="✓  Принять все",
+            style="Approve.TButton",
+            command=self._approve_all_inline_fields,
+        )
+        self._ai_inline_approve_all_btn.pack(side=tk.LEFT, padx=(0, 7))
+        self._ai_inline_reject_all_btn = ttk.Button(
+            footer,
+            text="✕  Отклонить все",
+            style="Reject.TButton",
+            command=self._reject_all_inline_fields,
+        )
+        self._ai_inline_reject_all_btn.pack(side=tk.LEFT, padx=(0, 7))
+        self._ai_inline_refine_btn = ttk.Button(
+            footer,
+            text="✨  Уточнить",
+            style="Secondary.TButton",
+            command=self._ask_inline_clarification,
+        )
+        self._ai_inline_refine_btn.pack(side=tk.LEFT)
+        response = self._ai_inline_response
+        if response is not None and response.warnings:
+            self._ai_inline_warnings_btn = ttk.Button(
+                footer,
+                text=f"⚠  Предупреждения: {len(response.warnings)}",
+                style="DangerGhost.TButton",
+                command=self._show_inline_warnings,
+            )
+            self._ai_inline_warnings_btn.pack(side=tk.RIGHT)
+        self._submit_button.config(state=tk.DISABLED)
+        self._json_preview_button.config(state=tk.DISABLED)
+
+    def _decide_inline_field(self, key: str, approve: bool) -> None:
+        review = self._ai_inline_review
+        if review is None or self._ai_busy:
+            return
+        field_widget = self._field_widgets.get(key)
+        if field_widget is None:
+            return
+        if approve:
+            errors = ResponseValidator().validate_manual_values(
+                {key: field_widget.get()},
+                form=self._form,
+                reference_values=self._ai_inline_reference_values,
+                check_domain=False,
+            )
+            if errors.get(key):
+                self._set_status(
+                    f"✗  {key}: {'; '.join(errors[key])}",
+                    "error",
+                )
+                return
+            value_to_restore = review.accept(key)
+            if value_to_restore is not None:
+                field_widget.set(value_to_restore)
+        else:
+            field_widget.set(review.reject(key))
+        if self._ready and any(field.condition for field in self._form.fields):
+            self._refresh_conditional_fields()
+        self._refresh_inline_field_controls(key)
+        _log.info(
+            "inline review field decision form=%s field=%s decision=%s",
+            self._form.form_id,
+            key,
+            "accepted" if approve else "rejected",
+        )
+        if not review.pending_keys:
+            self._commit_inline_review()
+        else:
+            self._set_status(
+                f"Осталось проверить полей: {len(review.pending_keys)}",
+                "muted",
+            )
+
+    def _refresh_inline_field_controls(self, key: str) -> None:
+        review = self._ai_inline_review
+        badge = self._ai_inline_badges.get(key)
+        buttons = self._ai_inline_buttons.get(key)
+        outer = self._field_containers.get(key)
+        if review is None or badge is None or buttons is None:
+            return
+        item = review.get(key)
+        approve, reject = buttons
+        if item.decision == ACCEPTED:
+            badge.config(
+                text="✓  AI-значение принято",
+                bg="#DCFCE7",
+                fg=theme.C["success"],
+            )
+            approve.config(bg=theme.C["success"], fg="#FFFFFF")
+            reject.config(bg=theme.C["chat_error"], fg=theme.C["error"])
+            border = theme.C["success"]
+        elif item.decision == REJECTED:
+            badge.config(
+                text="✕  AI-значение отклонено",
+                bg=theme.C["chat_error"],
+                fg=theme.C["error"],
+            )
+            approve.config(bg=theme.C["success_soft"], fg=theme.C["success"])
+            reject.config(bg=theme.C["error"], fg="#FFFFFF")
+            border = theme.C["error"]
+        else:
+            source = (item.field.source or "источник не указан").strip()
+            compact = source if len(source) <= 34 else source[:31] + "…"
+            badge.config(
+                text=f"AI · {item.field.confidence.upper()} · {compact}",
+                bg=theme.C["surface_alt"],
+                fg=(
+                    theme.C["error"]
+                    if item.field.confidence == "low" or item.field.conflict
+                    else theme.C["warning"]
+                    if item.field.confidence == "medium"
+                    else theme.C["text_label"]
+                ),
+            )
+            approve.config(bg=theme.C["success_soft"], fg=theme.C["success"])
+            reject.config(bg=theme.C["chat_error"], fg=theme.C["error"])
+            border = (
+                theme.C["error"]
+                if item.field.confidence == "low" or item.field.conflict
+                else theme.C["warning"]
+                if item.field.confidence == "medium"
+                else theme.C["border_focus"]
+            )
+        if outer is not None:
+            outer.config(bg=border)
+
+    def _show_inline_field_details(self, key: str) -> None:
+        review = self._ai_inline_review
+        if review is None:
+            return
+        field = review.get(key).field
+        details = [
+            f"Предложение: {display_value(field.proposed_value) or '—'}",
+            f"Confidence: {field.confidence}",
+            f"Источник: {field.source or '—'}",
+            f"Причина: {field.reason or '—'}",
+        ]
+        if field.conflict:
+            details.append(f"Конфликт: {field.conflict}")
+        show_info(self, field.label, "\n".join(details))
+
+    def _show_inline_warnings(self) -> None:
+        response = self._ai_inline_response
+        if response is None or not response.warnings:
+            return
+        show_warning(
+            self,
+            "Предупреждения OpenCode",
+            "\n".join(f"• {message}" for message in response.warnings),
+        )
+
+    def _approve_all_inline_fields(self) -> None:
+        review = self._ai_inline_review
+        if review is None or self._ai_busy:
+            return
+        patch = review.accept_all()
+        if patch:
+            self.apply_form_data(patch)
+        for key in review.keys:
+            self._refresh_inline_field_controls(key)
+        self._commit_inline_review()
+
+    def _reject_all_inline_fields(self) -> None:
+        review = self._ai_inline_review
+        if review is None or self._ai_busy:
+            return
+        self.apply_form_data(review.reject_all())
+        rejected = len(review.items)
+        self._clear_inline_ai_review(restore=False)
+        self._close_ai_agent_session()
+        self.app.mark_execution_plan_step(
+            self._ai_plan_id,
+            self._ai_plan_step_id,
+            "pending",
+        )
+        self._set_status(
+            f"✕  AI-предложения отклонены: {rejected}",
+            "muted",
+        )
+        _log.info(
+            "inline review rejected form=%s fields=%d",
+            self._form.form_id,
+            rejected,
+        )
+
+    def _commit_inline_review(self) -> None:
+        review = self._ai_inline_review
+        if review is None:
+            return
+        if review.pending_keys:
+            self._set_status(
+                f"Сначала проверьте оставшиеся поля: {len(review.pending_keys)}",
+                "muted",
+            )
+            return
+        errors = self._validate_inline_decisions(review.accepted_keys)
+        if errors:
+            summary = "\n".join(
+                f"{key}: {'; '.join(messages)}"
+                for key, messages in list(errors.items())[:8]
+            )
+            self._set_status(
+                "✗  Принятая комбинация значений не прошла проверку.",
+                "error",
+            )
+            show_error(self, "Проверьте AI-значения", summary)
+            return
+        accepted = len(review.accepted_keys)
+        self._clear_inline_ai_review(restore=False)
+        self._close_ai_agent_session()
+        self.app.mark_execution_plan_step(
+            self._ai_plan_id,
+            self._ai_plan_step_id,
+            "prepared" if accepted else "pending",
+            form_data=self._collect_form_data() if accepted else None,
+        )
+        self._set_status(
+            f"✓  Подтверждено AI-предложений: {accepted}"
+            if accepted
+            else "AI-предложения отклонены",
+            "success" if accepted else "muted",
+        )
+        _log.info(
+            "inline review completed form=%s accepted=%d rejected=%d",
+            self._form.form_id,
+            accepted,
+            len(review.items) - accepted,
+        )
+
+    def _validate_inline_decisions(
+        self,
+        accepted_keys: tuple[str, ...],
+    ) -> Dict[str, List[str]]:
+        current = self._collect_form_data()
+        selected = {key: current.get(key) for key in accepted_keys}
+        validator = ResponseValidator()
+        errors = validator.validate_manual_values(
+            selected,
+            form=self._form,
+            reference_values=self._ai_inline_reference_values,
+            check_domain=False,
+        )
+        baseline_errors = validator.validate_domain_values(
+            self._ai_inline_baseline_values,
+            form=self._form,
+        )
+        effective_errors = validator.validate_domain_values(
+            current,
+            form=self._form,
+        )
+        accepted = set(accepted_keys)
+        for key, messages in effective_errors.items():
+            relevant = [
+                message
+                for message in messages
+                if key in accepted
+                or message not in baseline_errors.get(key, [])
+            ]
+            if relevant:
+                errors.setdefault(key, []).extend(
+                    message
+                    for message in relevant
+                    if message not in errors.get(key, [])
+                )
+        return errors
+
+    def _ask_inline_clarification(self) -> None:
+        review = self._ai_inline_review
+        agent = self._ai_agent
+        if review is None or agent is None:
+            return
+        if self._ai_busy:
+            self._stop_ai_request()
+            return
+        message = ask_text(
+            self,
+            "Уточнить AI-предложения",
+            "Опишите, что агент должен изменить. Он сохранит контекст текущей "
+            "OpenCode session и вернёт обновлённые предложения.",
+            confirm_text="✨ Отправить агенту",
+        )
+        if not message:
+            return
+        _log.info(
+            "inline review clarification requested form=%s session=%s chars=%d",
+            self._form.form_id,
+            self._ai_session_id or "none",
+            len(message),
+        )
+
+        def refine() -> ValidatedResponse:
+            agent.send_guidance(
+                "Уточнение оператора к предложениям формы:\n" + message
+            )
+            return agent.finalize()
+
+        self._start_ai_worker("refine", refine)
+        self._poll_ai_queue()
+
+    def _set_inline_review_busy(self, busy: bool) -> None:
+        state = tk.DISABLED if busy else tk.NORMAL
+        for approve, reject in self._ai_inline_buttons.values():
+            try:
+                approve.config(state=state)
+                reject.config(state=state)
+            except tk.TclError:
+                pass
+        for button in (
+            self._ai_inline_approve_all_btn,
+            self._ai_inline_reject_all_btn,
+        ):
+            if button is not None:
+                button.config(state=state)
+        if self._ai_inline_refine_btn is not None:
+            self._ai_inline_refine_btn.config(
+                state=tk.NORMAL,
+                text="■  Остановить" if busy else "✨  Уточнить",
+                command=self._stop_ai_request if busy else self._ask_inline_clarification,
+            )
+
+    def _clear_inline_ai_review(self, *, restore: bool) -> None:
+        review = self._ai_inline_review
+        if restore and review is not None:
+            self.apply_form_data(review.originals())
+        for key, controls in tuple(self._ai_inline_field_controls.items()):
+            try:
+                controls.destroy()
+            except tk.TclError:
+                pass
+            outer = self._field_containers.get(key)
+            if outer is not None:
+                outer.config(bg=theme.C["border"])
+        self._ai_inline_field_controls.clear()
+        self._ai_inline_badges.clear()
+        self._ai_inline_buttons.clear()
+        if self._ai_inline_footer is not None:
+            self._ai_inline_footer.destroy()
+        self._ai_inline_footer = None
+        self._ai_inline_approve_all_btn = None
+        self._ai_inline_reject_all_btn = None
+        self._ai_inline_refine_btn = None
+        self._ai_inline_warnings_btn = None
+        if not self._normal_footer.winfo_manager():
+            self._normal_footer.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._submit_button.config(state=tk.NORMAL)
+        self._json_preview_button.config(state=tk.NORMAL)
+        self._ai_inline_review = None
+        self._ai_inline_response = None
+        self._ai_inline_reference_values = {}
+        self._ai_inline_baseline_values = {}
+
+    def _close_ai_agent_session(self) -> None:
+        agent = self._ai_agent
         self._clear_ai_state()
         if agent is not None:
             threading.Thread(
@@ -1509,31 +2085,6 @@ class FormScreen(BaseScreen):
                 name="opencode-form-session-cleanup",
                 daemon=True,
             ).start()
-        patch = show_ai_preview(
-            self,
-            response=result,
-            form=self._form,
-            reference_values=reference_values,
-        )
-        if patch is None:
-            self.app.mark_execution_plan_step(
-                self._ai_plan_id,
-                self._ai_plan_step_id,
-                "pending",
-            )
-            self._set_status("AI-предложения не применены", "muted")
-            return
-        filled = self.apply_form_data(patch)
-        self.app.mark_execution_plan_step(
-            self._ai_plan_id,
-            self._ai_plan_step_id,
-            "prepared",
-            form_data=self._collect_form_data(),
-        )
-        self._set_status(
-            f"✓  Применено AI-предложений: {len(filled)}",
-            "success",
-        )
 
     def _clear_ai_state(self) -> None:
         if self._ai_poll_id is not None:

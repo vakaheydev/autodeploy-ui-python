@@ -941,12 +941,16 @@ class AIHomeChat(tk.Frame):
     def _render_outcome(self, outcome: CopilotOutcome) -> None:
         self._clear_actions()
         if outcome.intent in {"single_form", "clarification"} and outcome.form_candidates:
+            self._show_action_frame()
             self._render_form_candidates(outcome)
         elif outcome.intent == "execution_plan":
+            self._show_action_frame()
             self._render_proposed_plan(outcome)
         elif outcome.intent in {"repository_search", "similar_objects"}:
+            self._show_action_frame()
             self._render_repository_items(outcome)
         elif outcome.intent == "diagnostics" and outcome.diagnostics is not None:
+            self._show_action_frame()
             self._render_diagnostics(outcome)
 
     def _render_form_candidates(self, outcome: CopilotOutcome) -> None:
@@ -1026,7 +1030,7 @@ class AIHomeChat(tk.Frame):
         self._append(
             "assistant",
             "План принят. Шаги открываются по очереди; каждый использует обычный "
-            "AI-preview и требует ручной отправки формы.",
+            "inline review AI-значений и требует ручной отправки формы.",
             thinking="—",
         )
 
@@ -1516,6 +1520,20 @@ class AIHomeChat(tk.Frame):
     def _clear_actions(self) -> None:
         for child in self._action_frame.winfo_children():
             child.destroy()
+        # An empty but still managed frame can retain its previous requested
+        # height inside the HomeScreen canvas.  Unmapping it releases the full
+        # area back to the transcript immediately after the next chat message.
+        self._action_frame.pack_forget()
+
+    def _show_action_frame(self) -> None:
+        if self._action_frame.winfo_manager():
+            return
+        self._action_frame.pack(
+            fill=tk.X,
+            padx=16,
+            pady=(5, 0),
+            before=self._status_panel,
+        )
 
     def _clear_permissions(self) -> None:
         for row in self._permission_rows.values():

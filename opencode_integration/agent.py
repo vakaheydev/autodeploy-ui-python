@@ -55,7 +55,7 @@ def _log_identifier(value: Any) -> str:
 
 
 class FormExtractorAgent:
-    """Одна заявка → одна интерактивная session → validation → preview."""
+    """Одна заявка → одна интерактивная session → validation → inline review."""
 
     def __init__(
         self,
@@ -483,7 +483,7 @@ class FormExtractorAgent:
             warnings=warnings,
             reference_candidates=result.reference_candidates,
         )
-        self._on_progress("Готовлю preview…")
+        self._on_progress("Готовлю предложения для полей формы…")
         _log.info(
             "autofill success ticket=%s pr=%s session=%s agent=%s mode=%s model=%s "
             "duration=%.2fs filled=%d warnings=%d",

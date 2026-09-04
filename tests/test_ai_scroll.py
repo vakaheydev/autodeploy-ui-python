@@ -10,6 +10,7 @@ except ImportError:  # pragma: no cover - зависит от системног
 
 if tkinter is not None:
     from ui.ai_assistant import AIAssistantDialog
+    from ui.ai_home_chat import AIHomeChat
     from ui.screens.form_screen import FormScreen
 
 
@@ -30,8 +31,57 @@ class _Widget:
         return self._top
 
 
+class _PackedFrame:
+    def __init__(self, *, managed: bool = True) -> None:
+        self.managed = managed
+        self.children: list[object] = []
+        self.pack_calls: list[dict[str, object]] = []
+
+    def winfo_children(self) -> list[object]:
+        return self.children
+
+    def winfo_manager(self) -> str:
+        return "pack" if self.managed else ""
+
+    def pack_forget(self) -> None:
+        self.managed = False
+
+    def pack(self, **kwargs: object) -> None:
+        self.managed = True
+        self.pack_calls.append(kwargs)
+
+
+class _Destroyable:
+    def __init__(self) -> None:
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
 @unittest.skipIf(tkinter is None, "системный Python собран без Tkinter")
 class AssistantScrollIsolationTests(unittest.TestCase):
+    def test_clearing_chat_choices_unmaps_their_layout_frame(self) -> None:
+        frame = _PackedFrame()
+        child = _Destroyable()
+        frame.children.append(child)
+        chat = SimpleNamespace(_action_frame=frame)
+
+        AIHomeChat._clear_actions(chat)
+
+        self.assertTrue(child.destroyed)
+        self.assertFalse(frame.managed)
+
+    def test_choice_frame_is_reinserted_before_status(self) -> None:
+        frame = _PackedFrame(managed=False)
+        status = object()
+        chat = SimpleNamespace(_action_frame=frame, _status_panel=status)
+
+        AIHomeChat._show_action_frame(chat)
+
+        self.assertTrue(frame.managed)
+        self.assertEqual(frame.pack_calls[-1]["before"], status)
+
     def test_foreign_toplevel_wheel_never_scrolls_main_form(self) -> None:
         main_scroll = _ScrollTarget()
         screen = SimpleNamespace(

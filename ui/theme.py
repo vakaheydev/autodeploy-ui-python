@@ -201,6 +201,38 @@ def apply(root: tk.Tk) -> None:
     )
     s.map("DangerGhost.TButton", background=[("active", C["chat_error"])])
 
+    # --- Подтверждение / отклонение AI-предложений ---
+    s.configure(
+        "Approve.TButton",
+        background=C["success"],
+        foreground="#FFFFFF",
+        font=F["small"],
+        padding=(10, 5),
+        relief="flat",
+        borderwidth=0,
+        focusthickness=0,
+    )
+    s.map(
+        "Approve.TButton",
+        background=[("active", "#15803D"), ("disabled", C["border"])],
+        foreground=[("disabled", C["text_muted"])],
+    )
+    s.configure(
+        "Reject.TButton",
+        background=C["error"],
+        foreground="#FFFFFF",
+        font=F["small"],
+        padding=(10, 5),
+        relief="flat",
+        borderwidth=0,
+        focusthickness=0,
+    )
+    s.map(
+        "Reject.TButton",
+        background=[("active", "#B91C1C"), ("disabled", C["border"])],
+        foreground=[("disabled", C["text_muted"])],
+    )
+
     # --- Кнопка-строка списка (категория/форма) ---
     s.configure(
         "Row.TButton",

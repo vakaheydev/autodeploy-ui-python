@@ -235,10 +235,14 @@ class _SearchableSelectWidget:
         """Регистрирует коллбэк, вызываемый при выборе элемента."""
         self._change_callbacks.append(callback)
 
-    def set_value(self, value: str) -> None:
+    def set_value(self, value: Any) -> None:
         """Программно выбирает элемент по значению."""
+        if value is None or str(value) == "":
+            self._selected_idx = None
+            self._listbox.selection_clear(0, tk.END)
+            return
         try:
-            idx = self._values.index(value)
+            idx = self._values.index(str(value))
         except ValueError:
             return
         self._selected_idx = idx
@@ -760,7 +764,13 @@ class FieldFactory:
         if ref is None:
             var = tk.StringVar()
             combo = ttk.Combobox(parent, textvariable=var, state="readonly")
-            return FieldWidget(combo, var.get)
+            return FieldWidget(
+                combo,
+                var.get,
+                set_fn=lambda value: var.set(
+                    "" if value is None else str(value)
+                ),
+            )
 
         values = [str(item.get(ref.value_key, "")) for item in items]
 
