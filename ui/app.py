@@ -118,7 +118,8 @@ class Application:
         self._closing = False
         self._pending_ai_handoff: tuple[str, AIFormHandoff] | None = None
         self.execution_plan: Optional[ExecutionPlanState] = None
-        self.copilot_history: list[tuple[str, str]] = []
+        self.copilot_history: list[tuple[str, str, str]] = []
+        self.copilot_thinking_mode = "auto"
         # Главный copilot принадлежит приложению, а не временному HomeScreen:
         # навигация к форме не должна обнулять историю OpenCode session.
         self.home_copilot = None
@@ -206,6 +207,7 @@ class Application:
         provider_id: str = "",
         model_id: str = "",
         variant: str = "",
+        thinking_auto: bool = False,
         extraction: Optional[ExtractionDirective] = None,
     ) -> None:
         """Передаёт очищенный контекст выбранной форме ровно один раз."""
@@ -223,6 +225,7 @@ class Application:
                 provider_id=provider_id,
                 model_id=model_id,
                 variant=variant,
+                thinking_auto=thinking_auto,
                 extraction=extraction,
             ),
         )
@@ -253,6 +256,8 @@ class Application:
         provider_id: str = "",
         model_id: str = "",
         variant: str = "",
+        thinking_mode: str = "",
+        available_variants: tuple[str, ...] = (),
     ) -> ExecutionPlanState:
         """Сохраняет только явно принятый пользователем план."""
         self.execution_plan = ExecutionPlanState.from_specs(
@@ -263,6 +268,8 @@ class Application:
             provider_id=provider_id,
             model_id=model_id,
             variant=variant,
+            thinking_mode=thinking_mode,
+            available_variants=available_variants,
         )
         return self.execution_plan
 
@@ -325,10 +332,10 @@ class Application:
         if step.status == "in_progress":
             plan.mark(step_id, "prepared" if step.form_data else "pending")
 
-    def add_copilot_history(self, role: str, text: str) -> None:
+    def add_copilot_history(self, role: str, text: str, thinking: str = "—") -> None:
         clean = str(text).strip()[:10_000]
         if clean:
-            self.copilot_history.append((role, clean))
+            self.copilot_history.append((role, clean, str(thinking).strip() or "—"))
             self.copilot_history = self.copilot_history[-100:]
 
     def queue_copilot_request(

@@ -28,14 +28,24 @@ from opencode_integration.client import (
     OpenCodeModelCatalog,
     OpenCodeModelSelection,
 )
-from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot
+from opencode_integration.copilot import (
+    CopilotOutcome,
+    UnifiedCopilot,
+    detect_ticket_reference,
+)
 from opencode_integration.manager import AUTODEPLOY_COPILOT_AGENT
+from opencode_integration.thinking import (
+    AUTO_THINKING_MODE,
+    decide_copilot_thinking,
+    decide_extractor_thinking,
+    ordered_thinking_variants,
+)
 from ui.dialogs import ask_ticket_id, show_confirm, show_error
 
 
 _log = logging.getLogger("opencode.home_chat")
 _DEFAULT_MODEL_LABEL = "По умолчанию из opencode.json"
-_DEFAULT_VARIANT_LABEL = "По умолчанию"
+_AUTO_VARIANT_LABEL = "Авто"
 
 
 class AIHomeChat(tk.Frame):
@@ -52,6 +62,12 @@ class AIHomeChat(tk.Frame):
         self._outcome: Optional[CopilotOutcome] = None
         self._running_model: tuple[str, str, str] = ("", "", "")
         self._outcome_model: tuple[str, str, str] = ("", "", "")
+        self._running_thinking_auto = False
+        self._running_thinking_mode = ""
+        self._running_thinking_reason = ""
+        self._running_variants: tuple[str, ...] = ()
+        self._outcome_thinking_mode = ""
+        self._outcome_variants: tuple[str, ...] = ()
         self._poll_id: Optional[str] = None
         self._busy = False
         self._destroying = False
@@ -67,6 +83,7 @@ class AIHomeChat(tk.Frame):
         self._default_selection: Optional[OpenCodeModelSelection] = None
         self._spinner_after_id: Optional[str] = None
         self._spinner_angle = 0
+        self._input_workflow_hint = ""
         self._build()
         if self._copilot is not None and self._copilot.session_id:
             self._set_session(self._copilot.session_id)
@@ -134,15 +151,16 @@ class AIHomeChat(tk.Frame):
             model_row, text="Thinking", font=theme.F["small"],
             bg=hero_bg, fg=theme.C["text_label"],
         ).pack(side=tk.LEFT, padx=(0, 6))
-        self._variant_var = tk.StringVar(value=_DEFAULT_VARIANT_LABEL)
+        self._variant_var = tk.StringVar(value=_AUTO_VARIANT_LABEL)
         self._variant_combo = ttk.Combobox(
             model_row,
             textvariable=self._variant_var,
-            values=(_DEFAULT_VARIANT_LABEL,),
+            values=(_AUTO_VARIANT_LABEL,),
             state="disabled",
             width=15,
         )
         self._variant_combo.pack(side=tk.LEFT)
+        self._variant_combo.bind("<<ComboboxSelected>>", self._on_variant_selected)
         self._reload_models_button = ttk.Button(
             model_row,
             text="↻",
@@ -154,15 +172,21 @@ class AIHomeChat(tk.Frame):
 
         quick = tk.Frame(surface, bg=theme.C["surface"])
         quick.pack(fill=tk.X, padx=16, pady=(12, 9))
-        for label, prompt in (
-            ("⌕  Найти API", "Найди API по имени, пути или backend URL: "),
-            ("⌕  Приложение", "Найди приложение по имени, ID или client_id: "),
-            ("≋  Похожие", "Найди похожие API или приложения для шаблона: "),
-            ("✓  План заявки", "Построй полный многошаговый план исполнения заявки "),
+        for label, prompt, workflow_hint in (
+            ("⌕  Найти API", "Найди API по имени, пути или backend URL: ", ""),
+            ("⌕  Приложение", "Найди приложение по имени, ID или client_id: ", ""),
+            ("≋  Похожие", "Найди похожие API или приложения для шаблона: ", ""),
+            (
+                "✓  План заявки",
+                "Построй полный многошаговый план исполнения заявки ",
+                "plan",
+            ),
         ):
             ttk.Button(
                 quick, text=label, style="Chip.TButton",
-                command=lambda value=prompt: self._set_input(value),
+                command=lambda value=prompt, hint=workflow_hint: self._set_input(
+                    value, workflow_hint=hint
+                ),
             ).pack(side=tk.LEFT, padx=(0, 6))
 
         transcript_border = tk.Frame(surface, bg=theme.C["border"])
@@ -184,13 +208,16 @@ class AIHomeChat(tk.Frame):
         transcript_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._configure_transcript_tags()
-        for role, message in self.app.copilot_history:
-            self._append(role, message, remember=False)
+        for item in self.app.copilot_history:
+            role, message = item[:2]
+            thinking = item[2] if len(item) > 2 else "—"
+            self._append(role, message, thinking=thinking, remember=False)
         if not self.app.copilot_history:
             self._append(
                 "assistant",
                 "Опишите задачу обычным текстом или пришлите номер заявки. "
                 "Репозиторные факты я ищу только через проверенные read-only MCP-вызовы.",
+                thinking="—",
             )
 
         self._permission_frame = tk.Frame(surface, bg=theme.C["surface"])
@@ -391,7 +418,14 @@ class AIHomeChat(tk.Frame):
         self._model_combo.configure(values=labels)
 
         selected = _DEFAULT_MODEL_LABEL if self._default_model is not None else ""
-        preferred_variant = self._variant_var.get()
+        saved_thinking = str(
+            getattr(self.app, "copilot_thinking_mode", AUTO_THINKING_MODE)
+        ).strip()
+        preferred_variant = (
+            _AUTO_VARIANT_LABEL
+            if saved_thinking == AUTO_THINKING_MODE
+            else saved_thinking
+        )
         if previous is not None:
             selected = next(
                 (
@@ -409,8 +443,6 @@ class AIHomeChat(tk.Frame):
                 else ("", "", "")
             )
             configured = remembered[:2]
-            if remembered[1]:
-                preferred_variant = remembered[2] or _DEFAULT_VARIANT_LABEL
             selected = next(
                 (
                     label
@@ -423,12 +455,12 @@ class AIHomeChat(tk.Frame):
             selected = labels[0]
         self._model_var.set(selected)
         self._sync_variant_choices()
-        selected_model = self._model_by_label.get(selected)
-        if (
-            selected_model is not None
-            and preferred_variant in selected_model.variants
+        selected_model = self._current_model()
+        if preferred_variant == _AUTO_VARIANT_LABEL or (
+            selected_model is not None and preferred_variant in selected_model.variants
         ):
             self._variant_var.set(preferred_variant)
+        self._on_variant_selected()
         self._set_model_controls_enabled(True)
         if models and catalog.default is not None and not self._busy:
             self._status(
@@ -472,13 +504,25 @@ class AIHomeChat(tk.Frame):
     def _on_model_selected(self, _event: Optional[tk.Event] = None) -> None:
         self._sync_variant_choices()
 
+    def _on_variant_selected(self, _event: Optional[tk.Event] = None) -> None:
+        selected = self._variant_var.get().strip()
+        self.app.copilot_thinking_mode = (
+            AUTO_THINKING_MODE if selected == _AUTO_VARIANT_LABEL else selected
+        )
+
     def _sync_variant_choices(self) -> None:
         model = self._current_model()
-        variants = model.variants if model is not None else ()
-        values = (_DEFAULT_VARIANT_LABEL, *variants)
+        variants = ordered_thinking_variants(
+            model.variants if model is not None else ()
+        )
+        values = (_AUTO_VARIANT_LABEL, *variants)
         current = self._variant_var.get()
         self._variant_combo.configure(values=values)
-        self._variant_var.set(current if current in values else _DEFAULT_VARIANT_LABEL)
+        selected = current if current in values else _AUTO_VARIANT_LABEL
+        self._variant_var.set(selected)
+        self.app.copilot_thinking_mode = (
+            AUTO_THINKING_MODE if selected == _AUTO_VARIANT_LABEL else selected
+        )
 
     def _set_model_controls_enabled(self, enabled: bool) -> None:
         active = enabled and bool(self._connected_address) and not self._busy
@@ -492,12 +536,12 @@ class AIHomeChat(tk.Frame):
         model = self._current_model()
         if model is not None:
             variant = self._variant_var.get().strip()
-            if variant == _DEFAULT_VARIANT_LABEL or variant not in model.variants:
-                variant = (
-                    self._default_selection.variant
-                    if self._model_var.get() == _DEFAULT_MODEL_LABEL
-                    and self._default_selection is not None
-                    else ""
+            if variant == _AUTO_VARIANT_LABEL:
+                variant = AUTO_THINKING_MODE
+            elif variant not in model.variants:
+                raise OpenCodeError(
+                    "Выбранный thinking variant отсутствует у этой модели в "
+                    "opencode.json. Выберите Авто или доступное значение."
                 )
             return model.provider_id, model.model_id, variant
         if self._models_loading and self._copilot is not None:
@@ -550,31 +594,65 @@ class AIHomeChat(tk.Frame):
         if not message:
             self._status("Введите вопрос, задачу или номер заявки.", error=True)
             return
-        if self._start(message):
+        if self._start(message, workflow_hint=self._input_workflow_hint):
             self._input.delete("1.0", tk.END)
+            self._input_workflow_hint = ""
 
     def _start(
         self, message: str, *, ticket_id: Optional[str] = None,
-        diagnostic_data: Any = None,
+        diagnostic_data: Any = None, workflow_hint: str = "",
     ) -> bool:
         if self._busy:
             return False
         client = self.app.opencode_manager.client
         if client is None:
-            self._append("error", "Соединение с OpenCode потеряно.")
+            self._append("error", "Соединение с OpenCode потеряно.", thinking="—")
             self._status("Подключитесь к OpenCode Server.", error=True)
             return False
         try:
-            provider_id, model_id, variant = self._selected_model()
+            provider_id, model_id, thinking_mode = self._selected_model()
+            model = self._current_model()
+            available_variants = ordered_thinking_variants(
+                model.variants if model is not None else ()
+            )
+            thinking_auto = thinking_mode == AUTO_THINKING_MODE
+            if thinking_auto:
+                decision = decide_copilot_thinking(
+                    has_ticket=bool(ticket_id or detect_ticket_reference(message)),
+                    diagnostic_data=diagnostic_data,
+                    workflow_hint=workflow_hint,
+                    available_variants=available_variants,
+                )
+                variant = decision.variant
+                thinking_reason = decision.reason
+            else:
+                variant = thinking_mode
+                thinking_reason = "выбран вручную"
         except OpenCodeError as exc:
-            self._append("error", str(exc), remember=False)
+            self._append("error", str(exc), thinking="—", remember=False)
             self._status(str(exc), error=True)
+            return False
+        except ValueError as exc:
+            error = str(exc)
+            self._append("error", error, thinking="—", remember=False)
+            self._status(error, error=True)
             return False
         self._clear_actions()
         self._clear_permissions()
         self._outcome = None
         self._outcome_model = ("", "", "")
-        self._append("user", message)
+        self._outcome_thinking_mode = ""
+        self._outcome_variants = ()
+        self._running_thinking_auto = thinking_auto
+        self._running_thinking_mode = thinking_mode
+        self._running_thinking_reason = thinking_reason
+        self._running_variants = available_variants
+        self._append(
+            "user",
+            message,
+            thinking=variant,
+            thinking_auto=thinking_auto,
+        )
         settings = self.app.env_manager.load()
         self._running_model = (provider_id, model_id, variant)
         allowed_mcp = self._parse_mcp(settings.get(OPENCODE_ALLOWED_MCP_KEY, ""))
@@ -598,7 +676,16 @@ class AIHomeChat(tk.Frame):
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         self._set_busy(True)
-        self._status("Готовлю контекст и запускаю OpenCode…")
+        if thinking_auto:
+            self._status(f"Авто выбрал thinking: {variant} — {thinking_reason}.")
+        else:
+            self._status(f"Запускаю OpenCode · thinking: {variant}.")
+        _log.info(
+            "copilot thinking selected mode=%s variant=%s reason=%s",
+            thinking_mode,
+            variant,
+            thinking_reason,
+        )
 
         def progress(value: str) -> None:
             self._queue.put(("progress", value))
@@ -675,7 +762,13 @@ class AIHomeChat(tk.Frame):
             return
         detail = f" — {event.detail}" if event.detail else ""
         role = "error" if event.kind == "error" else "activity"
-        self._append(role, event.title + detail, remember=False)
+        self._append(
+            role,
+            event.title + detail,
+            thinking=self._running_model[2],
+            thinking_auto=self._running_thinking_auto,
+            remember=False,
+        )
 
     def _render_permission(self, event: ConversationEvent) -> None:
         permission_id = event.permission_id
@@ -728,7 +821,13 @@ class AIHomeChat(tk.Frame):
         if row is not None:
             row.destroy()
         if error:
-            self._append("error", f"Не удалось ответить на MCP permission: {error}", remember=False)
+            self._append(
+                "error",
+                f"Не удалось ответить на MCP permission: {error}",
+                thinking=self._running_model[2],
+                thinking_auto=self._running_thinking_auto,
+                remember=False,
+            )
         else:
             action = "разрешён один раз" if allow else "отклонён"
             self._append("activity", f"MCP-вызов {action}.", remember=False)
@@ -737,6 +836,8 @@ class AIHomeChat(tk.Frame):
         self._cancel_event = None
         self._outcome = outcome
         self._outcome_model = self._running_model
+        self._outcome_thinking_mode = self._running_thinking_mode
+        self._outcome_variants = self._running_variants
         self._set_busy(False)
         self._clear_permissions()
         text = outcome.answer
@@ -744,7 +845,12 @@ class AIHomeChat(tk.Frame):
             text += "\n\nУточнение: " + outcome.question
         if outcome.warnings:
             text += "\n\nПредупреждения:\n• " + "\n• ".join(outcome.warnings)
-        self._append("assistant", text)
+        self._append(
+            "assistant",
+            text,
+            thinking=self._running_model[2],
+            thinking_auto=self._running_thinking_auto,
+        )
         self._render_outcome(outcome)
         if (
             outcome.intent == "single_form"
@@ -845,6 +951,8 @@ class AIHomeChat(tk.Frame):
             provider_id=self._outcome_model[0],
             model_id=self._outcome_model[1],
             variant=self._outcome_model[2],
+            thinking_mode=self._outcome_thinking_mode,
+            available_variants=self._outcome_variants,
         )
         self._clear_actions()
         self._render_active_plan()
@@ -852,6 +960,7 @@ class AIHomeChat(tk.Frame):
             "assistant",
             "План принят. Шаги открываются по очереди; каждый использует обычный "
             "AI-preview и требует ручной отправки формы.",
+            thinking="—",
         )
 
     def _render_active_plan(self) -> None:
@@ -926,6 +1035,7 @@ class AIHomeChat(tk.Frame):
         self._append(
             "assistant",
             "План закрыт. Внешние системы не изменялись этим действием.",
+            thinking="—",
         )
 
     def _render_repository_items(self, outcome: CopilotOutcome) -> None:
@@ -986,13 +1096,33 @@ class AIHomeChat(tk.Frame):
                 and outcome.extraction.form_id == form_id
                 else None
             )
+            variant = self._outcome_model[2]
+            thinking_auto = self._outcome_thinking_mode == AUTO_THINKING_MODE
+            if thinking_auto:
+                decision = decide_extractor_thinking(
+                    extraction.mode if extraction is not None else "research",
+                    missing_information=(
+                        extraction.missing_information if extraction is not None else ()
+                    ),
+                    research_goal=(
+                        extraction.research_goal if extraction is not None else ""
+                    ),
+                    available_variants=self._outcome_variants,
+                )
+                variant = decision.variant
+                _log.info(
+                    "extractor thinking selected mode=auto variant=%s reason=%s",
+                    variant,
+                    decision.reason,
+                )
             self.app.open_ai_routed_form(
                 form_id,
                 outcome.context,
                 guidance=self._outcome_guidance(outcome),
                 provider_id=self._outcome_model[0],
                 model_id=self._outcome_model[1],
-                variant=self._outcome_model[2],
+                variant=variant,
+                thinking_auto=thinking_auto,
                 extraction=extraction,
             )
             return
@@ -1058,7 +1188,12 @@ class AIHomeChat(tk.Frame):
         self._set_busy(False)
         self._clear_permissions()
         if isinstance(error, OpenCodeCancelled):
-            self._append("assistant", "Текущий запрос остановлен. Внешние системы не изменялись.")
+            self._append(
+                "assistant",
+                "Текущий запрос остановлен. Внешние системы не изменялись.",
+                thinking=self._running_model[2],
+                thinking_auto=self._running_thinking_auto,
+            )
             self._status("Запрос отменён.")
         else:
             _log.error(
@@ -1066,7 +1201,12 @@ class AIHomeChat(tk.Frame):
                 type(error).__name__,
                 self._session_id or "unknown",
             )
-            self._append("error", self._friendly_error(error))
+            self._append(
+                "error",
+                self._friendly_error(error),
+                thinking=self._running_model[2],
+                thinking_auto=self._running_thinking_auto,
+            )
             if self._session_id:
                 self._status(
                     "Запрос завершился ошибкой. Сессия сохранена для диагностики.",
@@ -1174,7 +1314,15 @@ class AIHomeChat(tk.Frame):
             fg=theme.C["error"] if error else theme.C["text_label"],
         )
 
-    def _append(self, role: str, message: str, *, remember: bool = True) -> None:
+    def _append(
+        self,
+        role: str,
+        message: str,
+        *,
+        thinking: str = "—",
+        thinking_auto: bool = False,
+        remember: bool = True,
+    ) -> None:
         clean = str(message).strip()
         if not clean:
             return
@@ -1184,18 +1332,22 @@ class AIHomeChat(tk.Frame):
         else:
             labels = {"assistant": "GRAVITEE AI", "user": "ВЫ", "error": "ОШИБКА"}
             timestamp = datetime.now().strftime("%H:%M")
+            thinking_label = str(thinking).strip() or "—"
+            if thinking_auto and thinking_label != "—":
+                thinking_label += " · авто"
             meta_tag = f"{role}_meta" if role in {"assistant", "user", "error"} else "assistant_meta"
             body_tag = role if role in {"assistant", "user", "error"} else "assistant"
             self._transcript.insert(
                 tk.END,
-                f"{labels.get(role, str(role).upper())}  ·  {timestamp}\n",
+                f"{labels.get(role, str(role).upper())}  ·  {timestamp}  ·  "
+                f"thinking: {thinking_label}\n",
                 meta_tag,
             )
             self._transcript.insert(tk.END, clean + "\n", body_tag)
         self._transcript.config(state=tk.DISABLED)
         self._transcript.see(tk.END)
         if remember and role in {"assistant", "user", "error"}:
-            self.app.add_copilot_history(role, clean)
+            self.app.add_copilot_history(role, clean, thinking_label)
 
     @staticmethod
     def _friendly_error(error: Exception) -> str:
@@ -1269,11 +1421,12 @@ class AIHomeChat(tk.Frame):
         row.pack(fill=tk.X, pady=2)
         return row
 
-    def _set_input(self, value: str) -> None:
+    def _set_input(self, value: str, *, workflow_hint: str = "") -> None:
         if self._busy:
             return
         self._input.delete("1.0", tk.END)
         self._input.insert("1.0", value)
+        self._input_workflow_hint = workflow_hint
         self._input.focus_set()
         self._input.mark_set(tk.INSERT, tk.END)
 

@@ -34,7 +34,7 @@ from opencode_integration.prompts import (
     build_copilot_session_context,
     build_copilot_ticket_context,
 )
-from opencode_integration.schemas import build_copilot_schema, field_value_schema
+from opencode_integration.schemas import build_copilot_schema
 from opencode_integration.workflow import (
     AIFieldProposal,
     ExtractionDirective,
@@ -242,19 +242,11 @@ def validate_copilot_output(
                 raise CopilotValidationError(
                     f"Неизвестные поля формы {directive.form_id}: {', '.join(unknown)}"
                 )
-            for proposal in proposals:
-                errors = _schema_errors(
-                    proposal.value,
-                    field_value_schema(
-                        fields[proposal.field_key],
-                        strict_references=False,
-                    ),
-                )
-                if errors:
-                    raise CopilotValidationError(
-                        f"Некорректная подсказка {directive.form_id}."
-                        f"{proposal.field_key}: {'; '.join(errors)}"
-                    )
+            # Это промежуточные смысловые подсказки для form-extractor, а не
+            # готовые значения формы. Проверять их по финальной field schema
+            # преждевременно: extractor ещё нормализует пути, типы и справочные
+            # labels/IDs. Строгая schema + domain validation остаётся перед
+            # preview и применением результата к форме.
             if directive.mode == "fill_only":
                 provided = set(keys)
                 missing_required = [

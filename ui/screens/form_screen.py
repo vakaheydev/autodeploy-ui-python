@@ -80,6 +80,9 @@ class FormScreen(BaseScreen):
         self._ai_provider_id = self._ai_handoff.provider_id if self._ai_handoff else ""
         self._ai_model_id = self._ai_handoff.model_id if self._ai_handoff else ""
         self._ai_variant = self._ai_handoff.variant if self._ai_handoff else ""
+        self._ai_thinking_auto = (
+            self._ai_handoff.thinking_auto if self._ai_handoff else False
+        )
         self._ai_autostart_pending = self._ai_prepared_context is not None
         self._field_widgets: Dict[str, FieldWidget] = {}
         # Внешние контейнеры (border-frame) каждого поля — для show/hide
@@ -1205,6 +1208,8 @@ class FormScreen(BaseScreen):
         self._ai_assistant = AIAssistantDialog(
             self,
             mode=extractor_mode,
+            thinking_level=variant,
+            thinking_auto=self._ai_thinking_auto,
             on_send=self._send_ai_guidance,
             on_finalize=self._finalize_ai_session,
             on_stop=self._stop_ai_request,

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from opencode_integration.context_builder import BuiltContext
+from opencode_integration.thinking import AUTO_THINKING_MODE, decide_extractor_thinking
 
 
 PLAN_STATUSES = ("pending", "in_progress", "prepared", "completed", "failed")
@@ -62,6 +63,7 @@ class AIFormHandoff:
     provider_id: str = ""
     model_id: str = ""
     variant: str = ""
+    thinking_auto: bool = False
     extraction: Optional[ExtractionDirective] = None
 
 
@@ -77,6 +79,8 @@ class ExecutionPlanState:
     provider_id: str = ""
     model_id: str = ""
     variant: str = ""
+    thinking_mode: str = ""
+    available_variants: tuple[str, ...] = ()
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     _lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -95,6 +99,8 @@ class ExecutionPlanState:
         provider_id: str = "",
         model_id: str = "",
         variant: str = "",
+        thinking_mode: str = "",
+        available_variants: tuple[str, ...] = (),
     ) -> "ExecutionPlanState":
         return cls(
             ticket_id=context.ticket_id,
@@ -105,6 +111,8 @@ class ExecutionPlanState:
             provider_id=provider_id,
             model_id=model_id,
             variant=variant,
+            thinking_mode=thinking_mode,
+            available_variants=tuple(available_variants),
         )
 
     def snapshot(self) -> tuple[RuntimePlanStep, ...]:
@@ -177,6 +185,21 @@ class ExecutionPlanState:
                 + (f"\nShared validated copilot context:\n{self.shared_guidance}"
                    if self.shared_guidance else "")
             )
+            variant = self.variant
+            thinking_auto = self.thinking_mode == AUTO_THINKING_MODE
+            if thinking_auto:
+                extraction = item.spec.extraction
+                decision = decide_extractor_thinking(
+                    extraction.mode if extraction is not None else "research",
+                    missing_information=(
+                        extraction.missing_information if extraction is not None else ()
+                    ),
+                    research_goal=(
+                        extraction.research_goal if extraction is not None else ""
+                    ),
+                    available_variants=self.available_variants,
+                )
+                variant = decision.variant
             return AIFormHandoff(
                 context=self.context,
                 plan_id=self.plan_id,
@@ -184,6 +207,7 @@ class ExecutionPlanState:
                 guidance=guidance,
                 provider_id=self.provider_id,
                 model_id=self.model_id,
-                variant=self.variant,
+                variant=variant,
+                thinking_auto=thinking_auto,
                 extraction=item.spec.extraction,
             )

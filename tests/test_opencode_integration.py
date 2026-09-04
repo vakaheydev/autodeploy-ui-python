@@ -72,6 +72,11 @@ from opencode_integration.response_validator import (
     ResponseValidationError,
     ResponseValidator,
 )
+from opencode_integration.thinking import (
+    decide_copilot_thinking,
+    decide_extractor_thinking,
+    ordered_thinking_variants,
+)
 from opencode_integration.router import (
     FormRouter,
     FormRoutingError,
@@ -1874,6 +1879,42 @@ class CopilotContractTests(unittest.TestCase):
         self.assertEqual(result.extraction.mode, "fill_only")
         self.assertEqual(result.extraction.field_proposals[1].value, ["internal", "external"])
 
+    def test_copilot_field_proposal_is_not_final_form_validation(self) -> None:
+        payload = _copilot_payload("single_form")
+        payload["selected_form_id"] = "api.create"
+        payload["form_candidates"] = [
+            {"form_id": "api.create", "score": 96, "reason": "Create requested"},
+            {"form_id": "apps.deploy", "score": 10, "reason": "Not deploy"},
+            {
+                "form_id": "other.ingress.enable",
+                "score": 5,
+                "reason": "Not ingress",
+            },
+        ]
+        payload["extraction"] = {
+            "form_id": "api.create",
+            "mode": "research",
+            "field_proposals": [{
+                "field_key": "context_path",
+                # Такая подсказка ещё требует нормализации extractor'ом и не
+                # должна обрушать весь ответ главного Copilot.
+                "value": "/test/workflow ",
+                "source": "operator",
+                "confidence": "high",
+            }],
+            "missing_information": ["swagger"],
+            "research_goal": "Найти swagger и подготовить финальные значения",
+        }
+        result = validate_copilot_output(
+            payload,
+            form_ids=self.form_ids,
+            forms=_all_forms(),
+        )
+        self.assertEqual(
+            result.extraction.field_proposals[0].value,
+            "/test/workflow ",
+        )
+
     def test_fill_only_rejects_missing_required_form_value(self) -> None:
         payload = _copilot_payload("single_form")
         payload["selected_form_id"] = "apps.deploy"
@@ -1950,6 +1991,93 @@ class WorkflowPlanTests(unittest.TestCase):
         self.assertTrue(plan.can_open("deploy"))
         plan.mark("deploy", "completed")
         self.assertTrue(plan.complete)
+
+    def test_auto_thinking_is_chosen_per_plan_step(self) -> None:
+        context = BuiltContext("", {}, {}, [])
+        plan = ExecutionPlanState.from_specs(
+            context=context,
+            thinking_mode="auto",
+            available_variants=("none", "low", "medium", "xhigh"),
+            specs=(
+                PlannedFormStep(
+                    "create",
+                    1,
+                    "api.create",
+                    "Create",
+                    "All values supplied",
+                    extraction=ExtractionDirective("api.create", "fill_only"),
+                ),
+            ),
+        )
+        handoff = plan.handoff("create")
+        self.assertEqual(handoff.variant, "none")
+        self.assertTrue(handoff.thinking_auto)
+
+
+class ThinkingPolicyTests(unittest.TestCase):
+    variants = ("xhigh", "medium", "none", "low")
+
+    def test_variants_are_ordered_but_only_from_config(self) -> None:
+        self.assertEqual(
+            ordered_thinking_variants(("xhigh", "custom", "none", "low")),
+            ("none", "low", "xhigh", "custom"),
+        )
+
+    def test_auto_uses_none_for_simple_explicit_request(self) -> None:
+        decision = decide_copilot_thinking(
+            available_variants=self.variants,
+        )
+        self.assertEqual(decision.variant, "none")
+
+    def test_auto_uses_low_only_when_ticket_is_attached(self) -> None:
+        ticket = decide_copilot_thinking(
+            has_ticket=True,
+            available_variants=self.variants,
+        )
+        free_text = decide_copilot_thinking(
+            available_variants=self.variants,
+        )
+        self.assertEqual(ticket.variant, "low")
+        self.assertEqual(free_text.variant, "none")
+
+    def test_auto_uses_medium_for_explicit_workflow_signals(self) -> None:
+        diagnostics = decide_copilot_thinking(
+            diagnostic_data={"status": 500},
+            available_variants=self.variants,
+        )
+        plan = decide_copilot_thinking(
+            workflow_hint="plan",
+            available_variants=self.variants,
+        )
+        self.assertEqual(diagnostics.variant, "medium")
+        self.assertEqual(plan.variant, "medium")
+
+    def test_auto_never_uses_xhigh_as_a_fallback(self) -> None:
+        with self.assertRaisesRegex(ValueError, "вручную"):
+            decide_copilot_thinking(
+                available_variants=("xhigh",),
+            )
+
+    def test_fill_only_extractor_runs_without_thinking(self) -> None:
+        decision = decide_extractor_thinking(
+            "fill_only",
+            available_variants=self.variants,
+        )
+        self.assertEqual(decision.variant, "none")
+
+    def test_research_extractor_uses_low_or_medium_by_scope(self) -> None:
+        narrow = decide_extractor_thinking(
+            "research",
+            missing_information=("API id",),
+            available_variants=self.variants,
+        )
+        broad = decide_extractor_thinking(
+            "research",
+            missing_information=("API id", "owner", "plan"),
+            available_variants=self.variants,
+        )
+        self.assertEqual(narrow.variant, "low")
+        self.assertEqual(broad.variant, "medium")
 
 
 class _CopilotClient:

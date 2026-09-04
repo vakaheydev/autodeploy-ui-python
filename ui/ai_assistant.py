@@ -15,6 +15,8 @@ class AIAssistantDialog:
         parent: tk.Widget,
         *,
         mode: str = "research",
+        thinking_level: str = "—",
+        thinking_auto: bool = False,
         on_send: Callable[[str], None],
         on_finalize: Callable[[], None],
         on_stop: Callable[[], None],
@@ -25,6 +27,8 @@ class AIAssistantDialog:
             raise ValueError(f"Неизвестный режим помощника: {mode}")
         self._parent = parent
         self._mode = mode
+        self._thinking_level = str(thinking_level).strip() or "—"
+        self._thinking_auto = thinking_auto
         self._on_send = on_send
         self._on_finalize = on_finalize
         self._on_stop = on_stop
@@ -362,6 +366,10 @@ class AIAssistantDialog:
             "system": ("Система", "system_title"),
         }
         title, tag = titles.get(role, (role, "system_title"))
+        thinking = self._thinking_level
+        if self._thinking_auto and thinking != "—":
+            thinking += " · авто"
+        title += f" · thinking: {thinking}"
         self._append(title, clean, tag, "body")
 
     def append_event(self, event: ConversationEvent) -> None:
