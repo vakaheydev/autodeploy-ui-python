@@ -14,13 +14,17 @@ class AIAssistantDialog:
         self,
         parent: tk.Widget,
         *,
+        mode: str = "research",
         on_send: Callable[[str], None],
         on_finalize: Callable[[], None],
         on_stop: Callable[[], None],
         on_cancel: Callable[[], None],
         on_permission: Callable[[str, bool], None],
     ) -> None:
+        if mode not in {"fill_only", "research"}:
+            raise ValueError(f"Неизвестный режим помощника: {mode}")
         self._parent = parent
+        self._mode = mode
         self._on_send = on_send
         self._on_finalize = on_finalize
         self._on_stop = on_stop
@@ -65,8 +69,12 @@ class AIAssistantDialog:
         tk.Label(
             left,
             text=(
-                "Видны сообщения, статусы и вызовы MCP. "
-                "Внутренние скрытые рассуждения модели не отображаются."
+                (
+                    "Быстрый режим: один прямой запрос заполнения, MCP отключены. "
+                    if self._mode == "fill_only"
+                    else "Режим исследования: видны сообщения, статусы и вызовы MCP. "
+                )
+                + "Внутренние скрытые рассуждения модели не отображаются."
             ),
             font=theme.F["small"],
             bg=theme.C["bg"],
@@ -209,9 +217,18 @@ class AIAssistantDialog:
         self.append_event(
             ConversationEvent(
                 "system",
-                "Безопасная сессия",
-                "Файлы и shell запрещены. Проверенные read-only JSON Repository "
-                "MCP-вызовы разрешены; изменения запрещены.",
+                (
+                    "Быстрое заполнение · без MCP"
+                    if self._mode == "fill_only"
+                    else "Исследование · read-only MCP"
+                ),
+                (
+                    "Copilot уже передал значения полей. Агент сразу формирует "
+                    "preview; поиск и инструменты технически отключены."
+                    if self._mode == "fill_only"
+                    else "Файлы и shell запрещены. Проверенные read-only JSON "
+                    "Repository MCP-вызовы разрешены; изменения запрещены."
+                ),
             )
         )
         self.set_busy(True)

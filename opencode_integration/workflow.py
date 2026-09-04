@@ -5,12 +5,32 @@ import copy
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from opencode_integration.context_builder import BuiltContext
 
 
 PLAN_STATUSES = ("pending", "in_progress", "prepared", "completed", "failed")
+EXTRACTOR_MODES = ("fill_only", "research")
+
+
+@dataclass(frozen=True)
+class AIFieldProposal:
+    field_key: str
+    value: Any
+    source: str
+    confidence: str = "unknown"
+
+
+@dataclass(frozen=True)
+class ExtractionDirective:
+    """Проверенная команда Copilot для следующего form-extractor."""
+
+    form_id: str
+    mode: str
+    field_proposals: tuple[AIFieldProposal, ...] = ()
+    missing_information: tuple[str, ...] = ()
+    research_goal: str = ""
 
 
 @dataclass(frozen=True)
@@ -22,6 +42,7 @@ class PlannedFormStep:
     reason: str
     depends_on: tuple[str, ...] = ()
     confidence: str = "unknown"
+    extraction: Optional[ExtractionDirective] = None
 
 
 @dataclass
@@ -41,6 +62,7 @@ class AIFormHandoff:
     provider_id: str = ""
     model_id: str = ""
     variant: str = ""
+    extraction: Optional[ExtractionDirective] = None
 
 
 @dataclass
@@ -163,4 +185,5 @@ class ExecutionPlanState:
                 provider_id=self.provider_id,
                 model_id=self.model_id,
                 variant=self.variant,
+                extraction=item.spec.extraction,
             )

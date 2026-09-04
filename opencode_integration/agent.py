@@ -26,6 +26,7 @@ from opencode_integration.manager import FORM_EXTRACTOR_AGENT
 from opencode_integration.prompts import (
     SYSTEM_RULES,
     build_analysis_prompt,
+    build_fill_only_prompt,
     build_finalization_prompt,
 )
 from opencode_integration.reference_resolver import (
@@ -102,6 +103,7 @@ class FormExtractorAgent:
         self._reference_values: dict[str, list[str]] = {}
         self._inline_reference_context: dict[str, dict[str, Any]] = {}
         self._inline_reference_values: dict[str, list[str]] = {}
+        self._mode = "research"
 
     @property
     def session_id(self) -> Optional[str]:
@@ -132,102 +134,23 @@ class FormExtractorAgent:
         on_session: Optional[Callable[[Optional[str]], None]] = None,
     ) -> OpenCodeMessage:
         with self._operation_lock:
-            if self._session_id is not None:
-                raise RuntimeError("OpenCode session уже создана")
-            self._started = time.monotonic()
-            self._form = form
-            self._ticket_id = ticket_id.strip()
-            self._environment = environment
-            self._current_values = dict(current_values)
-            self._provider_id = provider_id
-            self._model_id = model_id
-            self._variant = variant
-            self._cancel_event = cancel_event
-            self._on_progress = on_progress or (lambda _message: None)
-            self._on_event = on_event or (lambda _event: None)
-            self._on_session = on_session or (lambda _session: None)
-            self._last_session_status_signature = ""
-
-            if prepared_context is not None:
-                if prepared_context.ticket_id != self._ticket_id:
-                    raise ValueError(
-                        "Подготовленный контекст относится к другой ITSM-заявке"
-                    )
-                self._on_progress(
-                    "Использую уже подготовленный контекст…"
-                    if self._ticket_id
-                    else "Использую контекст AI-чата и MCP-источники…"
-                )
-                context = prepared_context
-            else:
-                try:
-                    context = self._context_builder.build(
-                        ticket_id=ticket_id,
-                        environment=environment,
-                        cancel_event=cancel_event,
-                        on_progress=self._on_progress,
-                    )
-                except InterruptedError as exc:
-                    raise OpenCodeCancelled("Операция отменена пользователем") from exc
-            self._pr_id = context.pull_request_id
-            self._ticket_id = context.ticket_id
-            self._context_warnings = list(context.warnings)
-            self._check_cancel()
-            timeout = min(10.0, max(0.5, self._client.timeout))
-            self._on_progress("Проверяю agent и provider…")
-            self._client.require_agent(FORM_EXTRACTOR_AGENT, timeout=timeout)
-            self._client.require_provider(provider_id, timeout=timeout)
-
-            self._on_progress("Подготавливаю справочники формы…")
-            inline_catalog = self._reference_resolver.build_inline_catalog(
+            context, enabled_mcp, active_repository_mcp = self._initialize_session(
                 form=form,
+                ticket_id=ticket_id,
                 environment=environment,
                 current_values=current_values,
-                max_items=self._inline_reference_max_items,
-                max_bytes=self._inline_reference_max_bytes,
-                total_bytes=self._inline_reference_total_bytes,
-                cancel_event=cancel_event,
-                on_progress=self._on_progress,
-            )
-            self._inline_reference_context = inline_catalog.fields
-            self._inline_reference_values = inline_catalog.reference_values
-
-            enabled_mcp = self._available_mcp(allowed_mcp, timeout)
-            active_repository_mcp = choose_repository_mcp(
-                repository_mcp,
-                enabled_mcp,
-                {name: {"status": "connected"} for name in enabled_mcp},
-            )
-            self._check_cancel()
-            self._session_id = self._client.create_session(
-                (
-                    f"AutoDeploy form assistant: {context.ticket_id}"
-                    if context.ticket_id
-                    else "AutoDeploy form assistant: chat request"
-                ),
-                agent=FORM_EXTRACTOR_AGENT,
+                mode="research",
+                allowed_mcp=allowed_mcp,
+                repository_mcp=repository_mcp,
+                allow_repository_git_pull=allow_repository_git_pull,
                 provider_id=provider_id,
                 model_id=model_id,
                 variant=variant,
-                mcp_names=enabled_mcp,
-                mcp_tool_allowlist=repository_tool_allowlist(active_repository_mcp),
-                mcp_tool_asklist=repository_tool_asklist(
-                    active_repository_mcp,
-                    allow_git_pull=allow_repository_git_pull,
-                ),
-                metadata={
-                    "source": "gravitee-autodeploy-ui",
-                    "ticket_id": _log_identifier(context.ticket_id),
-                    "form_id": form.form_id,
-                },
-            )
-            self._on_session(self._session_id)
-            self._emit(
-                ConversationEvent(
-                    "system",
-                    "Сессия создана",
-                    f"{self._session_id}; MCP: {', '.join(enabled_mcp) or 'нет'}",
-                )
+                cancel_event=cancel_event,
+                prepared_context=prepared_context,
+                on_progress=on_progress,
+                on_event=on_event,
+                on_session=on_session,
             )
             prompt = build_analysis_prompt(
                 form_description=describe_form(
@@ -262,6 +185,197 @@ class FormExtractorAgent:
                 self.close()
                 raise
 
+    def fill_only(
+        self,
+        *,
+        form: BaseForm,
+        ticket_id: str,
+        environment: str,
+        current_values: Mapping[str, Any],
+        field_proposals: Sequence[Mapping[str, Any]],
+        provider_id: str = "",
+        model_id: str = "",
+        variant: str = "",
+        cancel_event: Optional[threading.Event] = None,
+        prepared_context: Optional[BuiltContext] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+        on_event: Optional[Callable[[ConversationEvent], None]] = None,
+        on_session: Optional[Callable[[Optional[str]], None]] = None,
+    ) -> ValidatedResponse:
+        """Один extractor-запрос; MCP технически отсутствуют в session."""
+        with self._operation_lock:
+            context, enabled_mcp, active_repository_mcp = self._initialize_session(
+                form=form,
+                ticket_id=ticket_id,
+                environment=environment,
+                current_values=current_values,
+                mode="fill_only",
+                allowed_mcp=(),
+                repository_mcp="",
+                allow_repository_git_pull=False,
+                provider_id=provider_id,
+                model_id=model_id,
+                variant=variant,
+                cancel_event=cancel_event,
+                prepared_context=prepared_context,
+                on_progress=on_progress,
+                on_event=on_event,
+                on_session=on_session,
+            )
+            if enabled_mcp or active_repository_mcp:
+                raise RuntimeError("fill_only session не может получать MCP")
+            self._emit(ConversationEvent(
+                "system",
+                "Быстрое заполнение",
+                "Copilot подтвердил достаточность данных; MCP отключены, "
+                "выполняется один прямой extractor-запрос.",
+            ))
+            prompt = build_fill_only_prompt(
+                form_description=describe_form(
+                    form,
+                    environment,
+                    reference_context=self._inline_reference_context,
+                ),
+                itsm_data=context.itsm,
+                ado_data=context.ado,
+                context_warnings=self._context_warnings,
+                field_proposals=field_proposals,
+            )
+            return self._finalize_locked(prompt=prompt, retry_count=0)
+
+    def _initialize_session(
+        self,
+        *,
+        form: BaseForm,
+        ticket_id: str,
+        environment: str,
+        current_values: Mapping[str, Any],
+        mode: str,
+        allowed_mcp: Sequence[str],
+        repository_mcp: str,
+        allow_repository_git_pull: bool,
+        provider_id: str,
+        model_id: str,
+        variant: str,
+        cancel_event: Optional[threading.Event],
+        prepared_context: Optional[BuiltContext],
+        on_progress: Optional[Callable[[str], None]],
+        on_event: Optional[Callable[[ConversationEvent], None]],
+        on_session: Optional[Callable[[Optional[str]], None]],
+    ) -> tuple[BuiltContext, list[str], str]:
+        if self._session_id is not None:
+            raise RuntimeError("OpenCode session уже создана")
+        if mode not in {"fill_only", "research"}:
+            raise ValueError(f"Неизвестный режим extractor: {mode}")
+        self._mode = mode
+        self._started = time.monotonic()
+        self._form = form
+        self._ticket_id = ticket_id.strip()
+        self._environment = environment
+        self._current_values = dict(current_values)
+        self._provider_id = provider_id
+        self._model_id = model_id
+        self._variant = variant
+        self._cancel_event = cancel_event
+        self._on_progress = on_progress or (lambda _message: None)
+        self._on_event = on_event or (lambda _event: None)
+        self._on_session = on_session or (lambda _session: None)
+        self._last_session_status_signature = ""
+        self._inline_reference_context = {}
+        self._inline_reference_values = {}
+        self._reference_values = {}
+
+        if prepared_context is not None:
+            if prepared_context.ticket_id != self._ticket_id:
+                raise ValueError(
+                    "Подготовленный контекст относится к другой ITSM-заявке"
+                )
+            self._on_progress(
+                "Использую уже подготовленный контекст…"
+                if self._ticket_id
+                else "Использую контекст AI-чата…"
+            )
+            context = prepared_context
+        else:
+            try:
+                context = self._context_builder.build(
+                    ticket_id=ticket_id,
+                    environment=environment,
+                    cancel_event=cancel_event,
+                    on_progress=self._on_progress,
+                )
+            except InterruptedError as exc:
+                raise OpenCodeCancelled("Операция отменена пользователем") from exc
+        self._pr_id = context.pull_request_id
+        self._ticket_id = context.ticket_id
+        self._context_warnings = list(context.warnings)
+        self._check_cancel()
+        timeout = min(10.0, max(0.5, self._client.timeout))
+        self._on_progress("Проверяю agent и provider…")
+        self._client.require_agent(FORM_EXTRACTOR_AGENT, timeout=timeout)
+        self._client.require_provider(provider_id, timeout=timeout)
+
+        self._on_progress("Подготавливаю справочники формы…")
+        inline_catalog = self._reference_resolver.build_inline_catalog(
+            form=form,
+            environment=environment,
+            current_values=current_values,
+            max_items=self._inline_reference_max_items,
+            max_bytes=self._inline_reference_max_bytes,
+            total_bytes=self._inline_reference_total_bytes,
+            cancel_event=cancel_event,
+            on_progress=self._on_progress,
+        )
+        self._inline_reference_context = inline_catalog.fields
+        self._inline_reference_values = inline_catalog.reference_values
+
+        enabled_mcp = (
+            self._available_mcp(allowed_mcp, timeout)
+            if mode == "research"
+            else []
+        )
+        active_repository_mcp = (
+            choose_repository_mcp(
+                repository_mcp,
+                enabled_mcp,
+                {name: {"status": "connected"} for name in enabled_mcp},
+            )
+            if mode == "research"
+            else ""
+        )
+        self._check_cancel()
+        self._session_id = self._client.create_session(
+            (
+                f"AutoDeploy form assistant: {context.ticket_id}"
+                if context.ticket_id
+                else "AutoDeploy form assistant: chat request"
+            ),
+            agent=FORM_EXTRACTOR_AGENT,
+            provider_id=provider_id,
+            model_id=model_id,
+            variant=variant,
+            mcp_names=enabled_mcp,
+            mcp_tool_allowlist=repository_tool_allowlist(active_repository_mcp),
+            mcp_tool_asklist=repository_tool_asklist(
+                active_repository_mcp,
+                allow_git_pull=allow_repository_git_pull,
+            ),
+            metadata={
+                "source": "gravitee-autodeploy-ui",
+                "ticket_id": _log_identifier(context.ticket_id),
+                "form_id": form.form_id,
+                "extractor_mode": mode,
+            },
+        )
+        self._on_session(self._session_id)
+        self._emit(ConversationEvent(
+            "system",
+            "Сессия создана",
+            f"{self._session_id}; режим: {mode}; MCP: "
+            f"{', '.join(enabled_mcp) or 'нет'}",
+        ))
+        return context, enabled_mcp, active_repository_mcp
+
     def send_guidance(self, message: str) -> OpenCodeMessage:
         with self._operation_lock:
             session_id = self._require_session()
@@ -286,95 +400,108 @@ class FormExtractorAgent:
 
     def finalize(self) -> ValidatedResponse:
         with self._operation_lock:
-            session_id = self._require_session()
-            form = self._form
-            assert form is not None
-            self._check_cancel()
-            semantic_schema = build_form_schema(
-                form,
-                self._inline_reference_values,
-                strict_references=False,
-            )
-            self._on_progress("Формирую структурированные предложения…")
-            structured = self._client.send_structured_message(
-                session_id=session_id,
-                prompt=build_finalization_prompt(),
-                system=SYSTEM_RULES,
-                schema=semantic_schema,
-                agent=FORM_EXTRACTOR_AGENT,
-                provider_id=self._provider_id,
-                model_id=self._model_id,
-                variant=self._variant,
-                retry_count=2,
-                cancel_event=self._cancel_event,
-                on_event=self._handle_raw_event,
-            )
+            return self._finalize_locked()
 
-            self._check_cancel()
-            self._on_progress("Проверяю JSON по схеме…")
-            # Первая проверка не применяет зависимости формы: reference labels
-            # ещё не преобразованы в реальные ID.
-            semantic = self._validator.validate(
-                structured,
-                form=form,
-                current_values=self._current_values,
-                schema=semantic_schema,
-                check_domain=False,
-            )
-            self._on_progress("Сопоставляю значения со справочниками локально…")
-            resolved = self._reference_resolver.resolve(
-                semantic.payload,
-                form=form,
-                environment=self._environment,
-                current_values=self._current_values,
-                cancel_event=self._cancel_event,
-                on_progress=self._on_progress,
-            )
-            self._reference_values = resolved.reference_values
-            self._check_cancel()
-            self._on_progress("Выполняю финальную Python-валидацию…")
-            strict_schema = build_form_schema(
-                form,
-                resolved.reference_values,
-                strict_references=True,
-            )
-            result = self._validator.validate(
-                resolved.payload,
-                form=form,
-                current_values=self._current_values,
-                reference_values=resolved.reference_values,
-                schema=strict_schema,
-                reference_candidates=resolved.candidates,
-            )
-            warnings = list(dict.fromkeys([
-                *self._context_warnings,
-                *resolved.warnings,
-                *result.warnings,
-            ]))
-            final = ValidatedResponse(
-                payload=result.payload,
-                preview_fields=result.preview_fields,
-                warnings=warnings,
-                reference_candidates=result.reference_candidates,
-            )
-            self._on_progress("Готовлю preview…")
-            _log.info(
-                "autofill success ticket=%s pr=%s session=%s agent=%s model=%s "
-                "duration=%.2fs filled=%d warnings=%d",
-                _log_identifier(self._ticket_id),
-                _log_identifier(self._pr_id or "none"),
-                _log_identifier(session_id),
-                FORM_EXTRACTOR_AGENT,
-                _log_identifier(
-                    f"{self._provider_id}/{self._model_id}"
-                    if self._provider_id
-                    else "opencode-default"
-                ),
-                time.monotonic() - self._started,
-                sum(value is not None for value in final.form_data.values()),
-                len(final.warnings),
-            )
-            return final
+    def _finalize_locked(
+        self,
+        *,
+        prompt: Optional[str] = None,
+        retry_count: int = 2,
+    ) -> ValidatedResponse:
+        session_id = self._require_session()
+        form = self._form
+        assert form is not None
+        self._check_cancel()
+        semantic_schema = build_form_schema(
+            form,
+            self._inline_reference_values,
+            strict_references=False,
+        )
+        self._on_progress(
+            "Быстро заполняю форму без поиска…"
+            if self._mode == "fill_only"
+            else "Формирую структурированные предложения…"
+        )
+        structured = self._client.send_structured_message(
+            session_id=session_id,
+            prompt=prompt if prompt is not None else build_finalization_prompt(),
+            system=SYSTEM_RULES,
+            schema=semantic_schema,
+            agent=FORM_EXTRACTOR_AGENT,
+            provider_id=self._provider_id,
+            model_id=self._model_id,
+            variant=self._variant,
+            retry_count=retry_count,
+            cancel_event=self._cancel_event,
+            on_event=self._handle_raw_event,
+        )
+
+        self._check_cancel()
+        self._on_progress("Проверяю JSON по схеме…")
+        # Первая проверка не применяет зависимости формы: reference labels
+        # ещё не преобразованы в реальные ID.
+        semantic = self._validator.validate(
+            structured,
+            form=form,
+            current_values=self._current_values,
+            schema=semantic_schema,
+            check_domain=False,
+        )
+        self._on_progress("Сопоставляю значения со справочниками локально…")
+        resolved = self._reference_resolver.resolve(
+            semantic.payload,
+            form=form,
+            environment=self._environment,
+            current_values=self._current_values,
+            cancel_event=self._cancel_event,
+            on_progress=self._on_progress,
+        )
+        self._reference_values = resolved.reference_values
+        self._check_cancel()
+        self._on_progress("Выполняю финальную Python-валидацию…")
+        strict_schema = build_form_schema(
+            form,
+            resolved.reference_values,
+            strict_references=True,
+        )
+        result = self._validator.validate(
+            resolved.payload,
+            form=form,
+            current_values=self._current_values,
+            reference_values=resolved.reference_values,
+            schema=strict_schema,
+            reference_candidates=resolved.candidates,
+        )
+        warnings = list(dict.fromkeys([
+            *self._context_warnings,
+            *resolved.warnings,
+            *result.warnings,
+        ]))
+        final = ValidatedResponse(
+            payload=result.payload,
+            preview_fields=result.preview_fields,
+            warnings=warnings,
+            reference_candidates=result.reference_candidates,
+        )
+        self._on_progress("Готовлю preview…")
+        _log.info(
+            "autofill success ticket=%s pr=%s session=%s agent=%s mode=%s model=%s "
+            "duration=%.2fs filled=%d warnings=%d",
+            _log_identifier(self._ticket_id),
+            _log_identifier(self._pr_id or "none"),
+            _log_identifier(session_id),
+            FORM_EXTRACTOR_AGENT,
+            self._mode,
+            _log_identifier(
+                f"{self._provider_id}/{self._model_id}"
+                if self._provider_id
+                else "opencode-default"
+            ),
+            time.monotonic() - self._started,
+            sum(value is not None for value in final.form_data.values()),
+            len(final.warnings),
+        )
+        return final
 
     def approve_permission(self, permission_id: str, *, allow: bool) -> None:
         session_id = self._require_session()

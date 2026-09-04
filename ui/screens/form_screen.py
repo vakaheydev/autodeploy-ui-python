@@ -30,6 +30,7 @@ from config.environments import (
 from config.mcp_profiles import setting_enabled
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.context_builder import BuiltContext
+from opencode_integration.workflow import ExtractionDirective
 from opencode_integration.reference_resolver import (
     DEFAULT_INLINE_REFERENCE_MAX_BYTES,
     DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
@@ -73,6 +74,9 @@ class FormScreen(BaseScreen):
             self._ai_handoff.step_id if self._ai_handoff else plan_step_id
         )
         self._ai_plan_guidance = self._ai_handoff.guidance if self._ai_handoff else ""
+        self._ai_extraction: Optional[ExtractionDirective] = (
+            self._ai_handoff.extraction if self._ai_handoff else None
+        )
         self._ai_provider_id = self._ai_handoff.provider_id if self._ai_handoff else ""
         self._ai_model_id = self._ai_handoff.model_id if self._ai_handoff else ""
         self._ai_variant = self._ai_handoff.variant if self._ai_handoff else ""
@@ -1148,6 +1152,39 @@ class FormScreen(BaseScreen):
         )
         environment = self.app.current_environment.get()
         current_values = self._collect_form_data()
+        extraction = self._ai_extraction
+        self._ai_extraction = None
+        if extraction is not None and extraction.form_id != self._form.form_id:
+            _log.warning(
+                "ignored extractor directive form=%s current_form=%s",
+                extraction.form_id,
+                self._form.form_id,
+            )
+            extraction = None
+        extractor_mode = extraction.mode if extraction is not None else "research"
+        field_proposals = [
+            {
+                "field_key": item.field_key,
+                "value": item.value,
+                "source": item.source,
+                "confidence": item.confidence,
+            }
+            for item in (extraction.field_proposals if extraction else ())
+        ]
+        plan_guidance = self._ai_plan_guidance
+        if extraction is not None and extraction.mode == "research":
+            directive_guidance = {
+                "mode": extraction.mode,
+                "known_field_values": field_proposals,
+                "missing_information": list(extraction.missing_information),
+                "research_goal": extraction.research_goal,
+            }
+            plan_guidance = (
+                f"{plan_guidance}\n" if plan_guidance else ""
+            ) + (
+                "Validated Copilot extraction directive:\n"
+                + json.dumps(directive_guidance, ensure_ascii=False)
+            )
         cancel_event = threading.Event()
         result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         agent = FormExtractorAgent(
@@ -1167,6 +1204,7 @@ class FormScreen(BaseScreen):
         self._ai_busy = True
         self._ai_assistant = AIAssistantDialog(
             self,
+            mode=extractor_mode,
             on_send=self._send_ai_guidance,
             on_finalize=self._finalize_ai_session,
             on_stop=self._stop_ai_request,
@@ -1183,27 +1221,47 @@ class FormScreen(BaseScreen):
         def session_changed(session_id: Optional[str]) -> None:
             result_queue.put(("session", session_id))
 
-        self._start_ai_worker(
-            "begin",
-            lambda: agent.begin(
-                form=self._form,
-                ticket_id=ticket_id,
-                environment=environment,
-                current_values=current_values,
-                allowed_mcp=allowed_mcp,
-                repository_mcp=repository_mcp,
-                allow_repository_git_pull=allow_repository_git_pull,
-                plan_guidance=self._ai_plan_guidance,
-                provider_id=provider_id,
-                model_id=model_id,
-                variant=variant,
-                cancel_event=cancel_event,
-                prepared_context=prepared_context,
-                on_progress=progress,
-                on_event=conversation_event,
-                on_session=session_changed,
-            ),
-        )
+        if extractor_mode == "fill_only":
+            self._start_ai_worker(
+                "fast_final",
+                lambda: agent.fill_only(
+                    form=self._form,
+                    ticket_id=ticket_id,
+                    environment=environment,
+                    current_values=current_values,
+                    field_proposals=field_proposals,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    variant=variant,
+                    cancel_event=cancel_event,
+                    prepared_context=prepared_context,
+                    on_progress=progress,
+                    on_event=conversation_event,
+                    on_session=session_changed,
+                ),
+            )
+        else:
+            self._start_ai_worker(
+                "begin",
+                lambda: agent.begin(
+                    form=self._form,
+                    ticket_id=ticket_id,
+                    environment=environment,
+                    current_values=current_values,
+                    allowed_mcp=allowed_mcp,
+                    repository_mcp=repository_mcp,
+                    allow_repository_git_pull=allow_repository_git_pull,
+                    plan_guidance=plan_guidance,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    variant=variant,
+                    cancel_event=cancel_event,
+                    prepared_context=prepared_context,
+                    on_progress=progress,
+                    on_event=conversation_event,
+                    on_session=session_changed,
+                ),
+            )
         self._poll_ai_queue()
 
     def _start_ai_worker(
@@ -1349,7 +1407,7 @@ class FormScreen(BaseScreen):
                             "Готов к уточнениям или формированию preview."
                         )
                         dialog.set_busy(False)
-                elif event == "final":
+                elif event in {"final", "fast_final"}:
                     agent = self._ai_agent
                     refs = agent.reference_values if agent is not None else {}
                     final_payload = (payload, refs)
@@ -1384,7 +1442,7 @@ class FormScreen(BaseScreen):
         if dialog is None:
             return
         if isinstance(error, OpenCodeCancelled):
-            if action == "begin" and (
+            if action in {"begin", "fast_final"} and (
                 self._ai_agent is None or self._ai_agent.session_id is None
             ):
                 dialog.close()
@@ -1404,7 +1462,7 @@ class FormScreen(BaseScreen):
             action,
             type(error).__name__,
         )
-        if action == "begin" and (
+        if action in {"begin", "fast_final"} and (
             self._ai_agent is None or self._ai_agent.session_id is None
         ):
             dialog.close()

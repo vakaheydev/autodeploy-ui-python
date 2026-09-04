@@ -13,6 +13,7 @@ from opencode_integration.data_sources import (
     DataSourceNotConfiguredError,
     ITSMDataSource,
 )
+from opencode_integration.request_loader import sanitize_request
 
 
 DEFAULT_MAX_CONTEXT_CHARS = 120_000
@@ -239,7 +240,11 @@ class ContextBuilder:
         self._check_cancel(cancel_event)
         notify("Получаю заявку...")
         try:
-            raw_itsm = self._itsm_service.get_ticket(clean_ticket_id, environment)
+            raw_itsm = sanitize_request(
+                self._itsm_service,
+                clean_ticket_id,
+                environment,
+            )
         except DataSourceNotConfiguredError as exc:
             # Это контролируемая локальная ошибка адаптера, а не потенциально
             # чувствительный ответ корпоративной ITSM.

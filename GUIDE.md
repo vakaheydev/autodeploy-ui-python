@@ -2446,6 +2446,13 @@ ITSM/ADO-контекст получает Python, после чего откр�
 трёх кандидатов. Затем запускается существующий `FormExtractorAgent` и тот же
 preview/apply flow, без повторного получения ITSM/ADO-контекста.
 
+Copilot управляет способом запуска extractor через отдельную директиву. Если все
+смысловые значения уже есть в запросе, `fill_only` делает один запрос и
+технически создаёт session без MCP. Если отсутствует конкретный факт об
+API/приложении, `research` передаёт extractor узкую цель и разрешённые read-only
+MCP. Идентификаторы SELECT/MULTISELECT не являются причиной для исследования:
+их после extraction сопоставляет Python по локальному или HTTP-справочнику.
+
 JSON Repository MCP настраивается на экране **OpenCode**. Его точный набор
 `search/list/get` вызывается автоматически, но виден в чате. `git_pull` можно
 разрешить отдельным чекбоксом, однако каждый его вызов всё равно требует
@@ -2481,6 +2488,7 @@ autodeploy-ui-python/
 │       ├── form-router.md          # primary agent: выбор формы без инструментов
 │       └── form-extractor.md       # primary agent: заполнение deny-by-default
 ├── opencode_integration/          # server/session/MCP, context, schema, local refs, validation
+│   └── request_loader.py          # маленькая заменяемая функция получения ITSM-заявки
 ├── config/
 │   ├── categories.py              # названия категорий и их порядок
 │   ├── environments.py            # список окружений, ключи .env токенов, REQUIRED_SETTINGS

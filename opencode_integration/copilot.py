@@ -34,8 +34,12 @@ from opencode_integration.prompts import (
     build_copilot_session_context,
     build_copilot_ticket_context,
 )
-from opencode_integration.schemas import build_copilot_schema
-from opencode_integration.workflow import PlannedFormStep
+from opencode_integration.schemas import build_copilot_schema, field_value_schema
+from opencode_integration.workflow import (
+    AIFieldProposal,
+    ExtractionDirective,
+    PlannedFormStep,
+)
 
 try:
     import jsonschema
@@ -105,6 +109,7 @@ class CopilotOutcome:
     question: Optional[str]
     selected_form_id: Optional[str]
     form_candidates: tuple[CopilotFormCandidate, ...]
+    extraction: Optional[ExtractionDirective]
     plan: tuple[PlannedFormStep, ...]
     repository_items: tuple[RepositoryItem, ...]
     diagnostics: Optional[DiagnosticReport]
@@ -150,6 +155,7 @@ def validate_copilot_output(
     payload: Any,
     *,
     form_ids: Sequence[str],
+    forms: Iterable[BaseForm] = (),
     context: Optional[BuiltContext] = None,
 ) -> CopilotOutcome:
     """Schema + доменные инварианты для ответа главного помощника."""
@@ -181,6 +187,95 @@ def validate_copilot_output(
         if candidates[0].score >= 80 and candidates[0].score - second >= 15:
             selected = str(requested)
 
+    form_map = {form.form_id: form for form in forms}
+
+    def parse_extraction(raw: Mapping[str, Any]) -> ExtractionDirective:
+        proposals = tuple(
+            AIFieldProposal(
+                field_key=str(item["field_key"]),
+                value=item["value"],
+                source=str(item["source"]).strip(),
+                confidence=str(item["confidence"]),
+            )
+            for item in raw["field_proposals"]
+        )
+        directive = ExtractionDirective(
+            form_id=str(raw["form_id"]),
+            mode=str(raw["mode"]),
+            field_proposals=proposals,
+            missing_information=tuple(
+                str(item).strip() for item in raw["missing_information"]
+            ),
+            research_goal=(
+                str(raw["research_goal"]).strip()
+                if raw["research_goal"] is not None
+                else ""
+            ),
+        )
+        keys = [item.field_key for item in proposals]
+        if len(keys) != len(set(keys)):
+            raise CopilotValidationError(
+                f"Подсказки полей для {directive.form_id} должны быть уникальны"
+            )
+        if directive.mode == "fill_only":
+            if directive.missing_information or directive.research_goal:
+                raise CopilotValidationError(
+                    "fill_only не может содержать missing_information или research_goal"
+                )
+            if any(
+                item.confidence not in {"high", "medium"}
+                for item in proposals
+            ):
+                raise CopilotValidationError(
+                    "fill_only допускает только high/medium field proposals"
+                )
+        elif not directive.research_goal:
+            raise CopilotValidationError(
+                "Для research требуется конкретная цель исследования"
+            )
+
+        form = form_map.get(directive.form_id)
+        if form is not None:
+            fields = {field.key: field for field in form.fields}
+            unknown = sorted(set(keys) - set(fields))
+            if unknown:
+                raise CopilotValidationError(
+                    f"Неизвестные поля формы {directive.form_id}: {', '.join(unknown)}"
+                )
+            for proposal in proposals:
+                errors = _schema_errors(
+                    proposal.value,
+                    field_value_schema(
+                        fields[proposal.field_key],
+                        strict_references=False,
+                    ),
+                )
+                if errors:
+                    raise CopilotValidationError(
+                        f"Некорректная подсказка {directive.form_id}."
+                        f"{proposal.field_key}: {'; '.join(errors)}"
+                    )
+            if directive.mode == "fill_only":
+                provided = set(keys)
+                missing_required = [
+                    field.key
+                    for field in form.fields
+                    if field.required and field.key not in provided
+                ]
+                if missing_required:
+                    raise CopilotValidationError(
+                        "Copilot выбрал fill_only без обязательных полей: "
+                        + ", ".join(missing_required)
+                    )
+        return directive
+
+    raw_extraction = payload["extraction"]
+    extraction = (
+        parse_extraction(raw_extraction)
+        if isinstance(raw_extraction, Mapping)
+        else None
+    )
+
     raw_steps = payload["plan"]
     steps = tuple(
         PlannedFormStep(
@@ -191,6 +286,7 @@ def validate_copilot_output(
             reason=str(item["reason"]).strip(),
             depends_on=tuple(str(value) for value in item["depends_on"]),
             confidence=str(item["confidence"]),
+            extraction=parse_extraction(item["extraction"]),
         )
         for item in raw_steps
     )
@@ -201,6 +297,10 @@ def validate_copilot_output(
         raise CopilotValidationError("Позиции шагов плана должны быть последовательными с 1")
     positions = {item.step_id: item.position for item in steps}
     for item in steps:
+        if item.extraction is None or item.extraction.form_id != item.form_id:
+            raise CopilotValidationError(
+                f"Extraction directive шага {item.step_id} относится не к его форме"
+            )
         unknown = [dep for dep in item.depends_on if dep not in positions]
         late = [dep for dep in item.depends_on if positions.get(dep, 10_000) >= item.position]
         if unknown:
@@ -256,10 +356,21 @@ def validate_copilot_output(
         )
     if intent == "single_form" and selected is None and not question:
         raise CopilotValidationError("Неоднозначный выбор формы требует вопроса пользователю")
-    if intent != "single_form" and (candidates or requested is not None):
+    if intent == "single_form" and requested is not None:
+        if extraction is None or extraction.form_id != requested:
+            raise CopilotValidationError(
+                "Выбранная форма требует соответствующий extraction directive"
+            )
+    elif intent == "single_form" and extraction is not None:
         raise CopilotValidationError(
-            "Кандидаты и выбранная форма допустимы только для single_form"
+            "Extraction directive требует выбранную форму"
         )
+    if intent != "single_form":
+        # Кандидаты полезны и при clarification: модель может объяснить
+        # неоднозначность и показать варианты. Но открыть форму автоматически
+        # разрешено только явному intent=single_form.
+        selected = None
+        extraction = None
     if intent == "execution_plan" and len(steps) < 2:
         raise CopilotValidationError("Многошаговый план должен содержать минимум два шага")
     if intent != "execution_plan" and steps:
@@ -279,6 +390,7 @@ def validate_copilot_output(
         question=question,
         selected_form_id=selected,
         form_candidates=candidates,
+        extraction=extraction,
         plan=steps,
         repository_items=items,
         diagnostics=diagnostics,
@@ -428,6 +540,7 @@ class UnifiedCopilot:
                     question=None,
                     selected_form_id=None,
                     form_candidates=(),
+                    extraction=None,
                     plan=(),
                     repository_items=(),
                     diagnostics=None,
@@ -462,13 +575,17 @@ class UnifiedCopilot:
             outcome = validate_copilot_output(
                 structured,
                 form_ids=self._form_ids,
+                forms=self._forms,
                 context=context,
             )
-            if context is None and outcome.intent in {"single_form", "execution_plan"}:
+            if context is None and (
+                outcome.intent in {"single_form", "execution_plan"}
+                or bool(outcome.form_candidates)
+            ):
                 # Запрос из главного чата может не иметь ITSM ID. Для этапа
                 # extractor достаточно очищенного текста оператора и уже
-                # валидированного handoff с MCP-путями: extractor сам прочитает
-                # нужную definition через разрешённый read-only MCP.
+                # валидированного handoff. Это также позволяет пользователю
+                # выбрать один из кандидатов после clarification без ITSM ID.
                 context = BuiltContext(
                     ticket_id="",
                     itsm={

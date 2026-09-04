@@ -447,12 +447,90 @@ def build_copilot_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
             "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
         },
     }
+    proposal_value = {
+        "anyOf": [
+            {"type": "string", "minLength": 1, "maxLength": 30000},
+            {"type": "integer", "minimum": 0, "maximum": 1_000_000_000},
+            {"type": "boolean"},
+            {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 4000},
+                        {"type": "integer", "minimum": 0, "maximum": 1_000_000_000},
+                        {"type": "boolean"},
+                    ],
+                },
+                "minItems": 1,
+                "maxItems": 100,
+            },
+            {
+                "type": "object",
+                "additionalProperties": {
+                    "anyOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 30000},
+                        {"type": "integer", "minimum": 0, "maximum": 1_000_000_000},
+                        {"type": "boolean"},
+                        {
+                            "type": "array",
+                            "items": {
+                                "anyOf": [
+                                    {"type": "string", "minLength": 1, "maxLength": 4000},
+                                    {"type": "integer", "minimum": 0, "maximum": 1_000_000_000},
+                                    {"type": "boolean"},
+                                ],
+                            },
+                            "maxItems": 100,
+                        },
+                    ],
+                },
+                "maxProperties": 100,
+            },
+        ],
+    }
+    field_proposal = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["field_key", "value", "source", "confidence"],
+        "properties": {
+            "field_key": {
+                "type": "string",
+                "pattern": r"^[A-Za-z_][A-Za-z0-9_.-]{0,199}$",
+            },
+            "value": proposal_value,
+            "source": {"type": "string", "minLength": 1, "maxLength": 500},
+            "confidence": {"type": "string", "enum": list(CONFIDENCE_VALUES)},
+        },
+    }
+    extraction_directive = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "form_id", "mode", "field_proposals", "missing_information",
+            "research_goal",
+        ],
+        "properties": {
+            "form_id": {"type": "string", "enum": allowed},
+            "mode": {"type": "string", "enum": ["fill_only", "research"]},
+            "field_proposals": {
+                "type": "array",
+                "items": field_proposal,
+                "maxItems": 100,
+            },
+            "missing_information": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "maxItems": 30,
+            },
+            "research_goal": nullable_short,
+        },
+    }
     plan_step = {
         "type": "object",
         "additionalProperties": False,
         "required": [
             "step_id", "position", "form_id", "title", "reason",
-            "depends_on", "confidence",
+            "depends_on", "confidence", "extraction",
         ],
         "properties": {
             "step_id": {
@@ -471,6 +549,7 @@ def build_copilot_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
                 "maxItems": 19,
             },
             "confidence": {"type": "string", "enum": list(CONFIDENCE_VALUES)},
+            "extraction": extraction_directive,
         },
     }
     repository_item = {
@@ -527,7 +606,8 @@ def build_copilot_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
         "additionalProperties": False,
         "required": [
             "intent", "answer", "question", "selected_form_id",
-            "form_candidates", "plan", "repository_items", "diagnostics", "warnings",
+            "form_candidates", "extraction", "plan", "repository_items",
+            "diagnostics", "warnings",
         ],
         "properties": {
             "intent": {
@@ -548,6 +628,7 @@ def build_copilot_schema(form_ids: Sequence[str]) -> Dict[str, Any]:
             "form_candidates": {
                 "type": "array", "items": candidate, "maxItems": min(3, len(allowed)),
             },
+            "extraction": {"anyOf": [extraction_directive, {"type": "null"}]},
             "plan": {"type": "array", "items": plan_step, "maxItems": 20},
             "repository_items": {
                 "type": "array", "items": repository_item, "maxItems": 30,

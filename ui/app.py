@@ -34,6 +34,7 @@ from opencode_integration.context_builder import sanitize
 from opencode_integration.workflow import (
     AIFormHandoff,
     ExecutionPlanState,
+    ExtractionDirective,
     PlannedFormStep,
 )
 from config.environments import (
@@ -205,6 +206,7 @@ class Application:
         provider_id: str = "",
         model_id: str = "",
         variant: str = "",
+        extraction: Optional[ExtractionDirective] = None,
     ) -> None:
         """Передаёт очищенный контекст выбранной форме ровно один раз."""
         from forms.registry import FormRegistry
@@ -221,6 +223,7 @@ class Application:
                 provider_id=provider_id,
                 model_id=model_id,
                 variant=variant,
+                extraction=extraction,
             ),
         )
         try:
@@ -289,6 +292,7 @@ class Application:
             provider_id=handoff.provider_id,
             model_id=handoff.model_id,
             variant=handoff.variant,
+            extraction=handoff.extraction,
         )
 
     def mark_execution_plan_step(

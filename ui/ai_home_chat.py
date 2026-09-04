@@ -752,8 +752,14 @@ class AIHomeChat(tk.Frame):
             and outcome.context is not None
         ):
             form = FormRegistry().get(outcome.selected_form_id)
+            mode = outcome.extraction.mode if outcome.extraction is not None else "research"
             self._status(
-                f"Однозначно выбрана форма «{form.title}». Готовлю AI-заполнение…"
+                (
+                    f"Форма «{form.title}»: данных достаточно, запускаю быстрое "
+                    "заполнение без MCP…"
+                    if mode == "fill_only"
+                    else f"Форма «{form.title}»: запускаю управляемое расследование…"
+                )
             )
             self.after(250, lambda: self._open_form(outcome.selected_form_id or ""))
         else:
@@ -761,7 +767,7 @@ class AIHomeChat(tk.Frame):
 
     def _render_outcome(self, outcome: CopilotOutcome) -> None:
         self._clear_actions()
-        if outcome.intent == "single_form":
+        if outcome.intent in {"single_form", "clarification"} and outcome.form_candidates:
             self._render_form_candidates(outcome)
         elif outcome.intent == "execution_plan":
             self._render_proposed_plan(outcome)
@@ -974,6 +980,12 @@ class AIHomeChat(tk.Frame):
         if outcome is None or self._destroying:
             return
         if outcome.context is not None:
+            extraction = (
+                outcome.extraction
+                if outcome.extraction is not None
+                and outcome.extraction.form_id == form_id
+                else None
+            )
             self.app.open_ai_routed_form(
                 form_id,
                 outcome.context,
@@ -981,6 +993,7 @@ class AIHomeChat(tk.Frame):
                 provider_id=self._outcome_model[0],
                 model_id=self._outcome_model[1],
                 variant=self._outcome_model[2],
+                extraction=extraction,
             )
             return
         from ui.screens.form_screen import FormScreen
@@ -1005,6 +1018,27 @@ class AIHomeChat(tk.Frame):
         payload = {
             "answer": outcome.answer,
             "selected_form_id": outcome.selected_form_id,
+            "extraction": (
+                {
+                    "form_id": outcome.extraction.form_id,
+                    "mode": outcome.extraction.mode,
+                    "field_proposals": [
+                        {
+                            "field_key": item.field_key,
+                            "value": item.value,
+                            "source": item.source,
+                            "confidence": item.confidence,
+                        }
+                        for item in outcome.extraction.field_proposals
+                    ],
+                    "missing_information": list(
+                        outcome.extraction.missing_information
+                    ),
+                    "research_goal": outcome.extraction.research_goal or None,
+                }
+                if outcome.extraction is not None
+                else None
+            ),
             "repository_items": [
                 {
                     "entity_type": item.entity_type,

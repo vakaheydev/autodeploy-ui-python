@@ -46,6 +46,7 @@ from opencode_integration.context_builder import (
     pull_request_id,
     sanitize,
 )
+from opencode_integration.request_loader import sanitize_request, sanitaze_request
 from opencode_integration.copilot import (
     CopilotValidationError,
     UnifiedCopilot,
@@ -82,7 +83,12 @@ from opencode_integration.schemas import (
     build_form_schema,
     build_routing_schema,
 )
-from opencode_integration.workflow import ExecutionPlanState, PlannedFormStep
+from opencode_integration.workflow import (
+    AIFieldProposal,
+    ExecutionPlanState,
+    ExtractionDirective,
+    PlannedFormStep,
+)
 from services.itsm_service import ITSMService
 from services.tfs_service import TfsService
 
@@ -627,6 +633,15 @@ class _FakeTFS:
 
 
 class ContextTests(unittest.TestCase):
+    def test_request_loader_is_a_small_replaceable_itsm_seam(self) -> None:
+        source = _FakeITSM()
+        loaded = sanitize_request(source, "REQ-9", "test_int")
+        self.assertEqual(loaded["id"], "REQ-9")
+        self.assertEqual(
+            sanitaze_request(source, "REQ-10", "test_int")["id"],
+            "REQ-10",
+        )
+
     def test_ticket_id_is_normalized_and_bounded(self) -> None:
         context = ContextBuilder(_FakeITSM(), _FakeTFS()).build(
             ticket_id="  REQ-1  ", environment="test_int"
@@ -1330,6 +1345,53 @@ class _AgentClient:
 
 
 class AgentWorkflowTests(unittest.TestCase):
+    def test_fill_only_uses_one_structured_request_and_no_mcp(self) -> None:
+        class NoMcpClient(_AgentClient):
+            def list_mcp_servers(self, **_kwargs: Any) -> dict[str, Any]:
+                raise AssertionError("fill_only must not inspect MCP servers")
+
+        client = NoMcpClient()
+        agent = FormExtractorAgent(
+            client,  # type: ignore[arg-type]
+            _FakeITSM(),
+            _FakeTFS(),
+            reference_resolver=_ReferenceBackend(),
+        )
+        context = BuiltContext(
+            ticket_id="",
+            itsm={
+                "source": "chat",
+                "operator_request": "Создай Payments API по пути /payments/v1",
+            },
+            ado=None,
+            warnings=[],
+        )
+        result = agent.fill_only(
+            form=CreateApiForm(),
+            ticket_id="",
+            environment="test_int",
+            current_values={},
+            field_proposals=[
+                {"field_key": "name", "value": "Payments API", "source": "chat", "confidence": "high"},
+                {"field_key": "owner", "value": "payments-team", "source": "chat", "confidence": "high"},
+                {"field_key": "category", "value": "Внешнее АПИ", "source": "chat", "confidence": "high"},
+                {"field_key": "context_path", "value": "/payments/v1", "source": "chat", "confidence": "high"},
+                {"field_key": "endpoint_type", "value": "REST", "source": "chat", "confidence": "high"},
+            ],
+            prepared_context=context,
+        )
+
+        self.assertEqual(client.created["mcp_names"], [])
+        self.assertEqual(client.created["mcp_tool_allowlist"], {})
+        self.assertEqual(client.created["mcp_tool_asklist"], {})
+        self.assertEqual(client.created["metadata"]["extractor_mode"], "fill_only")
+        self.assertEqual(client.chat_prompts, [])
+        self.assertEqual(len(client.structured_requests), 1)
+        self.assertEqual(client.structured_requests[0]["retry_count"], 0)
+        self.assertIn("FILL_ONLY MODE", client.structured_requests[0]["prompt"])
+        self.assertEqual(result.form_data["name"], "Payments API")
+        agent.close()
+
     def test_multi_turn_session_then_local_reference_resolution(self) -> None:
         client = _AgentClient()
         agent = FormExtractorAgent(
@@ -1620,10 +1682,21 @@ def _copilot_payload(intent: str = "conversation") -> dict[str, Any]:
         "question": None,
         "selected_form_id": None,
         "form_candidates": [],
+        "extraction": None,
         "plan": [],
         "repository_items": [],
         "diagnostics": None,
         "warnings": [],
+    }
+
+
+def _research_extraction(form_id: str) -> dict[str, Any]:
+    return {
+        "form_id": form_id,
+        "mode": "research",
+        "field_proposals": [],
+        "missing_information": ["Нужно получить свойства исходного объекта"],
+        "research_goal": "Получить только отсутствующие свойства исходного объекта",
     }
 
 
@@ -1676,11 +1749,13 @@ class CopilotContractTests(unittest.TestCase):
                 "step_id": "create_api", "position": 1, "form_id": "api.create",
                 "title": "Создать API", "reason": "Requested", "depends_on": ["deploy"],
                 "confidence": "high",
+                "extraction": _research_extraction("api.create"),
             },
             {
                 "step_id": "deploy", "position": 2, "form_id": "apps.deploy",
                 "title": "Deploy", "reason": "Requested", "depends_on": [],
                 "confidence": "high",
+                "extraction": _research_extraction("apps.deploy"),
             },
         ]
         with self.assertRaises(CopilotValidationError):
@@ -1689,6 +1764,7 @@ class CopilotContractTests(unittest.TestCase):
     def test_weak_form_selection_requires_human_choice(self) -> None:
         payload = _copilot_payload("single_form")
         payload["selected_form_id"] = "api.create"
+        payload["extraction"] = _research_extraction("api.create")
         payload["question"] = "Какую форму использовать?"
         payload["form_candidates"] = [
             {"form_id": "api.create", "score": 82, "reason": "API mentioned"},
@@ -1710,6 +1786,23 @@ class CopilotContractTests(unittest.TestCase):
         ]
         with self.assertRaises(CopilotValidationError):
             validate_copilot_output(payload, form_ids=self.form_ids)
+
+    def test_clarification_may_include_ranked_form_candidates(self) -> None:
+        payload = _copilot_payload("clarification")
+        payload["question"] = "Уточните, какую операцию требуется выполнить?"
+        payload["form_candidates"] = [
+            {"form_id": "api.create", "score": 82, "reason": "Возможное создание"},
+            {"form_id": "apps.deploy", "score": 68, "reason": "Возможный deploy"},
+            {
+                "form_id": "other.ingress.enable",
+                "score": 35,
+                "reason": "Менее вероятная операция",
+            },
+        ]
+        result = validate_copilot_output(payload, form_ids=self.form_ids)
+        self.assertEqual(result.intent, "clarification")
+        self.assertEqual(len(result.form_candidates), 3)
+        self.assertIsNone(result.selected_form_id)
 
     def test_repository_items_are_unique_and_ranked(self) -> None:
         payload = _copilot_payload("repository_search")
@@ -1753,6 +1846,64 @@ class CopilotContractTests(unittest.TestCase):
         self.assertNotIn("BEGIN_UNTRUSTED_ITSM_DATA", prompt)
         self.assertNotIn("BEGIN_UNTRUSTED_ADO_DATA", prompt)
 
+    def test_fill_only_accepts_select_and_multiselect_semantic_values(self) -> None:
+        payload = _copilot_payload("single_form")
+        payload["selected_form_id"] = "other.ingress.enable"
+        payload["form_candidates"] = [
+            {"form_id": "other.ingress.enable", "score": 98, "reason": "Явно включить ingress"},
+            {"form_id": "other.ingress.disable", "score": 15, "reason": "Обратная операция"},
+            {"form_id": "api.create", "score": 5, "reason": "Создание не требуется"},
+        ]
+        payload["extraction"] = {
+            "form_id": "other.ingress.enable",
+            "mode": "fill_only",
+            "field_proposals": [
+                {"field_key": "apis", "value": "Test.Ck", "source": "operator", "confidence": "high"},
+                {"field_key": "ingresses", "value": ["internal", "external"], "source": "operator", "confidence": "high"},
+                {"field_key": "ingress_type", "value": "standard", "source": "operator", "confidence": "high"},
+                {"field_key": "test", "value": False, "source": "operator", "confidence": "high"},
+            ],
+            "missing_information": [],
+            "research_goal": None,
+        }
+        result = validate_copilot_output(
+            payload,
+            form_ids=self.form_ids,
+            forms=_all_forms(),
+        )
+        self.assertEqual(result.extraction.mode, "fill_only")
+        self.assertEqual(result.extraction.field_proposals[1].value, ["internal", "external"])
+
+    def test_fill_only_rejects_missing_required_form_value(self) -> None:
+        payload = _copilot_payload("single_form")
+        payload["selected_form_id"] = "apps.deploy"
+        payload["form_candidates"] = [
+            {"form_id": "apps.deploy", "score": 98, "reason": "Deploy requested"},
+            {"form_id": "api.create", "score": 10, "reason": "Not creation"},
+            {"form_id": "other.ingress.enable", "score": 5, "reason": "Not ingress"},
+        ]
+        payload["extraction"] = {
+            "form_id": "apps.deploy",
+            "mode": "fill_only",
+            "field_proposals": [
+                {"field_key": "app_name", "value": "payments", "source": "operator", "confidence": "high"},
+            ],
+            "missing_information": [],
+            "research_goal": None,
+        }
+        with self.assertRaisesRegex(CopilotValidationError, "version"):
+            validate_copilot_output(
+                payload,
+                form_ids=self.form_ids,
+                forms=_all_forms(),
+            )
+
+    def test_copilot_prompt_says_reference_ids_do_not_require_research(self) -> None:
+        prompt = build_copilot_prompt(
+            operator_message="Включи internal и external ingress для Test.Ck",
+        )
+        self.assertIn("SELECT/MULTISELECT are resolved later", prompt)
+
 
 class WorkflowPlanTests(unittest.TestCase):
     def test_plan_gates_dependencies_and_tracks_completion(self) -> None:
@@ -1764,7 +1915,20 @@ class WorkflowPlanTests(unittest.TestCase):
             model_id="qwen",
             variant="high",
             specs=(
-                PlannedFormStep("create", 1, "api.create", "Create", "Requested"),
+                PlannedFormStep(
+                    "create",
+                    1,
+                    "api.create",
+                    "Create",
+                    "Requested",
+                    extraction=ExtractionDirective(
+                        form_id="api.create",
+                        mode="fill_only",
+                        field_proposals=(
+                            AIFieldProposal("name", "Payments", "operator", "high"),
+                        ),
+                    ),
+                ),
                 PlannedFormStep(
                     "deploy", 2, "apps.deploy", "Deploy", "Requested", ("create",)
                 ),
@@ -1774,6 +1938,7 @@ class WorkflowPlanTests(unittest.TestCase):
         self.assertFalse(plan.can_open("deploy"))
         handoff = plan.handoff("create")
         self.assertEqual(handoff.step_id, "create")
+        self.assertEqual(handoff.extraction.mode, "fill_only")
         self.assertIn("Payments", handoff.guidance)
         self.assertEqual(
             (handoff.provider_id, handoff.model_id, handoff.variant),
@@ -2029,6 +2194,7 @@ class CopilotWorkflowTests(unittest.TestCase):
 
         payload = _copilot_payload("single_form")
         payload["selected_form_id"] = "api.create"
+        payload["extraction"] = _research_extraction("api.create")
         payload["form_candidates"] = [
             {"form_id": "api.create", "score": 96, "reason": "Create requested"},
             {"form_id": "apps.deploy", "score": 20, "reason": "Not a deploy"},
@@ -2054,6 +2220,33 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(outcome.context.ticket_id, "")
         self.assertIn("/payments-v2", outcome.context.itsm["operator_request"])
         self.assertEqual(outcome.context.warnings, [])
+
+    def test_clarification_candidates_keep_chat_context_for_manual_choice(self) -> None:
+        class FailingSource:
+            def get_ticket(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ITSM must not be called without an explicit ticket")
+
+            def get_pull_request(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("ADO must not be called without an explicit ticket")
+
+        payload = _copilot_payload("clarification")
+        payload["question"] = "Создать подписку или изменить существующую?"
+        payload["form_candidates"] = [
+            {"form_id": "api.create", "score": 75, "reason": "Возможное создание"},
+            {"form_id": "apps.deploy", "score": 50, "reason": "Возможный deploy"},
+            {"form_id": "other.ingress.enable", "score": 20, "reason": "Слабое совпадение"},
+        ]
+        source = FailingSource()
+        outcome = UnifiedCopilot(
+            _CopilotClient(payload),  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
+            forms=_all_forms(),
+        ).ask("Нужно что-то сделать с Payments", environment="test_int")
+
+        self.assertEqual(outcome.intent, "clarification")
+        self.assertIsNotNone(outcome.context)
+        self.assertEqual(outcome.context.itsm["operator_request"], "Нужно что-то сделать с Payments")
 
     def test_diagnostic_payload_is_redacted_and_bounded(self) -> None:
         copilot = UnifiedCopilot(
