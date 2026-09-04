@@ -1,5 +1,8 @@
 # Installation, build and delivery
 
+Перенос закрытых форм и сборка отдельного корпоративного wheel описаны в
+[CORPORATE_MIGRATION.md](CORPORATE_MIGRATION.md).
+
 ## User installation (no Node/npm)
 
 The release pipeline produces `gravitee-autodeploy-installer-X.Y.Z.zip`.
@@ -27,9 +30,16 @@ Default Windows location:
   current.json
 ```
 
-Only `TFS_TOKEN` is edited by the launcher. Administrators/users add other server
-secrets directly to `config/.env`; updates preserve this file and never move it
-inside a version directory. Start later with `Gravitee AutoDeploy.cmd`.
+Only `TFS_TOKEN` is edited by the launcher. Other whitelisted settings can be
+edited on the local **Настройки** page or directly in `config/.env`; updates
+preserve this file and never move it inside a version directory. Stored secrets
+are write-only in the browser API: the page can replace or explicitly clear
+them, but cannot read their current value. Start later with
+`Gravitee AutoDeploy.cmd`.
+
+The optional AutoDeploy MCP is disabled by default. Set
+`AUTODEPLOY_MCP_ENABLED=true` and restart to expose `/api/mcp`; see
+[MCP.md](MCP.md).
 
 Logs:
 

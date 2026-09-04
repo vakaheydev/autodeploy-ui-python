@@ -30,6 +30,7 @@ def server(tmp_path_factory):
         "AUTODEPLOY_PORT": str(port),
         "AUTODEPLOY_OPEN_BROWSER": "false",
         "AUTODEPLOY_OPENCODE_AUTO_CONNECT": "false",
+        "AUTODEPLOY_MCP_ENABLED": "true",
         "AUTODEPLOY_DATA_DIR": str(runtime / "data"),
         "AUTODEPLOY_ENV_FILE": str(runtime / ".env"),
         "AUTODEPLOY_LOG_DIR": str(runtime / "logs"),
@@ -159,3 +160,47 @@ def test_browser_origin_and_request_limits(server: str) -> None:
         assert payload["error"]["code"] == "request_too_large"
     finally:
         connection.close()
+
+
+@pytest.mark.integration
+def test_settings_keep_secrets_write_only(server: str) -> None:
+    status, _, content = request(server, "/api/v1/settings")
+    assert status == 200
+    fields = [field for group in json.loads(content)["groups"] for field in group["fields"]]
+    token = next(field for field in fields if field["key"] == "TFS_TOKEN")
+    assert token["value"] is None
+
+    status, _, content = request(
+        server, "/api/v1/settings", method="PUT",
+        body={"values": {"TFS_TOKEN": "integration-sensitive-token"}, "clear": []},
+    )
+    assert status == 200
+    assert b"integration-sensitive-token" not in content
+    updated = [field for group in json.loads(content)["groups"] for field in group["fields"]]
+    assert next(field for field in updated if field["key"] == "TFS_TOKEN")["configured"] is True
+
+
+@pytest.mark.integration
+def test_streamable_http_mcp_lists_and_calls_documented_tools(server: str) -> None:
+    status, _, content = request(
+        server, "/api/mcp", method="POST",
+        body={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},
+    )
+    assert status == 200
+    assert json.loads(content)["result"]["serverInfo"]["name"] == "gravitee-autodeploy"
+
+    status, _, content = request(
+        server, "/api/mcp", method="POST",
+        body={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    tools = json.loads(content)["result"]["tools"]
+    assert {tool["name"] for tool in tools} >= {"search_forms", "get_form_schema", "preview_form_submission"}
+    assert all(tool["annotations"]["destructiveHint"] is False for tool in tools)
+
+    status, _, content = request(
+        server, "/api/mcp", method="POST",
+        body={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "search_forms", "arguments": {"query": "создание api"}}},
+    )
+    result = json.loads(content)["result"]
+    assert result["isError"] is False
+    assert any(item["id"] == "api.create" for item in result["structuredContent"]["items"])

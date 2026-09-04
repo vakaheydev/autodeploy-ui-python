@@ -2568,6 +2568,24 @@ class _InMemoryManager(OpenCodeManager):
 
 
 class ManagerPolicyTests(unittest.TestCase):
+    def test_runtime_config_registers_local_autodeploy_mcp_without_overwriting_other_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "runtime"
+            runtime.mkdir(parents=True)
+            (runtime / "opencode.json").write_text(
+                json.dumps({"mcp": {"existing": {"type": "remote", "url": "http://127.0.0.1:7777/mcp"}}}),
+                encoding="utf-8",
+            )
+            manager = OpenCodeManager(
+                PROJECT_DIR,
+                runtime_dir=runtime,
+                mcp_url="http://127.0.0.1:8765/api/mcp",
+            )
+            manager._prepare_runtime()
+            config = json.loads((runtime / "opencode.json").read_text(encoding="utf-8"))
+            self.assertIn("existing", config["mcp"])
+            self.assertEqual(config["mcp"]["autodeploy"]["url"], "http://127.0.0.1:8765/api/mcp")
+
     def test_owned_server_is_terminated_on_stop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = _InMemoryManager(

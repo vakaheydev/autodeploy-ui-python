@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
@@ -10,6 +11,7 @@ const catalog = {
 
 describe('App shell', () => {
   beforeEach(() => {
+    window.localStorage.clear()
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
       const payload = path.includes('/opencode/status')
@@ -25,5 +27,13 @@ describe('App shell', () => {
     expect(await screen.findByRole('heading', { name: 'Gravitee AutoDeploy' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Формы/ })).toBeInTheDocument()
     await waitFor(() => expect(fetch).toHaveBeenCalled())
+  })
+
+  it('switches and persists the dark theme', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><App /></MemoryRouter>)
+    await user.click(screen.getByRole('button', { name: 'Включить тёмную тему' }))
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(window.localStorage.getItem('autodeploy.theme')).toBe('dark')
   })
 })

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { api, post } from '../api'
 import { Bot, Check, Code2, LoaderCircle, MessageSquareText, RefreshCw, Send, Sparkles, X } from './Icons'
 import { useEnvironment } from '../environment'
+import { SearchableSelect } from './SearchableSelect'
 
 interface ModelItem { provider_id: string; model_id: string; provider_name: string; model_name: string; variants: string[] }
 interface ChatEvent { sequence: number; kind: string; timestamp: number; payload: Record<string, unknown> }
@@ -68,6 +69,10 @@ export function Copilot() {
     return () => stream.close()
   }, [session?.id])
 
+  useEffect(() => {
+    window.setTimeout(() => transcript.current?.scrollTo({ top: transcript.current.scrollHeight, behavior: 'smooth' }), 30)
+  }, [events.length, busy, progress])
+
   const selectedModel = models.find((item) => `${item.provider_id}/${item.model_id}` === modelKey)
   const visibleEvents = useMemo(() => {
     return events.filter((event) => {
@@ -127,13 +132,13 @@ export function Copilot() {
       <div className="chat-transcript" ref={transcript}>
         {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={event.sequence} />)}
         {!session && !error && <div className="chat-welcome"><LoaderCircle className="spin" /> Подготавливаю защищённую сессию…</div>}
+        {session && busy && <div className="message-row assistant generating-message" aria-live="polite"><div className="message-meta"><span>Copilot</span><span>генерирует ответ</span></div><div className="message-bubble"><span className="generating-orb"><Sparkles size={15} /></span><span className="generating-copy"><strong>{progress || 'Анализирую запрос'}</strong><span className="typing-dots" aria-hidden="true"><i /><i /><i /></span></span><button type="button" onClick={() => post(`/api/v1/ai/sessions/${session.id}/cancel`, {})}>Остановить</button></div></div>}
       </div>
       {error && <div className="chat-error"><X size={16} /><span>{error}</span></div>}
-      <div className={`chat-progress ${busy ? 'visible' : ''}`}><LoaderCircle className="spin" size={17} /><span>{progress || 'OpenCode анализирует запрос…'}</span><button onClick={() => session && post(`/api/v1/ai/sessions/${session.id}/cancel`, {})}>Остановить</button></div>
       <form className="chat-composer" onSubmit={(event) => void send(event)}>
         {ticketVisible && <div className="ticket-attachment"><MessageSquareText size={16} /><input value={ticketId} onChange={(event) => setTicketId(event.target.value)} placeholder="Номер заявки, например REQ-12345" autoFocus /><button type="button" className="icon-button" onClick={() => { setTicketVisible(false); setTicketId('') }}><X size={15} /></button></div>}
         <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Опишите результат, который нужен…" rows={2} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
-        <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><select aria-label="Модель" value={modelKey} onChange={(event) => setModelKey(event.target.value)}>{models.map((model) => <option key={`${model.provider_id}/${model.model_id}`} value={`${model.provider_id}/${model.model_id}`}>{model.model_name}</option>)}</select><select aria-label="Thinking" value={thinking} onChange={(event) => setThinking(event.target.value)}><option value="auto">Thinking: Auto</option>{(selectedModel?.variants ?? session?.variants ?? []).map((variant) => <option key={variant} value={variant}>Thinking: {variant}</option>)}</select></div><button className="send-button" disabled={!session || busy || !message.trim()} aria-label="Отправить"><Send size={19} /></button></div>
+        <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><button className="send-button" disabled={!session || busy || !message.trim()} aria-label="Отправить"><Send size={19} /></button></div>
       </form>
     </section>
   )

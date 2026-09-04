@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import math
 import os
@@ -15,6 +16,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlsplit
+
+from config.mcp_profiles import AUTODEPLOY_MCP_NAME
 
 from opencode_integration.client import (
     OpenCodeAgentMissingError,
@@ -77,6 +81,7 @@ class OpenCodeManager:
         password: str = "",
         runtime_dir: Path | None = None,
         agent_source_dir: Path | None = None,
+        mcp_url: str = "",
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         source_dir = Path(
@@ -97,6 +102,7 @@ class OpenCodeManager:
         self.request_timeout = self._timeout_value(request_timeout)
         self.username = username.strip() or "opencode"
         self.password = password
+        self.mcp_url = mcp_url.strip()
 
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.Lock()
@@ -556,7 +562,49 @@ class OpenCodeManager:
                 or destination.read_text(encoding="utf-8") != source_text
             ):
                 destination.write_text(source_text, encoding="utf-8")
+        self._prepare_mcp_config()
         _log.info("runtime prepared directory=%s", self.runtime_dir)
+
+    def _prepare_mcp_config(self) -> None:
+        """Merge only our remote MCP entry into the isolated project config."""
+        config_path = self.runtime_dir / "opencode.json"
+        if config_path.is_symlink():
+            raise OpenCodeManagerError("opencode.json runtime не должен быть symbolic link")
+        config: dict[str, object] = {}
+        if config_path.is_file():
+            try:
+                loaded = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise OpenCodeManagerError(f"Некорректный runtime opencode.json: {exc}") from exc
+            if not isinstance(loaded, dict):
+                raise OpenCodeManagerError("runtime opencode.json должен быть JSON object")
+            config = loaded
+        mcp = config.get("mcp")
+        if mcp is None:
+            mcp_map: dict[str, object] = {}
+            config["mcp"] = mcp_map
+        elif isinstance(mcp, dict):
+            mcp_map = mcp
+        else:
+            raise OpenCodeManagerError("opencode.json: mcp должен быть JSON object")
+        if self.mcp_url:
+            parsed = urlsplit(self.mcp_url)
+            if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+                raise OpenCodeManagerError("AutoDeploy MCP разрешён только по localhost HTTP")
+            mcp_map[AUTODEPLOY_MCP_NAME] = {
+                "type": "remote",
+                "url": self.mcp_url,
+                "enabled": True,
+            }
+        else:
+            mcp_map.pop(AUTODEPLOY_MCP_NAME, None)
+        config.setdefault("$schema", "https://opencode.ai/config.json")
+        temporary = config_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(config_path)
 
     @staticmethod
     def _require_agents(

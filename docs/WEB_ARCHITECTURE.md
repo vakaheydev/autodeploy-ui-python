@@ -122,6 +122,8 @@ Important resources are:
 - `/forms/{id}/actions/{action_id}`;
 - `/runs`, `/submissions/{id}/poll`, `/search`;
 - `/opencode/*` and `/ai/*` for the existing OpenCode assistant.
+- `/settings` for whitelisted configuration with write-only secrets;
+- `/api/mcp` for the optional stateless Streamable HTTP MCP endpoint.
 
 All request models reject unknown properties. Breaking API changes require a new
 prefix (`/api/v2`), so future MCP or other clients can rely on `/api/v1`.
@@ -141,6 +143,8 @@ prefix (`/api/v2`), so future MCP or other clients can rely on `/api/v1`.
 - Each application version has its own virtual environment. Activation is an
   atomic pointer write; failed startup triggers rollback to the previous version.
 
-MCP exposure for the form API is intentionally not part of this release. It can
-later be implemented as a separate API consumer without moving business rules to
-the browser.
+The optional MCP delegates to this same `FormRuntime`, so it cannot bypass form
+versions, reference resolution or Python validation. Built-in tools are
+read-only and stop at request preview; submission remains a human action in the
+web UI. Enable it with `AUTODEPLOY_MCP_ENABLED=true`; detailed tool guidance is
+in [MCP.md](MCP.md).

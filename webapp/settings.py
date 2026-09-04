@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.env_manager import ENV_FILE_OVERRIDE
+from core.env_manager import ENV_FILE_OVERRIDE, EnvManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +44,7 @@ class WebSettings:
     max_request_bytes: int
     auto_connect_opencode: bool
     open_browser: bool
+    mcp_enabled: bool = False
 
     @classmethod
     def load(cls) -> "WebSettings":
@@ -58,6 +59,13 @@ class WebSettings:
                 legacy_env if legacy_env.is_file() else data_dir / "config" / ".env",
             )
         ).expanduser().resolve()
+        saved = EnvManager(env_file).load()
+
+        def configured(key: str, default: str) -> str:
+            # Process environment remains the highest-priority deployment
+            # override; settings edited in the UI take effect after restart.
+            return os.environ.get(key, saved.get(key, default))
+
         static_dir = Path(
             os.environ.get(
                 "AUTODEPLOY_STATIC_DIR",
@@ -69,7 +77,7 @@ class WebSettings:
             raise ValueError(
                 "Web server разрешено запускать только на 127.0.0.1/localhost"
             )
-        port = _positive_int(os.environ.get("AUTODEPLOY_PORT"), 8765)
+        port = _positive_int(configured("AUTODEPLOY_PORT", "8765"), 8765)
         if port > 65535:
             raise ValueError("AUTODEPLOY_PORT должен быть от 1 до 65535")
         return cls(
@@ -83,12 +91,14 @@ class WebSettings:
                 os.environ.get("AUTODEPLOY_LOG_DIR", data_dir / "logs")
             ).resolve(),
             max_request_bytes=_positive_int(
-                os.environ.get("AUTODEPLOY_MAX_REQUEST_BYTES"), 2 * 1024 * 1024
+                configured("AUTODEPLOY_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)),
+                2 * 1024 * 1024,
             ),
-            auto_connect_opencode=os.environ.get(
+            auto_connect_opencode=configured(
                 "AUTODEPLOY_OPENCODE_AUTO_CONNECT", "true"
             ).strip().casefold() not in {"0", "false", "no", "off"},
-            open_browser=os.environ.get(
-                "AUTODEPLOY_OPEN_BROWSER", "true"
-            ).strip().casefold() not in {"0", "false", "no", "off"},
+            open_browser=configured("AUTODEPLOY_OPEN_BROWSER", "true").strip().casefold()
+            not in {"0", "false", "no", "off"},
+            mcp_enabled=configured("AUTODEPLOY_MCP_ENABLED", "false").strip().casefold()
+            not in {"0", "false", "no", "off"},
         )

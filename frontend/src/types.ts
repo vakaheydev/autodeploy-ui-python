@@ -57,6 +57,7 @@ export interface FormSummary {
   field_count: number
   confirm_submit: boolean
   itsm_support: boolean
+  keywords?: string[]
 }
 
 export interface Category {
@@ -122,4 +123,26 @@ export interface RunRecord {
   form_data: Record<string, unknown>
   fields_snapshot: Record<string, string>
   stale: boolean
+}
+
+export interface SettingField {
+  key: string
+  label: string
+  group: string
+  kind: 'text' | 'secret' | 'number' | 'boolean' | 'path'
+  default: string
+  description: string
+  required: boolean
+  restart_required: boolean
+  minimum: number | null
+  maximum: number | null
+  configured: boolean
+  value: string | boolean | null
+}
+
+export interface SettingsDocument {
+  groups: Array<{ name: string; fields: SettingField[] }>
+  saved_keys?: string[]
+  restart_required?: boolean
+  reconnect_opencode?: boolean
 }

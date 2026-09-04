@@ -10,6 +10,20 @@ from collections.abc import Mapping
 from typing import Any, Iterable
 
 
+AUTODEPLOY_MCP_NAME = "autodeploy"
+AUTODEPLOY_MCP_TOOLS: tuple[str, ...] = (
+    "get_system_status",
+    "list_environments",
+    "search_forms",
+    "get_form_schema",
+    "calculate_form_state",
+    "search_reference_options",
+    "validate_form_values",
+    "preview_form_submission",
+    "search_gravitee_objects",
+)
+
+
 JSON_REPOSITORY_READ_TOOLS: tuple[str, ...] = (
     "search_api_by_id",
     "search_api_by_name",

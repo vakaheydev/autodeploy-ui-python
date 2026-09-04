@@ -186,9 +186,26 @@ class FormRuntime:
                 "field_count": len(form.fields),
                 "confirm_submit": form.confirm_submit(),
                 "itsm_support": form.itsm_support,
+                "keywords": self._form_keywords(form),
             }
             for form in sorted(forms, key=lambda value: (value.category, value.title))
         ]
+
+    @staticmethod
+    def _form_keywords(form: BaseForm) -> list[str]:
+        """Searchable public vocabulary without loading reference values."""
+        values = [form.form_id, form.title, form.category, CATEGORIES.get(form.category, "")]
+
+        def collect(fields: Iterable[FieldDefinition]) -> None:
+            for field in fields:
+                values.extend((field.key, field.label, field.hint, field.placeholder))
+                collect(field.block_fields)
+
+        collect(form.fields)
+        return list(dict.fromkeys(
+            text.strip() for value in values
+            if (text := str(value or "").strip())
+        ))
 
     def describe(
         self, form_id: str, environment: str, values: Optional[Mapping[str, Any]] = None

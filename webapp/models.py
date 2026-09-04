@@ -79,3 +79,8 @@ class ChatMessageRequest(StrictModel):
 
 class PermissionReplyRequest(StrictModel):
     allow: bool
+
+
+class SettingsUpdateRequest(StrictModel):
+    values: Dict[str, Any] = Field(default_factory=dict, max_length=100)
+    clear: List[str] = Field(default_factory=list, max_length=100)

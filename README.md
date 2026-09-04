@@ -12,3 +12,10 @@ localhost-порту. Вся схема форм, валидация, payload, �
 Инструкции по production-установке, обновлению и корпоративным расширениям:
 [docs/INSTALLATION.md](docs/INSTALLATION.md) и
 [docs/WEB_ARCHITECTURE.md](docs/WEB_ARCHITECTURE.md).
+
+Пошаговый перенос закрытых форм, ITSM/TFS/Gravitee-сервисов и справочников в
+отдельный корпоративный wheel описан в
+[docs/CORPORATE_MIGRATION.md](docs/CORPORATE_MIGRATION.md).
+
+Опциональный same-port MCP и его инструменты описаны в
+[docs/MCP.md](docs/MCP.md).

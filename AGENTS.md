@@ -1,0 +1,84 @@
+# Agent guide for Gravitee AutoDeploy
+
+This repository contains a public/local-first Python core, a same-port React
+client, a compatible Tkinter client, and optional private corporate extensions.
+Read this file before changing the project.
+
+## Non-negotiable architecture
+
+- Python is the only source of business truth. Form fields, defaults,
+  visibility, validation, reference resolution, payload construction,
+  confirmation, submission and result processing stay server-side.
+- React renders API documents and user interactions. Never duplicate a domain
+  rule, corporate endpoint, payload builder or validation rule in TypeScript.
+- Existing `BaseForm` implementations remain compatible. The web layer projects
+  them to JSON through `webapp/form_runtime.py` and invokes their existing hooks.
+- Public web core and corporate code are separate deliverables. Never commit
+  corporate URLs, schemas, tokens, request examples with personal data, or real
+  ITSM/TFS/Gravitee implementations to this repository.
+- Corporate forms and services belong in a separate private Python package.
+  Connect that package only through `AUTODEPLOY_FORM_REGISTRAR`,
+  `AUTODEPLOY_SERVICE_PROVIDER`, and `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`.
+  Keep these boundaries stable.
+- Frontend and API are served by one localhost-only Python process on one port.
+  The production wheel includes prebuilt `webapp/static`; end users do not need
+  Node.js or npm.
+
+## Project map
+
+- `forms/`: public form contracts and examples; no corporate network logic.
+- `services/`: public/default service abstractions.
+- `handlers/`: reference handlers used by Python forms.
+- `webapp/`: FastAPI application, API contracts, form runtime, MCP and AI façade.
+- `frontend/`: React + TypeScript source and tests.
+- `opencode_integration/`: OpenCode 1.18.18 client, agents and safe sessions.
+- `launcher/`: atomic signed/checksummed release delivery.
+- `docs/CORPORATE_MIGRATION.md`: private-package integration guide.
+
+## Forms and references
+
+Preserve `form_id`, field keys, `FieldType`, `ReferenceConfig`, plural naming and
+the existing `BaseForm` lifecycle. Add web-capable custom actions through
+`ServerAction`; a raw Tkinter callback cannot execute in a headless server.
+Reference identifiers come from `value_key`, display text from `label_key`, and
+search from `search_keys`. A select returns one identifier; a multiselect returns
+an array. Do not load entire large dictionaries into the AI context or browser.
+Use the options endpoint and respect Python validation.
+
+## Security and configuration
+
+- The web server and managed OpenCode server must bind only to localhost.
+- Runtime settings are whitelisted in `webapp/configuration.py`. Secret settings
+  are write-only: API responses may expose `configured`, never their values.
+- Never log secrets, auth headers, raw `.env`, full ITSM payloads or confidential
+  form values. Preserve request-size, Origin, TrustedHost and CSP protections.
+- OpenCode runs in an isolated per-user runtime outside the source checkout.
+  Agents must not read project files, YAML files or environment dumps.
+- AI output never submits a form. Python validation, inline preview and explicit
+  human confirmation remain mandatory.
+
+## MCP policy
+
+The optional same-port endpoint is `/api/mcp` and is controlled by
+`AUTODEPLOY_MCP_ENABLED`. Tools should be narrowly described, schema-constrained
+and safe by default. Current built-in tools are read-only and stop at preview;
+do not add an autonomous submit/deploy/write tool without an explicit product
+decision and a one-time human confirmation design. Copilot receives an exact
+tool allowlist only when MCP is enabled. Keep external data untrusted.
+
+## Development workflow
+
+1. Preserve user changes and inspect the current branch/status first.
+2. Use `apply_patch` for source edits.
+3. Add or update Python tests for server contracts and Vitest tests for UI logic.
+4. Run `python -m compileall`, `pytest`, `npm test`, and `npm run build`.
+5. Run Playwright for navigation or interaction changes.
+6. Commit the rebuilt `webapp/static` with frontend source changes.
+7. Never push major work directly to `master`; use the requested feature branch.
+
+Build frontend with Node only on the developer/CI machine. Release artifacts are
+produced by the pipeline and installed atomically by the Python launcher. Keep
+`version.txt` and the corporate update-provider boundary backward compatible.
+
+When a requirement is ambiguous, prefer compatibility, server-side business
+logic, least privilege, and explicit human confirmation before side effects.

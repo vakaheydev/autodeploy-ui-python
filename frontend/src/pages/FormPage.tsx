@@ -11,6 +11,7 @@ interface LocationState { values?: Record<string, unknown>; handoffToken?: strin
 interface AIFieldResult { key: string; proposed_value: unknown; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }
 interface ExtractionResult { values: Record<string, unknown>; fields: AIFieldResult[]; warnings: string[] }
 interface ExtractionState { id: string; status: string; progress: string; result: ExtractionResult | null; error: string }
+interface ReviewEntry { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }
 
 function pathValue(source: Record<string, unknown>, path: string): { present: boolean; value: unknown } {
   const parts = path.split('.').filter(Boolean)
@@ -22,7 +23,7 @@ function pathValue(source: Record<string, unknown>, path: string): { present: bo
   return { present: true, value: current }
 }
 
-function restorePath(current: Record<string, unknown>, baseline: Record<string, unknown>, path: string) {
+export function restorePath(current: Record<string, unknown>, baseline: Record<string, unknown>, path: string) {
   const parts = path.split('.').filter(Boolean)
   if (!parts.length) return current
   const restored = pathValue(baseline, path)
@@ -39,6 +40,23 @@ function restorePath(current: Record<string, unknown>, baseline: Record<string, 
   const leaf = parts[parts.length - 1]
   if (restored.present) target[leaf] = restored.value
   else delete target[leaf]
+  return root
+}
+
+export function setPathValue(current: Record<string, unknown>, path: string, value: unknown) {
+  const parts = path.split('.').filter(Boolean)
+  if (!parts.length) return current
+  const root = { ...current }
+  let target = root
+  for (const part of parts.slice(0, -1)) {
+    const child = target[part]
+    const next = typeof child === 'object' && child !== null && !Array.isArray(child)
+      ? { ...(child as Record<string, unknown>) }
+      : {}
+    target[part] = next
+    target = next
+  }
+  target[parts[parts.length - 1]] = value
   return root
 }
 
@@ -64,7 +82,7 @@ export function FormPage() {
   const extractionId = useRef('')
   const loadedScope = useRef('')
   const [extraction, setExtraction] = useState<ExtractionState | null>(null)
-  const [review, setReview] = useState<Record<string, { status: 'pending' | 'accepted' | 'rejected'; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }>>({})
+  const [review, setReview] = useState<Record<string, ReviewEntry>>({})
   const [reviewBaseline, setReviewBaseline] = useState<Record<string, unknown>>({})
   const [refineModal, setRefineModal] = useState(false)
   const [guidance, setGuidance] = useState('')
@@ -131,7 +149,7 @@ export function FormPage() {
             setValues((current) => ({ ...current, ...next.result!.values }))
             setReview(Object.fromEntries(next.result.fields
               .filter((field) => field.proposed_value !== null && field.proposed_value !== undefined)
-              .map((field) => [field.key, { status: 'pending' as const, confidence: field.confidence, source: field.source, reason: field.reason, conflict: field.conflict }])))
+              .map((field) => [field.key, { confidence: field.confidence, proposedValue: field.proposed_value, source: field.source, reason: field.reason, conflict: field.conflict }])))
             setBusy(false)
           } else if (['error', 'cancelled'].includes(next.status)) {
             setBusy(false); setError(next.error || 'AI-извлечение завершилось ошибкой')
@@ -236,14 +254,47 @@ export function FormPage() {
     }
   }
 
+  const closeCompletedReview = async (finalValues: Record<string, unknown>) => {
+    if (!document) return
+    setBusy(true); setError('')
+    try {
+      const validation = await post<ValidationResult>(`/api/v1/forms/${encodeURIComponent(formId)}/validate`, {
+        environment, values: finalValues, form_version: document.version,
+      })
+      setValues(validation.values)
+      setErrors(validation.errors)
+      if (extraction) await api(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}`, { method: 'DELETE' }).catch(() => undefined)
+      extractionId.current = ''
+      setExtraction(null)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const decideReview = (key: string, accept: boolean) => {
-    if (!accept) setValues((current) => restorePath(current, reviewBaseline, key))
-    setReview((current) => ({ ...current, [key]: { ...current[key], status: accept ? 'accepted' : 'rejected' } }))
+    const proposal = review[key]
+    if (!proposal) return
+    const nextValues = accept
+      ? setPathValue(values, key, proposal.proposedValue)
+      : restorePath(values, reviewBaseline, key)
+    const nextReview = { ...review }
+    delete nextReview[key]
+    setValues(nextValues)
+    setReview(nextReview)
+    setErrors((current) => current.filter((item) => item.field !== key))
+    if (!Object.keys(nextReview).length) void closeCompletedReview(nextValues)
   }
 
   const finishReview = async (accept: boolean) => {
     if (!document) return
-    const finalValues = accept ? values : reviewBaseline
+    const finalValues = accept
+      ? Object.entries(review).reduce(
+        (current, [key, item]) => setPathValue(current, key, item.proposedValue),
+        values,
+      )
+      : reviewBaseline
     setBusy(true); setError('')
     try {
       const validation = await post<ValidationResult>(`/api/v1/forms/${encodeURIComponent(formId)}/validate`, {
@@ -335,7 +386,7 @@ export function FormPage() {
       </section>}
 
       <footer className={`form-actions ${Object.keys(review).length ? 'reviewing' : ''}`}>
-        {Object.keys(review).length ? <><div className="review-summary"><Sparkles size={18} /><span><strong>Проверьте AI-предложения</strong><small>{Object.values(review).filter((item) => item.status === 'pending').length} ожидают решения</small></span></div><div className="button-row"><button className="button secondary" onClick={() => setRefineModal(true)}><Sparkles size={17} /> Уточнить</button><button className="button danger" onClick={() => void finishReview(false)}><X size={17} /> Отклонить всё</button><button className="button success" onClick={() => void finishReview(true)}><Check size={17} /> Принять всё</button></div></> : <>
+        {Object.keys(review).length ? <><div className="review-summary"><Sparkles size={18} /><span><strong>Проверьте AI-предложения</strong><small>{Object.keys(review).length} ожидают решения</small></span></div><div className="button-row"><button className="button secondary" onClick={() => setRefineModal(true)}><Sparkles size={17} /> Уточнить</button><button className="button danger" onClick={() => void finishReview(false)}><X size={17} /> Отклонить всё</button><button className="button success" onClick={() => void finishReview(true)}><Check size={17} /> Принять всё</button></div></> : <>
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
           {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => setTicketModal(true)}><Sparkles size={17} /> Подтянуть заявку</button>}

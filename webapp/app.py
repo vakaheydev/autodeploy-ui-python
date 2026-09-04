@@ -22,6 +22,7 @@ from webapp.api import router
 from webapp.ai_api import router as ai_router
 from webapp.ai_service import WebAIService
 from webapp.container import ApplicationContainer
+from webapp.mcp_server import router as mcp_router
 from webapp.settings import WebSettings
 
 
@@ -220,6 +221,7 @@ def create_app(
 
     app.include_router(router)
     app.include_router(ai_router)
+    app.include_router(mcp_router)
 
     static_dir = runtime_settings.static_dir
     assets_dir = static_dir / "assets"

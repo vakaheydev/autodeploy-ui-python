@@ -414,6 +414,7 @@ class UnifiedCopilot:
         repository_mcp: str = "",
         allow_repository_git_pull: bool = True,
         max_context_chars: int = 120_000,
+        trusted_mcp_tools: Optional[Mapping[str, Sequence[str]]] = None,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
@@ -426,6 +427,10 @@ class UnifiedCopilot:
         self._configured_repository_mcp = repository_mcp.strip()
         self._allow_repository_git_pull = bool(allow_repository_git_pull)
         self._max_context_chars = max(10_000, min(500_000, int(max_context_chars)))
+        self._trusted_mcp_tools = {
+            str(name): tuple(str(tool) for tool in tools)
+            for name, tools in (trusted_mcp_tools or {}).items()
+        }
         self._active_repository_mcp = ""
         self._active_mcp: tuple[str, ...] = ()
         self._session_id: Optional[str] = None
@@ -666,6 +671,11 @@ class UnifiedCopilot:
         if self._active_repository_mcp and self._active_repository_mcp not in mcp_names:
             mcp_names.append(self._active_repository_mcp)
         self._active_mcp = tuple(mcp_names)
+        allowlist = repository_tool_allowlist(self._active_repository_mcp)
+        allowlist.update({
+            name: tools for name, tools in self._trusted_mcp_tools.items()
+            if name in mcp_names
+        })
         self._session_id = self._client.create_session(
             "Gravitee AutoDeploy unified copilot",
             agent=AUTODEPLOY_COPILOT_AGENT,
@@ -673,7 +683,7 @@ class UnifiedCopilot:
             model_id=self._model_id,
             variant=self._variant,
             mcp_names=mcp_names,
-            mcp_tool_allowlist=repository_tool_allowlist(self._active_repository_mcp),
+            mcp_tool_allowlist=allowlist,
             mcp_tool_asklist=repository_tool_asklist(
                 self._active_repository_mcp,
                 allow_git_pull=self._allow_repository_git_pull,

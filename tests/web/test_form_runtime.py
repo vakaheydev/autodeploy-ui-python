@@ -37,6 +37,8 @@ def container(tmp_path: Path):
 
 
 def test_existing_python_form_is_projected_and_validated(container: ApplicationContainer) -> None:
+    summary = next(item for item in container.forms.list_forms() if item["id"] == "api.create")
+    assert "Название АПИ" in summary["keywords"]
     document = container.forms.describe("api.create", "test_int")
     assert document["title"] == "Создание АПИ"
     category = next(field for field in document["fields"] if field["key"] == "category")

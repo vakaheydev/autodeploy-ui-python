@@ -14,10 +14,12 @@ from webapp.models import (
     ActionRequest,
     ReferenceRequest,
     SearchRequest,
+    SettingsUpdateRequest,
     SubmitRequest,
     TicketRequest,
     ValuesRequest,
 )
+from webapp.configuration import settings_snapshot, update_settings
 
 
 router = APIRouter(prefix="/api/v1")
@@ -46,7 +48,27 @@ def health(request: Request) -> dict[str, Any]:
         "version": request.app.version,
         "forms": len(FormRegistry().all_forms()),
         "opencode": app_container.opencode_manager.status.state,
+        "mcp": "enabled" if app_container.settings.mcp_enabled else "disabled",
     }
+
+
+@router.get("/settings", tags=["settings"])
+def settings(request: Request):
+    return settings_snapshot(container(request).env_manager)
+
+
+@router.put("/settings", tags=["settings"])
+def save_settings(body: SettingsUpdateRequest, request: Request):
+    app_container = container(request)
+    try:
+        return update_settings(
+            app_container.env_manager,
+            app_container.opencode_manager,
+            body.values,
+            body.clear,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/catalog", tags=["forms"])

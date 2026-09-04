@@ -20,7 +20,7 @@ from config.environments import (
     OPENCODE_REPOSITORY_GIT_PULL_KEY,
     OPENCODE_REPOSITORY_MCP_KEY,
 )
-from config.mcp_profiles import setting_enabled
+from config.mcp_profiles import AUTODEPLOY_MCP_NAME, AUTODEPLOY_MCP_TOOLS, setting_enabled
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot, detect_ticket_reference
@@ -146,18 +146,26 @@ class WebAIService:
         services = self.container.service_provider(
             self.container.env_manager, self.container.new_http_client()
         )
+        allowed_mcp = self._csv(values.get(OPENCODE_ALLOWED_MCP_KEY, ""))
+        if self.container.settings.mcp_enabled:
+            allowed_mcp = list(dict.fromkeys((*allowed_mcp, AUTODEPLOY_MCP_NAME)))
         copilot = UnifiedCopilot(
             client,
             services.itsm,
             services.tfs,
             forms=FormRegistry().all_forms(),
-            allowed_mcp=self._csv(values.get(OPENCODE_ALLOWED_MCP_KEY, "")),
+            allowed_mcp=allowed_mcp,
             repository_mcp=values.get(OPENCODE_REPOSITORY_MCP_KEY, ""),
             allow_repository_git_pull=setting_enabled(
                 values.get(OPENCODE_REPOSITORY_GIT_PULL_KEY), default=True
             ),
             max_context_chars=self._integer(
                 values.get(OPENCODE_MAX_CONTEXT_CHARS_KEY), 120_000
+            ),
+            trusted_mcp_tools=(
+                {AUTODEPLOY_MCP_NAME: AUTODEPLOY_MCP_TOOLS}
+                if self.container.settings.mcp_enabled
+                else {}
             ),
         )
         session_id = secrets.token_urlsafe(24)

@@ -1,6 +1,8 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Boxes, History, Home, Search, ServerCog, Sparkles } from './Icons'
+import { Boxes, History, Home, Moon, Search, ServerCog, Settings, Sparkles, Sun } from './Icons'
 import { useEnvironment } from '../environment'
+import { useTheme } from '../theme'
+import { SearchableSelect } from './SearchableSelect'
 
 const links = [
   { to: '/', label: 'Главная', icon: Home },
@@ -8,10 +10,12 @@ const links = [
   { to: '/search', label: 'Поиск', icon: Search },
   { to: '/runs', label: 'История', icon: History },
   { to: '/opencode', label: 'OpenCode', icon: ServerCog },
+  { to: '/settings', label: 'Настройки', icon: Settings },
 ]
 
 export function Shell() {
   const { environments, environment, setEnvironment } = useEnvironment()
+  const { theme, toggleTheme } = useTheme()
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -37,18 +41,11 @@ export function Shell() {
         <header className="topbar">
           <div>
             <span className="eyebrow">Рабочее окружение</span>
-            <div className="select-wrap compact">
-              <select
-                aria-label="Окружение"
-                value={environment}
-                onChange={(event) => setEnvironment(event.target.value)}
-              >
-                {environments.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}
-              </select>
-            </div>
+            <SearchableSelect ariaLabel="Окружение" compact clearable={false} value={environment} onChange={setEnvironment} options={environments.map((item) => ({ value: item.key, label: item.label }))} searchPlaceholder="Найти окружение…" />
           </div>
-          <div className="topbar-note">
-            <span className="status-dot online" /> API подключён
+          <div className="topbar-actions">
+            <button className="icon-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'light' ? 'Включить тёмную тему' : 'Включить светлую тему'} title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button>
+            <div className="topbar-note"><span className="status-dot online" /> API подключён</div>
           </div>
         </header>
         <div className="page-container"><Outlet /></div>

@@ -108,4 +108,9 @@ class ApplicationContainer:
                 if all((project_agents / f"{name}.md").is_file() for name in ("form-extractor", "form-router", "autodeploy-copilot"))
                 else packaged_agents
             ),
+            mcp_url=(
+                f"http://127.0.0.1:{self.settings.port}/api/mcp"
+                if self.settings.mcp_enabled
+                else ""
+            ),
         )

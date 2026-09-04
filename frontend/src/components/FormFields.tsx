@@ -2,6 +2,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
 import { FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
+import { SearchableSelect } from './SearchableSelect'
 
 interface FieldProps {
   field: FieldDocument
@@ -14,7 +15,7 @@ interface FieldProps {
   onChange: (value: unknown) => void
   onObjectChange?: (key: string, value: unknown) => void
   onObjectDelete?: (key: string) => void
-  review?: Record<string, { status: 'pending' | 'accepted' | 'rejected'; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }>
+  review?: Record<string, { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }>
   onReview?: (key: string, accept: boolean) => void
 }
 
@@ -105,14 +106,20 @@ function ReferenceField(props: FieldProps) {
   if (field.type === 'select') {
     return (
       <div className="reference-control">
-        <div className="reference-toolbar">
-          {searchable && <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск…" /></label>}
-          {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
+        <div className="reference-select-row">
+          <SearchableSelect
+            id={field.path}
+            ariaLabel={field.label}
+            value={String(props.value ?? '')}
+            disabled={disabled}
+            loading={loading}
+            options={shown.map((item) => ({ value: identifier(item), label: label(item), description: reference.detail_keys.map((key) => String(item[key] ?? '')).filter(Boolean).join(' · ') }))}
+            onChange={onChange}
+            onSearch={searchable ? setQuery : undefined}
+            searchPlaceholder={`Найти: ${reference.search_keys.join(', ')}`}
+          />
+          {reference.source === 'http' && <button type="button" className="icon-button reference-refresh" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
         </div>
-        <select id={field.path} value={String(props.value ?? '')} disabled={disabled || loading} onChange={(event) => onChange(event.target.value)}>
-          <option value="">Не выбрано</option>
-          {shown.map((item) => <option value={identifier(item)} key={identifier(item)}>{label(item)}</option>)}
-        </select>
         {loading && <small className="muted">Загружаю справочник…</small>}
         {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
         {loadError && <small className="field-load-error">{loadError}</small>}
@@ -205,7 +212,7 @@ function SingleField(props: FieldProps) {
     )
   }
   return (
-    <div className={`form-field ${errors.some((item) => item.field === field.path || item.field === field.key) ? 'invalid' : ''} ${fieldReview ? `ai-review ${fieldReview.status} confidence-${fieldReview.confidence}` : ''}`}>
+    <div className={`form-field ${errors.some((item) => item.field === field.path || item.field === field.key) ? 'invalid' : ''} ${fieldReview ? `ai-review confidence-${fieldReview.confidence}` : ''}`}>
       <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <div className="field-review-controls"><span className="confidence-badge" title={[fieldReview.source, fieldReview.reason, fieldReview.conflict].filter(Boolean).join('\n')}>{fieldReview.confidence}</span><button type="button" className="review-accept" aria-label={`Принять ${field.label}`} onClick={() => props.onReview?.(reviewKey, true)}>✓</button><button type="button" className="review-reject" aria-label={`Отклонить ${field.label}`} onClick={() => props.onReview?.(reviewKey, false)}>×</button></div>}</div>
       {field.hint && <p className="field-hint">{field.hint}</p>}
       <BasicField {...props} />

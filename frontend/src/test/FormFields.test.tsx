@@ -25,7 +25,7 @@ describe('FormFields', () => {
       formId="api.create"
       errors={[]}
       onValuesChange={onValuesChange}
-      review={{ name: { status: 'pending', confidence: 'high', source: 'ITSM.name' } }}
+      review={{ name: { proposedValue: 'Payments', confidence: 'high', source: 'ITSM.name' } }}
       onReview={onReview}
     />)
     await user.clear(screen.getByRole('textbox', { name: /Название/ }))
@@ -69,7 +69,8 @@ describe('FormFields', () => {
     render(<FormFields fields={[field]} values={{}} environment="test_int" formId="x" errors={[]} onValuesChange={() => undefined} />)
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-    expect(await screen.findByRole('option', { name: 'service103' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'API' }))
+    expect(await screen.findByRole('option', { name: /service103/ })).toBeInTheDocument()
   })
 
   it('addresses nested AI review controls by the complete field path', async () => {
@@ -87,7 +88,7 @@ describe('FormFields', () => {
       formId="x"
       errors={[]}
       onValuesChange={() => undefined}
-      review={{ 'proxy.host': { status: 'pending', confidence: 'medium' } }}
+      review={{ 'proxy.host': { proposedValue: 'backend.internal', confidence: 'medium' } }}
       onReview={onReview}
     />)
 

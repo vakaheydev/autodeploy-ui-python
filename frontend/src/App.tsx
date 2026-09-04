@@ -9,6 +9,7 @@ import { HomePage } from './pages/HomePage'
 import { OpenCodePage } from './pages/OpenCodePage'
 import { RunsPage } from './pages/RunsPage'
 import { SearchPage } from './pages/SearchPage'
+import { SettingsPage } from './pages/SettingsPage'
 import type { Category, Environment } from './types'
 
 function RoutesWithBootstrap() {
@@ -27,6 +28,7 @@ function RoutesWithBootstrap() {
         <Route path="search" element={<SearchPage />} />
         <Route path="runs" element={<RunsPage />} />
         <Route path="opencode" element={<OpenCodePage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
