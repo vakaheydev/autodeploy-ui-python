@@ -7,6 +7,7 @@ from typing import Callable, Dict, Optional
 
 import ui.theme as theme
 from opencode_integration.agent import ConversationEvent
+from ui.chat_markdown import insert_markdown
 
 
 class AIAssistantDialog:
@@ -292,6 +293,49 @@ class AIAssistantDialog:
         self._timeline.tag_configure(
             "detail", foreground=theme.C["text_muted"], spacing3=10
         )
+        self._configure_markdown_tags()
+
+    def _configure_markdown_tags(self) -> None:
+        self._timeline.tag_configure(
+            "md_bold", font=("Segoe UI", 10, "bold")
+        )
+        self._timeline.tag_configure(
+            "md_italic", font=("Segoe UI", 10, "italic")
+        )
+        self._timeline.tag_configure(
+            "md_code", font=("Consolas", 9), foreground="#7C3AED",
+            background=theme.C["surface_alt"],
+        )
+        self._timeline.tag_configure(
+            "md_code_block", font=("Consolas", 9),
+            foreground=theme.C["text"], background=theme.C["surface_alt"],
+            lmargin1=18, lmargin2=18, rmargin=18, spacing1=2, spacing3=2,
+        )
+        self._timeline.tag_configure(
+            "md_heading_1", font=("Segoe UI", 15, "bold")
+        )
+        self._timeline.tag_configure(
+            "md_heading_2", font=("Segoe UI", 13, "bold")
+        )
+        self._timeline.tag_configure(
+            "md_heading_3", font=("Segoe UI", 11, "bold")
+        )
+        self._timeline.tag_configure(
+            "md_link", foreground=theme.C["primary"], underline=True
+        )
+        self._timeline.tag_configure(
+            "md_quote", foreground=theme.C["text_muted"],
+            font=("Segoe UI", 10, "italic"),
+        )
+        self._timeline.tag_configure(
+            "md_quote_marker", foreground=theme.C["primary"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._timeline.tag_configure(
+            "md_list_marker", foreground=theme.C["primary"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._timeline.tag_configure("md_rule", foreground=theme.C["border"])
 
     def set_session(self, session_id: Optional[str]) -> None:
         if self.exists:
@@ -358,7 +402,14 @@ class AIAssistantDialog:
         except tk.TclError:
             pass
 
-    def append_message(self, role: str, text: str) -> None:
+    def append_message(
+        self,
+        role: str,
+        text: str,
+        *,
+        opencode_seconds: Optional[float] = None,
+        generation_seconds: Optional[float] = None,
+    ) -> None:
         clean = text.strip() or "Ответ не содержит текстовой части."
         titles = {
             "assistant": ("OpenCode", "assistant_title"),
@@ -370,7 +421,11 @@ class AIAssistantDialog:
         if self._thinking_auto and thinking != "—":
             thinking += " · авто"
         title += f" · thinking: {thinking}"
-        self._append(title, clean, tag, "body")
+        if opencode_seconds is not None and opencode_seconds >= 0:
+            title += f" · OpenCode: {opencode_seconds:.1f} с"
+        if generation_seconds is not None and generation_seconds >= 0:
+            title += f" · генерация: {generation_seconds:.1f} с"
+        self._append(title, clean, tag, "body", markdown=role == "assistant")
 
     def append_event(self, event: ConversationEvent) -> None:
         if event.kind == "status":
@@ -394,13 +449,25 @@ class AIAssistantDialog:
             if row is not None:
                 row.destroy()
 
-    def _append(self, title: str, body: str, title_tag: str, body_tag: str) -> None:
+    def _append(
+        self,
+        title: str,
+        body: str,
+        title_tag: str,
+        body_tag: str,
+        *,
+        markdown: bool = False,
+    ) -> None:
         if not self.exists:
             return
         self._timeline.config(state=tk.NORMAL)
         self._timeline.insert(tk.END, title + "\n", title_tag)
         if body:
-            self._timeline.insert(tk.END, body + "\n\n", body_tag)
+            if markdown:
+                insert_markdown(self._timeline, body, body_tag)
+                self._timeline.insert(tk.END, "\n\n", body_tag)
+            else:
+                self._timeline.insert(tk.END, body + "\n\n", body_tag)
         else:
             self._timeline.insert(tk.END, "\n", body_tag)
         self._timeline.see(tk.END)

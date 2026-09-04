@@ -118,7 +118,16 @@ class Application:
         self._closing = False
         self._pending_ai_handoff: tuple[str, AIFormHandoff] | None = None
         self.execution_plan: Optional[ExecutionPlanState] = None
-        self.copilot_history: list[tuple[str, str, str]] = []
+        self.copilot_history: list[
+            tuple[
+                str,
+                str,
+                str,
+                Optional[float],
+                Optional[float],
+                Optional[float],
+            ]
+        ] = []
         self.copilot_thinking_mode = "auto"
         # Главный copilot принадлежит приложению, а не временному HomeScreen:
         # навигация к форме не должна обнулять историю OpenCode session.
@@ -332,10 +341,26 @@ class Application:
         if step.status == "in_progress":
             plan.mark(step_id, "prepared" if step.form_data else "pending")
 
-    def add_copilot_history(self, role: str, text: str, thinking: str = "—") -> None:
+    def add_copilot_history(
+        self,
+        role: str,
+        text: str,
+        thinking: str = "—",
+        *,
+        elapsed_seconds: Optional[float] = None,
+        opencode_seconds: Optional[float] = None,
+        generation_seconds: Optional[float] = None,
+    ) -> None:
         clean = str(text).strip()[:10_000]
         if clean:
-            self.copilot_history.append((role, clean, str(thinking).strip() or "—"))
+            self.copilot_history.append((
+                role,
+                clean,
+                str(thinking).strip() or "—",
+                elapsed_seconds,
+                opencode_seconds,
+                generation_seconds,
+            ))
             self.copilot_history = self.copilot_history[-100:]
 
     def queue_copilot_request(

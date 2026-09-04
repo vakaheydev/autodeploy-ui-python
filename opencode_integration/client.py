@@ -120,6 +120,52 @@ class OpenCodeModelCatalog:
     default: Optional[OpenCodeModelSelection]
 
 
+def opencode_message_duration(info: Mapping[str, Any]) -> Optional[float]:
+    """Возвращает длительность assistant turn по OpenCode ``info.time``."""
+    timing = info.get("time")
+    if not isinstance(timing, Mapping):
+        return None
+    created = timing.get("created")
+    completed = timing.get("completed")
+    if (
+        not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or not isinstance(completed, (int, float))
+        or isinstance(completed, bool)
+        or completed < created
+    ):
+        return None
+    # OpenCode записывает Date.now(), то есть Unix time в миллисекундах.
+    return (float(completed) - float(created)) / 1000.0
+
+
+def opencode_text_generation_duration(
+    parts: Sequence[Mapping[str, Any]],
+) -> Optional[float]:
+    """Суммирует время генерации завершённых текстовых parts OpenCode."""
+    total_ms = 0.0
+    found = False
+    for part in parts:
+        if part.get("type") != "text":
+            continue
+        timing = part.get("time")
+        if not isinstance(timing, Mapping):
+            continue
+        started = timing.get("start")
+        ended = timing.get("end")
+        if (
+            not isinstance(started, (int, float))
+            or isinstance(started, bool)
+            or not isinstance(ended, (int, float))
+            or isinstance(ended, bool)
+            or ended < started
+        ):
+            continue
+        total_ms += float(ended) - float(started)
+        found = True
+    return total_ms / 1000.0 if found else None
+
+
 def _unwrap_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value and set(value).intersection({"data", "error"}):
         return value["data"]

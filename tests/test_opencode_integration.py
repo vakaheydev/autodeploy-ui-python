@@ -39,6 +39,8 @@ from opencode_integration.client import (
     OpenCodeModelSelection,
     OpenCodeStructuredOutputError,
     build_session_permissions,
+    opencode_message_duration,
+    opencode_text_generation_duration,
 )
 from opencode_integration.context_builder import (
     BuiltContext,
@@ -1058,6 +1060,29 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class ClientPolicyTests(unittest.TestCase):
+    def test_opencode_message_duration_uses_server_timestamps(self) -> None:
+        self.assertEqual(
+            opencode_message_duration({
+                "time": {"created": 1_000, "completed": 3_750},
+            }),
+            2.75,
+        )
+        self.assertIsNone(opencode_message_duration({"time": {"created": 1_000}}))
+        self.assertIsNone(opencode_message_duration({"time": {"created": 2, "completed": 1}}))
+        self.assertEqual(
+            opencode_text_generation_duration((
+                {
+                    "type": "text",
+                    "time": {"start": 2_000, "end": 2_750},
+                },
+                {
+                    "type": "reasoning",
+                    "time": {"start": 1_000, "end": 1_900},
+                },
+            )),
+            0.75,
+        )
+
     def test_session_web_url_uses_opencode_directory_route(self) -> None:
         with tempfile.TemporaryDirectory() as runtime:
             client = OpenCodeClient(
@@ -2118,17 +2143,33 @@ class _CopilotClient:
         self.structured_calls += 1
         self.structured_requests.append(dict(kwargs))
         self.structured_prompts.append(str(kwargs["prompt"]))
+        observer = kwargs.get("on_response")
+        if observer is not None:
+            observer({
+                "info": {"time": {"created": 10_000, "completed": 12_500}},
+                "parts": [{
+                    "type": "text",
+                    "time": {"start": 11_000, "end": 12_000},
+                }],
+            })
         return self.payload
 
     def send_chat_message(self, **kwargs: Any) -> OpenCodeMessage:
         self.chat_calls += 1
         response = {
-            "info": {"id": "msg_chat"},
-            "parts": [{"type": "text", "text": "Привет! Чем помочь?"}],
+            "info": {
+                "id": "msg_chat",
+                "time": {"created": 20_000, "completed": 21_250},
+            },
+            "parts": [{
+                "type": "text",
+                "text": "Привет! Чем помочь?",
+                "time": {"start": 20_500, "end": 21_000},
+            }],
         }
         return OpenCodeMessage(
             "Привет! Чем помочь?",
-            {"id": "msg_chat"},
+            dict(response["info"]),
             tuple(response["parts"]),
         )
 
@@ -2153,6 +2194,9 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertTrue(is_casual_conversation("привет, как дела?"))
         self.assertEqual(outcome.intent, "conversation")
         self.assertEqual(outcome.answer, "Привет! Чем помочь?")
+        self.assertEqual(outcome.opencode_seconds, 1.25)
+        self.assertEqual(outcome.generation_seconds, 0.5)
+        self.assertGreaterEqual(outcome.elapsed_seconds, 0)
         self.assertEqual(client.chat_calls, 1)
         self.assertEqual(client.structured_calls, 0)
 
@@ -2301,7 +2345,7 @@ class CopilotWorkflowTests(unittest.TestCase):
             model_id="qwen",
             variant="high",
         )
-        copilot.ask(
+        outcome = copilot.ask(
             "теперь найди Billing",
             environment="test_int",
             provider_id="corp",
@@ -2311,6 +2355,8 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(client.session_count, 1)
         self.assertEqual(client.created["variant"], "high")
         self.assertEqual(client.structured_requests[-1]["variant"], "xhigh")
+        self.assertEqual(outcome.opencode_seconds, 2.5)
+        self.assertEqual(outcome.generation_seconds, 1.0)
 
     def test_form_can_be_selected_without_itsm_ticket(self) -> None:
         class FailingSource:

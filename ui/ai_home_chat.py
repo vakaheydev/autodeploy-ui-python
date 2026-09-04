@@ -5,6 +5,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from datetime import datetime
@@ -12,6 +13,7 @@ from tkinter import ttk
 from typing import Any, Optional
 
 import ui.theme as theme
+from ui.chat_markdown import insert_markdown
 from config.environments import (
     OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
@@ -66,6 +68,7 @@ class AIHomeChat(tk.Frame):
         self._running_thinking_mode = ""
         self._running_thinking_reason = ""
         self._running_variants: tuple[str, ...] = ()
+        self._running_started_at = 0.0
         self._outcome_thinking_mode = ""
         self._outcome_variants: tuple[str, ...] = ()
         self._poll_id: Optional[str] = None
@@ -211,7 +214,18 @@ class AIHomeChat(tk.Frame):
         for item in self.app.copilot_history:
             role, message = item[:2]
             thinking = item[2] if len(item) > 2 else "—"
-            self._append(role, message, thinking=thinking, remember=False)
+            elapsed_seconds = item[3] if len(item) > 3 else None
+            opencode_seconds = item[4] if len(item) > 4 else None
+            generation_seconds = item[5] if len(item) > 5 else None
+            self._append(
+                role,
+                message,
+                thinking=thinking,
+                elapsed_seconds=elapsed_seconds,
+                opencode_seconds=opencode_seconds,
+                generation_seconds=generation_seconds,
+                remember=False,
+            )
         if not self.app.copilot_history:
             self._append(
                 "assistant",
@@ -313,6 +327,51 @@ class AIHomeChat(tk.Frame):
             "activity", font=("Segoe UI", 9), foreground=theme.C["text_muted"],
             lmargin1=28, lmargin2=28, rmargin=28, spacing1=3, spacing3=4,
         )
+        self._configure_markdown_tags(self._transcript)
+
+    @staticmethod
+    def _configure_markdown_tags(widget: tk.Text) -> None:
+        widget.tag_configure("md_bold", font=("Segoe UI", 11, "bold"))
+        widget.tag_configure("md_italic", font=("Segoe UI", 11, "italic"))
+        widget.tag_configure(
+            "md_code",
+            font=("Consolas", 9),
+            foreground="#7C3AED",
+            background=theme.C["surface_alt"],
+        )
+        widget.tag_configure(
+            "md_code_block",
+            font=("Consolas", 9),
+            foreground=theme.C["text"],
+            background=theme.C["surface_alt"],
+            lmargin1=28,
+            lmargin2=28,
+            rmargin=145,
+            spacing1=2,
+            spacing3=2,
+        )
+        widget.tag_configure("md_heading_1", font=("Segoe UI", 15, "bold"))
+        widget.tag_configure("md_heading_2", font=("Segoe UI", 13, "bold"))
+        widget.tag_configure("md_heading_3", font=("Segoe UI", 11, "bold"))
+        widget.tag_configure(
+            "md_link", foreground=theme.C["primary"], underline=True
+        )
+        widget.tag_configure(
+            "md_quote",
+            foreground=theme.C["text_muted"],
+            font=("Segoe UI", 11, "italic"),
+        )
+        widget.tag_configure(
+            "md_quote_marker",
+            foreground=theme.C["primary"],
+            font=("Segoe UI", 11, "bold"),
+        )
+        widget.tag_configure(
+            "md_list_marker",
+            foreground=theme.C["primary"],
+            font=("Segoe UI", 11, "bold"),
+        )
+        widget.tag_configure("md_rule", foreground=theme.C["border"])
 
     def connected(self, address: str) -> None:
         if self._copilot is not None and self._copilot.server_url != address:
@@ -647,6 +706,7 @@ class AIHomeChat(tk.Frame):
         self._running_thinking_mode = thinking_mode
         self._running_thinking_reason = thinking_reason
         self._running_variants = available_variants
+        self._running_started_at = time.monotonic()
         self._append(
             "user",
             message,
@@ -850,6 +910,13 @@ class AIHomeChat(tk.Frame):
             text,
             thinking=self._running_model[2],
             thinking_auto=self._running_thinking_auto,
+            elapsed_seconds=(
+                outcome.elapsed_seconds
+                if outcome.elapsed_seconds > 0
+                else self._running_elapsed_seconds()
+            ),
+            opencode_seconds=outcome.opencode_seconds,
+            generation_seconds=outcome.generation_seconds,
         )
         self._render_outcome(outcome)
         if (
@@ -1193,6 +1260,7 @@ class AIHomeChat(tk.Frame):
                 "Текущий запрос остановлен. Внешние системы не изменялись.",
                 thinking=self._running_model[2],
                 thinking_auto=self._running_thinking_auto,
+                elapsed_seconds=self._running_elapsed_seconds(),
             )
             self._status("Запрос отменён.")
         else:
@@ -1206,6 +1274,7 @@ class AIHomeChat(tk.Frame):
                 self._friendly_error(error),
                 thinking=self._running_model[2],
                 thinking_auto=self._running_thinking_auto,
+                elapsed_seconds=self._running_elapsed_seconds(),
             )
             if self._session_id:
                 self._status(
@@ -1321,6 +1390,9 @@ class AIHomeChat(tk.Frame):
         *,
         thinking: str = "—",
         thinking_auto: bool = False,
+        elapsed_seconds: Optional[float] = None,
+        opencode_seconds: Optional[float] = None,
+        generation_seconds: Optional[float] = None,
         remember: bool = True,
     ) -> None:
         clean = str(message).strip()
@@ -1335,19 +1407,57 @@ class AIHomeChat(tk.Frame):
             thinking_label = str(thinking).strip() or "—"
             if thinking_auto and thinking_label != "—":
                 thinking_label += " · авто"
+            duration_label = ""
+            if elapsed_seconds is not None and elapsed_seconds >= 0:
+                duration_label = "  ·  ответ: " + self._format_duration(elapsed_seconds)
+            if opencode_seconds is not None and opencode_seconds >= 0:
+                duration_label += "  ·  OpenCode: " + self._format_duration(
+                    opencode_seconds
+                )
+            if generation_seconds is not None and generation_seconds >= 0:
+                duration_label += "  ·  генерация: " + self._format_duration(
+                    generation_seconds
+                )
             meta_tag = f"{role}_meta" if role in {"assistant", "user", "error"} else "assistant_meta"
             body_tag = role if role in {"assistant", "user", "error"} else "assistant"
             self._transcript.insert(
                 tk.END,
                 f"{labels.get(role, str(role).upper())}  ·  {timestamp}  ·  "
-                f"thinking: {thinking_label}\n",
+                f"thinking: {thinking_label}{duration_label}\n",
                 meta_tag,
             )
-            self._transcript.insert(tk.END, clean + "\n", body_tag)
+            if role == "assistant":
+                insert_markdown(self._transcript, clean, body_tag)
+                self._transcript.insert(tk.END, "\n", body_tag)
+            else:
+                self._transcript.insert(tk.END, clean + "\n", body_tag)
         self._transcript.config(state=tk.DISABLED)
         self._transcript.see(tk.END)
         if remember and role in {"assistant", "user", "error"}:
-            self.app.add_copilot_history(role, clean, thinking_label)
+            self.app.add_copilot_history(
+                role,
+                clean,
+                thinking_label,
+                elapsed_seconds=elapsed_seconds,
+                opencode_seconds=opencode_seconds,
+                generation_seconds=generation_seconds,
+            )
+
+    def _running_elapsed_seconds(self) -> Optional[float]:
+        if self._running_started_at <= 0:
+            return None
+        return max(0.0, time.monotonic() - self._running_started_at)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        value = max(0.0, float(seconds))
+        if value < 60:
+            return f"{value:.1f} с"
+        minutes, remaining = divmod(int(round(value)), 60)
+        if minutes < 60:
+            return f"{minutes} мин {remaining:02d} с"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours} ч {minutes:02d} мин"
 
     @staticmethod
     def _friendly_error(error: Exception) -> str:

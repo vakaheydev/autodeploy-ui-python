@@ -17,7 +17,13 @@ from config.mcp_profiles import (
 )
 from forms.base_form import BaseForm
 from opencode_integration.agent import ConversationEvent
-from opencode_integration.client import OpenCodeCancelled, OpenCodeClient, OpenCodeError
+from opencode_integration.client import (
+    OpenCodeCancelled,
+    OpenCodeClient,
+    OpenCodeError,
+    opencode_message_duration,
+    opencode_text_generation_duration,
+)
 from opencode_integration.context_builder import (
     BuiltContext,
     ContextBuilder,
@@ -115,6 +121,9 @@ class CopilotOutcome:
     diagnostics: Optional[DiagnosticReport]
     warnings: tuple[str, ...]
     context: Optional[BuiltContext] = None
+    elapsed_seconds: float = 0.0
+    opencode_seconds: Optional[float] = None
+    generation_seconds: Optional[float] = None
 
 
 def detect_ticket_reference(message: str) -> Optional[str]:
@@ -486,6 +495,21 @@ class UnifiedCopilot:
             self._variant = variant
             self._last_session_status_signature = ""
             started = time.monotonic()
+            opencode_durations: list[float] = []
+            generation_seconds: Optional[float] = None
+
+            def observe_response(response: Mapping[str, Any]) -> None:
+                nonlocal generation_seconds
+                info = response.get("info")
+                if isinstance(info, Mapping):
+                    duration = opencode_message_duration(info)
+                    if duration is not None:
+                        opencode_durations.append(duration)
+                raw_parts = response.get("parts")
+                if isinstance(raw_parts, (list, tuple)):
+                    generation_seconds = opencode_text_generation_duration(
+                        tuple(item for item in raw_parts if isinstance(item, Mapping))
+                    )
 
             requested_ticket = ticket_id or detect_ticket_reference(text)
             if requested_ticket and (
@@ -538,6 +562,11 @@ class UnifiedCopilot:
                     diagnostics=None,
                     warnings=(),
                     context=context,
+                    elapsed_seconds=time.monotonic() - started,
+                    opencode_seconds=opencode_message_duration(message_result.info),
+                    generation_seconds=opencode_text_generation_duration(
+                        message_result.parts
+                    ),
                 )
                 _log.info(
                     "copilot conversation success session=%s duration=%.2fs",
@@ -562,6 +591,7 @@ class UnifiedCopilot:
                 retry_count=2,
                 cancel_event=cancel_event,
                 on_event=self._handle_raw_event,
+                on_response=observe_response,
             )
             notify("Проверяю ответ помощника Python-валидатором…")
             outcome = validate_copilot_output(
@@ -590,6 +620,12 @@ class UnifiedCopilot:
                     warnings=[],
                 )
                 outcome = replace(outcome, context=context)
+            outcome = replace(
+                outcome,
+                elapsed_seconds=time.monotonic() - started,
+                opencode_seconds=(sum(opencode_durations) if opencode_durations else None),
+                generation_seconds=generation_seconds,
+            )
             _log.info(
                 "copilot success session=%s intent=%s ticket=%s repository_items=%d "
                 "plan_steps=%d duration=%.2fs",

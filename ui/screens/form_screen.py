@@ -39,6 +39,8 @@ from opencode_integration.reference_resolver import (
 from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeStructuredOutputError,
+    opencode_message_duration,
+    opencode_text_generation_duration,
 )
 from ui.ai_assistant import AIAssistantDialog
 from ui.ai_preview import show_ai_preview
@@ -1407,7 +1409,14 @@ class FormScreen(BaseScreen):
                 elif event in {"begin", "guidance"}:
                     self._ai_busy = False
                     if dialog is not None:
-                        dialog.append_message("assistant", payload.text)
+                        dialog.append_message(
+                            "assistant",
+                            payload.text,
+                            opencode_seconds=opencode_message_duration(payload.info),
+                            generation_seconds=opencode_text_generation_duration(
+                                payload.parts
+                            ),
+                        )
                         dialog.set_status(
                             "Готов к уточнениям или формированию preview."
                         )
