@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Boxes, History, Home, Moon, Search, ServerCog, Settings, Sparkles, Sun } from './Icons'
+import { Boxes, History, Home, Moon, Search, Settings, Sparkles, Sun } from './Icons'
 import { useEnvironment } from '../environment'
 import { useTheme } from '../theme'
 import { SearchableSelect } from './SearchableSelect'
@@ -9,7 +9,6 @@ const links = [
   { to: '/forms', label: 'Формы', icon: Boxes },
   { to: '/search', label: 'Поиск', icon: Search },
   { to: '/runs', label: 'История', icon: History },
-  { to: '/opencode', label: 'OpenCode', icon: ServerCog },
   { to: '/settings', label: 'Настройки', icon: Settings },
 ]
 

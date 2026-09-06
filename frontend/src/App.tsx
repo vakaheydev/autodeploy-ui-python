@@ -6,7 +6,6 @@ import { EnvironmentProvider, useEnvironment } from './environment'
 import { FormPage } from './pages/FormPage'
 import { FormsPage } from './pages/FormsPage'
 import { HomePage } from './pages/HomePage'
-import { OpenCodePage } from './pages/OpenCodePage'
 import { RunsPage } from './pages/RunsPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -27,7 +26,7 @@ function RoutesWithBootstrap() {
         <Route path="forms/:formId" element={<FormPage />} />
         <Route path="search" element={<SearchPage />} />
         <Route path="runs" element={<RunsPage />} />
-        <Route path="opencode" element={<OpenCodePage />} />
+        <Route path="opencode" element={<Navigate to="/settings?section=OpenCode" replace />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

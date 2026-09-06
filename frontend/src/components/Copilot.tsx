@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, post } from '../api'
-import { Bot, Check, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, RefreshCw, Send, Sparkles, X } from './Icons'
+import { Bot, Check, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, RefreshCw, Send, Sparkles, Trash2, X } from './Icons'
 import { useEnvironment } from '../environment'
 import { SearchableSelect } from './SearchableSelect'
+import { Modal } from './Feedback'
 
 interface ModelItem { provider_id: string; model_id: string; provider_name: string; model_name: string; variants: string[] }
 interface ChatEvent { sequence: number; kind: string; timestamp: number; payload: Record<string, unknown> }
@@ -68,11 +69,25 @@ export function Copilot() {
   const [progress, setProgress] = useState('')
   const [waitingSeconds, setWaitingSeconds] = useState(0)
   const [waitingStartedAt, setWaitingStartedAt] = useState(0)
+  const [sessionToDelete, setSessionToDelete] = useState<SessionItem | null>(null)
+  const [deletingSession, setDeletingSession] = useState(false)
   const transcript = useRef<HTMLDivElement>(null)
 
   const refreshSessions = async () => {
     const result = await api<{ items: SessionItem[] }>('/api/v1/ai/sessions')
     setSessions(result.items)
+  }
+
+  const applySession = (value: SessionSnapshot) => {
+    window.localStorage.setItem('autodeploy.ai.session', value.id)
+    setSession(value)
+    setEvents(value.events)
+    setBusy(value.busy)
+    setProgress('')
+    setWaitingStartedAt(value.busy ? Date.now() : 0)
+    setWaitingSeconds(0)
+    setModelKey(`${value.provider_id}/${value.model_id}`)
+    setThinking('auto')
   }
 
   const initialise = async (force = false) => {
@@ -87,12 +102,7 @@ export function Copilot() {
       id = value.id
       window.localStorage.setItem('autodeploy.ai.session', id)
     }
-    setSession(value)
-    setEvents(value.events)
-    setBusy(value.busy)
-    if (value.busy) setWaitingStartedAt(Date.now())
-    setModelKey(`${value.provider_id}/${value.model_id}`)
-    setThinking('auto')
+    applySession(value)
     const catalog = await api<{ items: ModelItem[] }>('/api/v1/opencode/models')
     setModels(catalog.items)
     await refreshSessions()
@@ -182,17 +192,47 @@ export function Copilot() {
 
   const switchChat = async (sessionId: string) => {
     if (!sessionId || sessionId === session?.id || busy) return
-    setError(''); setProgress('')
+    setError('')
     const value = await api<SessionSnapshot>(`/api/v1/ai/sessions/${encodeURIComponent(sessionId)}`)
-    window.localStorage.setItem('autodeploy.ai.session', value.id)
-    setSession(value); setEvents(value.events); setBusy(value.busy)
-    setModelKey(`${value.provider_id}/${value.model_id}`); setThinking('auto')
-    setWaitingStartedAt(value.busy ? Date.now() : 0)
+    applySession(value)
+  }
+
+  const deleteChat = async () => {
+    if (!sessionToDelete || deletingSession) return
+    const target = sessionToDelete
+    setDeletingSession(true)
+    setError('')
+    try {
+      await api<void>(`/api/v1/ai/sessions/${encodeURIComponent(target.id)}`, { method: 'DELETE' })
+      const remaining = sessions.filter((item) => item.id !== target.id)
+      setSessions(remaining)
+      setSessionToDelete(null)
+      if (session?.id === target.id) {
+        window.localStorage.removeItem('autodeploy.ai.session')
+        setSession(null)
+        setEvents([])
+        setBusy(false)
+        setProgress('')
+        setWaitingStartedAt(0)
+        setWaitingSeconds(0)
+        if (remaining.length) {
+          applySession(await api<SessionSnapshot>(`/api/v1/ai/sessions/${encodeURIComponent(remaining[0].id)}`))
+        } else {
+          await initialise(true)
+        }
+      } else {
+        await refreshSessions()
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDeletingSession(false)
+    }
   }
 
   return (
     <section className="copilot-card">
-      <header className="copilot-header"><div className="copilot-identity"><span className="copilot-logo"><Sparkles /></span><div><span className="eyebrow">OpenCode подключён</span><h2>Gravitee Copilot</h2></div></div><div className="copilot-header-actions"><SearchableSelect compact clearable={false} ariaLabel="Сессия Copilot" value={session?.id ?? ''} onChange={(value) => { void switchChat(value).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))) }} disabled={busy} options={sessions.map((item) => ({ value: item.id, label: item.title, description: `${new Date(item.updated_at * 1000).toLocaleString('ru-RU')} · ${item.model_id}${item.busy ? ' · выполняется' : ''}` }))} searchPlaceholder="Найти сессию…" /><button className="button ghost small" onClick={() => void newChat()} title="Новая сессия"><Sparkles size={15} /> Новый чат</button>{session?.opencode_url && <a className="button ghost small" href={session.opencode_url} target="_blank" rel="noreferrer"><Code2 size={15} /> OpenCode</a>}</div></header>
+      <header className="copilot-header"><div className="copilot-identity"><span className="copilot-logo"><Sparkles /></span><div><span className="eyebrow">OpenCode подключён</span><h2>Gravitee Copilot</h2></div></div><div className="copilot-header-actions"><SearchableSelect compact clearable={false} ariaLabel="Сессия Copilot" value={session?.id ?? ''} onChange={(value) => { void switchChat(value).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))) }} disabled={busy || deletingSession} options={sessions.map((item) => ({ value: item.id, label: item.title, description: `${new Date(item.updated_at * 1000).toLocaleString('ru-RU')} · ${item.model_id}${item.busy ? ' · выполняется' : ''}` }))} searchPlaceholder="Найти сессию…" /><button type="button" className="icon-button danger session-delete-button" disabled={!session || deletingSession} onClick={() => setSessionToDelete(sessions.find((item) => item.id === session?.id) ?? (session ? { id: session.id, title: 'Текущий диалог', updated_at: Date.now() / 1000, busy: session.busy, provider_id: session.provider_id, model_id: session.model_id, opencode_session_id: null } : null))} title="Удалить текущую сессию" aria-label="Удалить текущую сессию"><Trash2 size={16} /></button><button className="button ghost small" onClick={() => void newChat()} title="Новая сессия"><Sparkles size={15} /> Новый чат</button>{session?.opencode_url && <a className="button ghost small" href={session.opencode_url} target="_blank" rel="noreferrer"><Code2 size={15} /> OpenCode</a>}</div></header>
       <p className="copilot-intro">Опишите задачу или приложите номер заявки. Copilot выберет форму, подготовит план или найдёт объект в Gravitee Repository.</p>
       <div className="chat-transcript" ref={transcript}>
         {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={event.sequence} />)}
@@ -205,6 +245,7 @@ export function Copilot() {
         <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Опишите результат, который нужен…" rows={2} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
         <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><button className="send-button" disabled={!session || busy || !message.trim()} aria-label="Отправить"><Send size={19} /></button></div>
       </form>
+      {sessionToDelete && <Modal title="Удалить сессию?" onClose={() => !deletingSession && setSessionToDelete(null)} footer={<><button type="button" className="button secondary" disabled={deletingSession} onClick={() => setSessionToDelete(null)}>Отмена</button><button type="button" className="button danger" disabled={deletingSession} onClick={() => void deleteChat()}>{deletingSession ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Удалить</button></>}><div className="delete-session-confirm"><strong>{sessionToDelete.title}</strong><p>История этой сессии будет удалена из AutoDeploy и OpenCode. Созданные черновики форм останутся доступны в каталоге.</p></div></Modal>}
     </section>
   )
 }

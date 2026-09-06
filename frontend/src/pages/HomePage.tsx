@@ -10,7 +10,7 @@ const modules = [
   { to: '/search', icon: Search, title: 'Поиск', text: 'Найдите API и приложения во всех окружениях.', accent: 'blue' },
   { to: '/forms', icon: Boxes, title: 'AutoDeploy', text: 'Создавайте и изменяйте сущности через управляемые формы.', accent: 'violet' },
   { to: '/runs', icon: History, title: 'История', text: 'Возвращайтесь к предыдущим операциям и их результатам.', accent: 'amber' },
-  { to: '/opencode', icon: ServerCog, title: 'OpenCode', text: 'Подключение, модели и техническое состояние AI.', accent: 'teal' },
+  { to: '/settings?section=OpenCode', icon: ServerCog, title: 'OpenCode', text: 'Подключение, модели и техническое состояние AI в настройках.', accent: 'teal' },
 ]
 
 export function HomePage() {

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
+import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
 import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
 import type { SettingField, SettingsDocument } from '../types'
 
@@ -13,6 +15,8 @@ function draftFrom(document: SettingsDocument): Record<string, string | boolean>
 }
 
 export function SettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedGroup = searchParams.get('section')
   const [document, setDocument] = useState<SettingsDocument | null>(null)
   const [draft, setDraft] = useState<Record<string, string | boolean>>({})
   const [changed, setChanged] = useState<Set<string>>(new Set())
@@ -33,7 +37,10 @@ export function SettingsPage() {
     setChanged(new Set())
     setClear(new Set())
     setVisibleSecrets(new Set())
-    setActiveGroup((current) => current && next.groups.some((group) => group.name === current) ? current : next.groups[0]?.name ?? '')
+    setActiveGroup((current) => {
+      if (current && next.groups.some((group) => group.name === current)) return current
+      return requestedGroup && next.groups.some((group) => group.name === requestedGroup) ? requestedGroup : next.groups[0]?.name ?? ''
+    })
   }
 
   const loadMcp = async () => {
@@ -59,6 +66,10 @@ export function SettingsPage() {
     void loadMcp()
     return () => controller.abort()
   }, [])
+
+  useEffect(() => {
+    if (requestedGroup && document?.groups.some((group) => group.name === requestedGroup)) setActiveGroup(requestedGroup)
+  }, [document, requestedGroup])
 
   const fields = useMemo(() => document?.groups.flatMap((group) => group.fields) ?? [], [document])
   const fieldByKey = useMemo(() => new Map(fields.map((field) => [field.key, field])), [fields])
@@ -133,8 +144,9 @@ export function SettingsPage() {
       {notice && <div className="alert success"><Check size={17} /><p>{notice}</p></div>}
       <div className="settings-security-note"><KeyRound size={22} /><div><strong>Сохранённые секреты не отправляются в браузер</strong><p>Пустое поле оставляет секрет без изменений. Для удаления используйте «Очистить».</p></div></div>
       <nav className="settings-tabs" aria-label="Разделы настроек">
-        {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => setActiveGroup(group.name)}>{group.name}<span>{group.fields.length}</span></button>)}
+        {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => { setActiveGroup(group.name); setSearchParams({ section: group.name }, { replace: true }) }}>{group.name}<span>{group.fields.length}</span></button>)}
       </nav>
+      {activeGroup === 'OpenCode' && <OpenCodeServerPanel />}
       {activeGroup === 'OpenCode' && <div className="settings-source-status"><span className={`status-dot ${mcpConnected ? 'online' : ''}`} /> <span>{mcpConnected ? `${mcpItems.length} MCP получено от OpenCode` : 'OpenCode не подключён — сохранённые значения останутся доступны'}</span><button type="button" className="icon-button" title="Обновить MCP" disabled={mcpLoading} onClick={() => void loadMcp()}><RefreshCw size={15} className={mcpLoading ? 'spin' : ''} /></button></div>}
       {visibleGroups.map((group) => (
         <section className="configuration-group" key={group.name}>

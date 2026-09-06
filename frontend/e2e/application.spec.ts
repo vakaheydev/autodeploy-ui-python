@@ -86,7 +86,16 @@ test('filters the catalog by Python field keywords and switches theme', async ({
   await expect(page.getByRole('dialog', { name: /Выберите папку/ })).toBeVisible()
   await page.getByRole('dialog').getByRole('button', { name: 'Закрыть' }).click()
   await page.getByRole('button', { name: /OpenCode/ }).click()
+  await expect(page.getByRole('heading', { name: 'OpenCode Server', exact: true })).toBeVisible()
   await expect(page.getByText('Встроенный MCP Server')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Основная навигация' }).getByRole('link', { name: 'OpenCode' })).toHaveCount(0)
+})
+
+test('redirects the legacy OpenCode route to its settings section', async ({ page }) => {
+  await page.goto('/opencode')
+  await expect(page).toHaveURL(/\/settings\?section=OpenCode$/)
+  await expect(page.getByRole('heading', { name: 'Настройки' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'OpenCode Server', exact: true })).toBeVisible()
 })
 
 test('autosaves, restores and manually deletes a form draft', async ({ page }) => {
