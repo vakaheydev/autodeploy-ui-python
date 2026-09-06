@@ -7,6 +7,7 @@ import pytest
 
 from core.env_manager import EnvManager
 from webapp.configuration import settings_snapshot, update_settings
+from webapp.api import settings_filesystem
 from webapp.settings import WebSettings
 
 
@@ -107,3 +108,31 @@ def test_snapshot_never_contains_saved_secrets(tmp_path: Path) -> None:
     snapshot = json.dumps(settings_snapshot(env))
     assert "itsm-password" not in snapshot
     assert '"token"' not in snapshot
+
+
+def test_settings_expose_server_driven_path_and_mcp_pickers(tmp_path: Path) -> None:
+    snapshot = settings_snapshot(EnvManager(tmp_path / ".env"))
+    fields = {
+        field["key"]: field
+        for group in snapshot["groups"]
+        for field in group["fields"]
+    }
+
+    assert fields["CERT_PATH"]["picker"] == "file"
+    assert fields["GRAVITEE_REPO_PATH"]["picker"] == "directory"
+    assert fields["OPENCODE_ALLOWED_MCP"]["picker"] == "mcp_multi"
+    assert fields["OPENCODE_REPOSITORY_MCP"]["picker"] == "mcp"
+    assert fields["AUTODEPLOY_OPENCODE_AUTO_CONNECT"]["group"] == "OpenCode"
+
+
+def test_filesystem_picker_lists_names_without_reading_contents(tmp_path: Path) -> None:
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    secret = tmp_path / "certificate.pem"
+    secret.write_text("PRIVATE-CONTENT", encoding="utf-8")
+
+    result = settings_filesystem(path=str(tmp_path))
+
+    assert result["current"] == str(tmp_path)
+    assert {item["name"] for item in result["entries"]} == {"repository", "certificate.pem"}
+    assert "PRIVATE-CONTENT" not in str(result)

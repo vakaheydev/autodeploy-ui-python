@@ -57,6 +57,7 @@ class SettingSpec:
     restart_required: bool = False
     minimum: float | None = None
     maximum: float | None = None
+    picker: str = ""  # file | directory | mcp | mcp_multi
 
 
 def _specs() -> tuple[SettingSpec, ...]:
@@ -81,15 +82,19 @@ def _specs() -> tuple[SettingSpec, ...]:
             "Путь к Gravitee Repository",
             "Общие",
             "path",
+            picker="directory",
         ),
-        SettingSpec(CERT_PATH_KEY, "Путь к сертификату", "Общие", "path"),
+        SettingSpec(
+            CERT_PATH_KEY, "Путь к сертификату", "Общие", "path",
+            picker="file",
+        ),
         SettingSpec(
             "AUTODEPLOY_PORT", "Порт веб-сервера", "Общие", "number", "8765",
             "Применится после перезапуска.", restart_required=True,
             minimum=1, maximum=65535,
         ),
         SettingSpec(
-            "AUTODEPLOY_OPENCODE_AUTO_CONNECT", "Автоподключение OpenCode", "Общие",
+            "AUTODEPLOY_OPENCODE_AUTO_CONNECT", "Автоподключение OpenCode", "OpenCode",
             "boolean", "true", "Применится после перезапуска.", restart_required=True,
         ),
         SettingSpec(
@@ -102,7 +107,7 @@ def _specs() -> tuple[SettingSpec, ...]:
             restart_required=True, minimum=64 * 1024, maximum=100 * 1024 * 1024,
         ),
         SettingSpec(
-            "AUTODEPLOY_MCP_ENABLED", "Встроенный MCP Server", "Общие",
+            "AUTODEPLOY_MCP_ENABLED", "Встроенный MCP Server", "OpenCode",
             "boolean", "false",
             "Публикует инструменты AutoDeploy на /api/mcp и подключает их к Copilot.",
             restart_required=True,
@@ -151,10 +156,12 @@ def _specs() -> tuple[SettingSpec, ...]:
         SettingSpec(
             OPENCODE_ALLOWED_MCP_KEY, "Разрешённые MCP", "OpenCode", "text", "",
             "Имена через запятую. Изменение применяется к новой AI-сессии.",
+            picker="mcp_multi",
         ),
         SettingSpec(
             OPENCODE_REPOSITORY_MCP_KEY, "JSON Repository MCP", "OpenCode", "text", "",
             "Имя read-only MCP сервера.",
+            picker="mcp",
         ),
         SettingSpec(
             OPENCODE_REPOSITORY_GIT_PULL_KEY, "Разрешать запрос git pull", "OpenCode",

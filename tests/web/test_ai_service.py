@@ -92,3 +92,43 @@ def test_native_outcome_exposes_every_draft_in_a_multi_form_turn() -> None:
     assert [item["form_id"] for item in payload["drafts"]] == [
         "api.create", "apps.deploy",
     ]
+
+
+def test_persisted_opencode_history_is_restored_for_chat_switching() -> None:
+    events = WebAIService._history_from_opencode([
+        {
+            "info": {"role": "user", "variant": "low", "time": {"created": 1_000}},
+            "parts": [{
+                "type": "text",
+                "text": "BEGIN_OPERATOR_REQUEST\n\"Найди API\"\nEND_OPERATOR_REQUEST",
+            }],
+        },
+        {
+            "info": {
+                "role": "assistant",
+                "variant": "low",
+                "time": {"created": 1_100, "completed": 2_600},
+            },
+            "parts": [
+                {
+                    "id": "tool-1",
+                    "type": "tool",
+                    "tool": "gravitee_repo_get_api",
+                    "state": {
+                        "status": "completed",
+                        "input": {"name": "Payments"},
+                        "output": {"id": "api-1"},
+                        "time": {"start": 1_200, "end": 2_200},
+                    },
+                },
+                {"type": "text", "text": "API найден."},
+            ],
+        },
+    ])
+
+    assert [event.kind for event in events] == ["system", "user", "agent_event", "assistant"]
+    assert events[1].payload["text"] == "Найди API"
+    assert events[2].payload["call_id"] == "tool-1"
+    assert events[2].payload["duration_seconds"] == 1.0
+    assert "api-1" in events[2].payload["output_detail"]
+    assert events[3].payload["elapsed_seconds"] == 1.5

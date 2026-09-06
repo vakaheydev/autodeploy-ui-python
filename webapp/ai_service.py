@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -27,6 +28,7 @@ from config.mcp_profiles import (
 )
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
+from opencode_integration.client import opencode_message_duration
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot, detect_ticket_reference
 from opencode_integration.context_builder import BuiltContext, redact_text
 from opencode_integration.form_search import SemanticFormSearchSession
@@ -133,6 +135,8 @@ class WebAIService:
         self._extractions: dict[str, ExtractionJob] = {}
         self._drafts = FormDraftStore(container)
         self._lock = threading.RLock()
+        self._session_discovery_at = 0.0
+        self._session_discovery_client = 0
 
     def create_session(self) -> dict[str, Any]:
         client = self.container.opencode_manager.client
@@ -159,6 +163,37 @@ class WebAIService:
             raise RuntimeError(
                 "Модель по умолчанию отсутствует среди доступных моделей opencode.json"
             )
+        workflow_id = secrets.token_urlsafe(24)
+        session = self._compose_session(
+            workflow_id=workflow_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            default_variant=default_variant,
+            variants=tuple(model.variants),
+        )
+        session.emit("system", {
+            "title": "Сессия готова",
+            "detail": "История и контекст сохраняются между сообщениями.",
+        })
+        with self._lock:
+            self._sessions[workflow_id] = session
+        return self.snapshot(workflow_id, include_events=True)
+
+    def _compose_session(
+        self,
+        *,
+        workflow_id: str,
+        provider_id: str,
+        model_id: str,
+        default_variant: str,
+        variants: tuple[str, ...],
+        opencode_session_id: str = "",
+        created_at: Optional[float] = None,
+        events: Optional[list[WebEvent]] = None,
+    ) -> WebCopilotSession:
+        client = self.container.opencode_manager.client
+        if client is None:
+            raise RuntimeError("OpenCode Server не подключён")
         values = self.container.env_manager.load()
         services = self.container.service_provider(
             self.container.env_manager, self.container.new_http_client()
@@ -166,7 +201,6 @@ class WebAIService:
         allowed_mcp = self._csv(values.get(OPENCODE_ALLOWED_MCP_KEY, ""))
         if self.container.settings.mcp_enabled:
             allowed_mcp = list(dict.fromkeys((*allowed_mcp, AUTODEPLOY_MCP_NAME)))
-        workflow_id = secrets.token_urlsafe(24)
         forms = tuple(FormRegistry().all_forms())
         copilot = UnifiedCopilot(
             client,
@@ -188,22 +222,250 @@ class WebAIService:
             ),
             workflow_id=workflow_id,
         )
-        session = WebCopilotSession(
+        if opencode_session_id:
+            copilot.resume_session(opencode_session_id)
+        restored_events = list(events or [])
+        return WebCopilotSession(
             id=workflow_id,
             copilot=copilot,
             provider_id=provider_id,
             model_id=model_id,
             default_variant=default_variant,
-            variants=tuple(model.variants),
+            variants=variants,
             form_search=SemanticFormSearchSession(client, forms=forms),
+            created_at=created_at or time.time(),
+            events=restored_events,
+            sequence=max((event.sequence for event in restored_events), default=0),
         )
-        session.emit("system", {
-            "title": "Сессия готова",
-            "detail": "История и контекст сохраняются между сообщениями.",
-        })
+
+    def list_sessions(self) -> dict[str, Any]:
+        """List Copilot workflows that can be resumed by the web client.
+
+        OpenCode persists its own session transcript.  This list intentionally
+        contains only sessions created through AutoDeploy because they also own
+        Python-side draft, permission and form-search state.
+        """
+        self._restore_sessions_from_opencode()
         with self._lock:
-            self._sessions[workflow_id] = session
-        return self.snapshot(workflow_id, include_events=True)
+            sessions = list(self._sessions.values())
+        items = []
+        for session in sessions:
+            first_user = next(
+                (
+                    str(event.payload.get("text") or "").strip()
+                    for event in session.events
+                    if event.kind == "user"
+                ),
+                "",
+            )
+            updated_at = (
+                session.events[-1].timestamp
+                if session.events
+                else session.created_at
+            )
+            items.append({
+                "id": session.id,
+                "title": first_user[:80] or "Новый диалог",
+                "created_at": session.created_at,
+                "updated_at": updated_at,
+                "busy": session.busy,
+                "provider_id": session.provider_id,
+                "model_id": session.model_id,
+                "opencode_session_id": session.copilot.session_id,
+            })
+        items.sort(key=lambda item: float(item["updated_at"]), reverse=True)
+        return {"items": items}
+
+    def _restore_sessions_from_opencode(self) -> None:
+        client = self.container.opencode_manager.client
+        if client is None:
+            return
+        now = time.monotonic()
+        client_identity = id(client)
+        with self._lock:
+            if (
+                self._session_discovery_client == client_identity
+                and now - self._session_discovery_at < 5.0
+            ):
+                return
+            self._session_discovery_client = client_identity
+            self._session_discovery_at = now
+        try:
+            remote_sessions = client.list_sessions(timeout=min(10.0, client.timeout))
+            catalog = client.configured_model_catalog(agent_name="autodeploy-copilot")
+        except Exception:
+            _log.debug("opencode session discovery failed", exc_info=True)
+            return
+        default = catalog.default
+        fallback_model = catalog.models[0] if catalog.models else None
+        for remote in remote_sessions:
+            metadata = remote.get("metadata")
+            if (
+                not isinstance(metadata, Mapping)
+                or metadata.get("source") != "gravitee-autodeploy-ui-copilot"
+            ):
+                continue
+            workflow_id = str(metadata.get("workflow_id") or "").strip()
+            remote_id = str(remote.get("id") or "").strip()
+            if not workflow_id or not remote_id:
+                continue
+            with self._lock:
+                if workflow_id in self._sessions:
+                    continue
+            raw_model = (
+                remote.get("model")
+                if isinstance(remote.get("model"), Mapping)
+                else {}
+            )
+            provider_id = str(
+                raw_model.get("providerID")
+                or (default.provider_id if default else "")
+                or (fallback_model.provider_id if fallback_model else "")
+            )
+            model_id = str(
+                raw_model.get("modelID")
+                or raw_model.get("id")
+                or (default.model_id if default else "")
+                or (fallback_model.model_id if fallback_model else "")
+            )
+            model = next(
+                (
+                    item
+                    for item in catalog.models
+                    if item.provider_id == provider_id and item.model_id == model_id
+                ),
+                fallback_model,
+            )
+            if model is None:
+                continue
+            try:
+                history = self._history_from_opencode(client.list_session_messages(remote_id))
+                raw_time = remote.get("time") if isinstance(remote.get("time"), Mapping) else {}
+                created_at = self._timestamp_seconds(raw_time.get("created")) or time.time()
+                restored = self._compose_session(
+                    workflow_id=workflow_id,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    default_variant=str(
+                        raw_model.get("variant")
+                        or (default.variant if default else "")
+                    ),
+                    variants=tuple(model.variants),
+                    opencode_session_id=remote_id,
+                    created_at=created_at,
+                    events=history,
+                )
+            except Exception:
+                _log.debug("opencode session restore failed id=%s", remote_id, exc_info=True)
+                continue
+            with self._lock:
+                self._sessions.setdefault(workflow_id, restored)
+
+    @classmethod
+    def _history_from_opencode(
+        cls, messages: Sequence[Mapping[str, Any]]
+    ) -> list[WebEvent]:
+        events: list[WebEvent] = []
+        sequence = 0
+        for message in messages:
+            info = (
+                message.get("info")
+                if isinstance(message.get("info"), Mapping)
+                else {}
+            )
+            parts = (
+                message.get("parts")
+                if isinstance(message.get("parts"), (list, tuple))
+                else ()
+            )
+            role = str(info.get("role") or "")
+            timestamp = cls._timestamp_seconds(
+                (info.get("time") if isinstance(info.get("time"), Mapping) else {}).get("created")
+            ) or time.time()
+            if role == "user":
+                raw_text = "\n".join(
+                    str(part.get("text") or "")
+                    for part in parts
+                    if isinstance(part, Mapping) and part.get("type") == "text"
+                )
+                match = re.search(
+                    r"BEGIN_OPERATOR_REQUEST\s*(.*?)\s*END_OPERATOR_REQUEST",
+                    raw_text,
+                    re.DOTALL,
+                )
+                if not match:
+                    continue
+                operator_text = match.group(1).strip()
+                try:
+                    parsed = json.loads(operator_text)
+                    operator_text = str(parsed)
+                except Exception:
+                    pass
+                sequence += 1
+                events.append(WebEvent(
+                    sequence,
+                    "user",
+                    timestamp,
+                    {
+                        "text": operator_text,
+                        "thinking": str(info.get("variant") or "—"),
+                    },
+                ))
+                continue
+            if role != "assistant":
+                continue
+            for part in parts:
+                if not isinstance(part, Mapping) or part.get("type") != "tool":
+                    continue
+                state = part.get("state") if isinstance(part.get("state"), Mapping) else {}
+                status = str(state.get("status") or "completed")
+                sequence += 1
+                event = ConversationEvent(
+                    "error" if status == "error" else "tool",
+                    str(part.get("tool") or state.get("title") or "MCP tool"),
+                    cls._safe_detail(state.get("input", "")),
+                    call_id=str(part.get("id") or part.get("callID") or ""),
+                    status=status,
+                    input_detail=cls._safe_detail(state.get("input", "")),
+                    output_detail=cls._safe_detail(
+                        state.get("error", "")
+                        if status == "error"
+                        else state.get("output", "")
+                    ),
+                    duration_seconds=UnifiedCopilot._tool_duration_seconds(
+                        state, None
+                    ),
+                )
+                events.append(WebEvent(
+                    sequence,
+                    "agent_event",
+                    timestamp,
+                    dataclasses.asdict(event),
+                ))
+            answer = "\n".join(
+                str(part.get("text") or "")
+                for part in parts
+                if isinstance(part, Mapping) and part.get("type") == "text"
+            ).strip()
+            if answer:
+                sequence += 1
+                events.append(WebEvent(sequence, "assistant", timestamp, {
+                    "text": answer,
+                    "thinking": str(info.get("variant") or "—"),
+                    "elapsed_seconds": opencode_message_duration(info),
+                }))
+        if events:
+            events.insert(0, WebEvent(0, "system", events[0].timestamp, {
+                "title": "Сессия восстановлена из OpenCode",
+                "detail": "История загружена с локального OpenCode Server.",
+            }))
+        return events[-1000:]
+
+    @staticmethod
+    def _timestamp_seconds(value: Any) -> Optional[float]:
+        if not isinstance(value, (int, float)) or value <= 0:
+            return None
+        return float(value) / 1000.0 if value > 10_000_000_000 else float(value)
 
     def snapshot(self, session_id: str, *, include_events: bool = True) -> dict[str, Any]:
         session = self._session(session_id)
@@ -380,7 +642,8 @@ class WebAIService:
         with self._lock:
             session = self._sessions.pop(session_id, None)
         if session:
-            session.copilot.cancel()
+            if session.busy:
+                session.copilot.cancel()
             session.copilot.close()
             session.form_search.close()
             if session.active_researcher:
@@ -508,6 +771,7 @@ class WebAIService:
             raise RuntimeError("OpenCode Server не подключён")
         researcher = RepositoryResearcher(client)
         part_states: dict[str, str] = {}
+        part_started_at: dict[str, float] = {}
 
         def research_event(raw: dict[str, Any]) -> None:
             event_type = str(raw.get("type") or "")
@@ -529,16 +793,30 @@ class WebAIService:
             previous = part_states.get(part_id) if part_id else None
             if part_id:
                 part_states[part_id] = status
-            if status == "pending" or (
-                status == "completed" and previous in {"running", "completed"}
-            ) or status == previous:
+            if status == "pending" or status == previous:
                 return
             title = str(part.get("tool") or state.get("title") or "MCP tool")
-            detail = state.get("error") if status == "error" else state.get("input", "")
+            if part_id and status == "running":
+                part_started_at.setdefault(part_id, time.monotonic())
+            started_at = (
+                part_started_at.pop(part_id, None)
+                if part_id and status in {"completed", "error"}
+                else part_started_at.get(part_id)
+            )
+            duration = UnifiedCopilot._tool_duration_seconds(state, started_at)
+            input_detail = self._safe_detail(state.get("input", ""))
+            output_detail = self._safe_detail(
+                state.get("error", "") if status == "error" else state.get("output", "")
+            )
             session.emit("agent_event", dataclasses.asdict(ConversationEvent(
                 "error" if status == "error" else "tool",
                 f"Researcher · {title}",
-                self._safe_detail(detail),
+                output_detail if status == "error" else input_detail,
+                call_id=f"researcher:{part_id}" if part_id else "",
+                status=status,
+                input_detail=input_detail,
+                output_detail=output_detail,
+                duration_seconds=duration,
             )))
 
         with session.condition:
@@ -710,7 +988,18 @@ class WebAIService:
             except Exception:
                 pass
         for session_id in session_ids:
-            self.delete(session_id)
+            with self._lock:
+                session = self._sessions.pop(session_id, None)
+            if not session:
+                continue
+            if session.busy:
+                session.copilot.cancel()
+            session.copilot.detach()
+            session.form_search.close()
+            if session.active_researcher:
+                session.active_researcher.cancel()
+                session.active_researcher.close()
+            self._drafts.delete_workflow(session.id)
 
     def _extract_worker(self, job: ExtractionJob) -> None:
         try:
@@ -1024,11 +1313,15 @@ class WebAIService:
             rendered = json.dumps(value, ensure_ascii=False, default=str)
         except Exception:
             rendered = str(value)
-        return redact_text(rendered)[:2000]
+        return redact_text(rendered)[:12000]
 
     def _session(self, session_id: str) -> WebCopilotSession:
         with self._lock:
             value = self._sessions.get(session_id)
+        if value is None:
+            self._restore_sessions_from_opencode()
+            with self._lock:
+                value = self._sessions.get(session_id)
         if value is None:
             raise KeyError("AI session не найдена")
         return value

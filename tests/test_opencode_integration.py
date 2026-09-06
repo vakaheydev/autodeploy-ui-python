@@ -1585,8 +1585,10 @@ class AgentWorkflowTests(unittest.TestCase):
                 },
             })
         tool_events = [event for event in events if event.kind == "tool"]
-        self.assertEqual(len(tool_events), 1)
-        self.assertEqual(tool_events[0].title, "gravitee_repo_get_api")
+        self.assertEqual(len(tool_events), 2)
+        self.assertEqual(tool_events[-1].title, "gravitee_repo_get_api")
+        self.assertEqual(tool_events[-1].call_id, "part_1")
+        self.assertEqual(tool_events[-1].status, "completed")
 
     def test_form_agent_applies_repository_git_pull_ui_policy(self) -> None:
         client = _AgentClient()
@@ -2346,9 +2348,11 @@ class CopilotWorkflowTests(unittest.TestCase):
                 },
             })
         tool_events = [event for event in events if event.kind == "tool"]
-        self.assertEqual(len(tool_events), 1)
-        self.assertEqual(tool_events[0].title, "gravitee_repo_search_api_by_name")
-        self.assertNotIn("running", tool_events[0].title)
+        self.assertEqual(len(tool_events), 2)
+        self.assertEqual(tool_events[-1].title, "gravitee_repo_search_api_by_name")
+        self.assertEqual(tool_events[-1].call_id, "part_1")
+        self.assertEqual(tool_events[-1].status, "completed")
+        self.assertNotIn("running", tool_events[-1].title)
 
     def test_copilot_uses_exact_repository_profile(self) -> None:
         payload = _copilot_payload("repository_search")

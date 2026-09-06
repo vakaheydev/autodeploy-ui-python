@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import dataclasses
+import os
+import string
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -69,6 +72,46 @@ def save_settings(body: SettingsUpdateRequest, request: Request):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/settings/filesystem", tags=["settings"])
+def settings_filesystem(
+    path: str = Query(default="", max_length=4096),
+):
+    """List local paths for the settings picker without reading file contents."""
+    try:
+        current = Path(path).expanduser() if path.strip() else Path.cwd()
+        if not current.exists():
+            current = Path.cwd()
+        current = current.resolve(strict=True)
+        if not current.is_dir():
+            current = current.parent
+        children = sorted(
+            current.iterdir(),
+            key=lambda item: (not item.is_dir(), item.name.casefold()),
+        )[:2000]
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Не удалось открыть папку: {exc}") from exc
+    roots: list[str]
+    if os.name == "nt":
+        roots = [f"{letter}:\\" for letter in string.ascii_uppercase if Path(f"{letter}:\\").exists()]
+    else:
+        roots = ["/"]
+    entries = []
+    for item in children:
+        try:
+            is_dir = item.is_dir()
+            is_file = item.is_file()
+        except OSError:
+            continue
+        entries.append({
+            "name": item.name,
+            "path": str(item),
+            "is_dir": is_dir,
+            "is_file": is_file,
+        })
+    parent = str(current.parent) if current.parent != current else ""
+    return {"current": str(current), "parent": parent, "roots": roots, "entries": entries}
 
 
 @router.get("/catalog", tags=["forms"])
@@ -281,4 +324,26 @@ def opencode_models(request: Request):
     return {
         "items": [dataclasses.asdict(item) for item in catalog.models],
         "default": dataclasses.asdict(catalog.default) if catalog.default else None,
+    }
+
+
+@router.get("/opencode/mcp", tags=["opencode"])
+def opencode_mcp(request: Request):
+    client = container(request).opencode_manager.client
+    if client is None:
+        return {"connected": False, "items": []}
+    try:
+        servers = client.list_mcp_servers()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "connected": True,
+        "items": [
+            {
+                "name": name,
+                "status": str(value.get("status") or "unknown"),
+                "error": str(value.get("error") or ""),
+            }
+            for name, value in sorted(servers.items())
+        ],
     }

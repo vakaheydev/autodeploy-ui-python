@@ -453,6 +453,7 @@ class UnifiedCopilot:
         self._on_event: Callable[[ConversationEvent], None] = lambda _event: None
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
+        self._part_started_at: dict[str, float] = {}
         self._permission_ids: set[str] = set()
         self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
@@ -484,6 +485,41 @@ class UnifiedCopilot:
     @property
     def mcp_native(self) -> bool:
         return bool(self._workflow_id)
+
+    def resume_session(self, session_id: str) -> None:
+        """Attach to a persisted AutoDeploy-owned OpenCode session."""
+        clean_id = str(session_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", clean_id):
+            raise ValueError("Некорректный OpenCode session ID")
+        statuses = self._client.list_mcp_servers(
+            timeout=min(10.0, max(0.5, self._client.timeout))
+        )
+        self._active_repository_mcp = choose_repository_mcp(
+            self._configured_repository_mcp,
+            self._allowed_mcp,
+            statuses,
+        )
+        self._active_mcp = tuple(
+            name for name in dict.fromkeys(self._allowed_mcp)
+            if statuses.get(name, {}).get("status") == "connected"
+        )
+        self._session_id = clean_id
+        self._session_context_initialized = True
+        self._on_session(clean_id)
+
+    def detach(self) -> None:
+        """Forget the local handle while preserving OpenCode's persisted chat."""
+        self._session_id = None
+        self._active_repository_mcp = ""
+        self._active_mcp = ()
+        self._session_context_initialized = False
+        self._sent_ticket_contexts.clear()
+        self._current_environment = ""
+        self._part_states.clear()
+        self._part_started_at.clear()
+        self._permission_ids.clear()
+        self._last_session_status_signature = ""
+        self._on_session(None)
 
     def ask(
         self,
@@ -761,7 +797,10 @@ class UnifiedCopilot:
                 self._active_repository_mcp,
                 allow_git_pull=self._allow_repository_git_pull,
             ),
-            metadata={"source": "gravitee-autodeploy-ui-copilot"},
+            metadata={
+                "source": "gravitee-autodeploy-ui-copilot",
+                "workflow_id": self._workflow_id,
+            },
         )
         self._on_session(self._session_id)
         self._emit(ConversationEvent(
@@ -901,6 +940,7 @@ class UnifiedCopilot:
         self._sent_ticket_contexts.clear()
         self._current_environment = ""
         self._part_states.clear()
+        self._part_started_at.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
         self._on_session(None)
@@ -974,25 +1014,30 @@ class UnifiedCopilot:
             tool = str(part.get("tool") or state.get("title") or "MCP tool")
             if status == "pending":
                 return
-            # Один tool call занимает в чате одну строку. running показывается
-            # сразу; последующий completed уже не дублирует тот же вызов. Если
-            # SSE пропустил running, строка появится на completed.
-            if status == "completed" and previous in {"running", "completed"}:
-                return
-            if status == "error" and previous in {"running", "completed"}:
-                self._emit(ConversationEvent(
-                    "status",
-                    f"Ошибка инструмента {tool}",
-                    self._safe_detail(state.get("error", "")),
-                ))
-                return
             if previous == status:
                 return
-            detail = state.get("error") if status == "error" else state.get("input", "")
+            if part_id and status == "running":
+                self._part_started_at.setdefault(part_id, time.monotonic())
+            duration = self._tool_duration_seconds(
+                state,
+                self._part_started_at.pop(part_id, None)
+                if part_id and status in {"completed", "error"}
+                else self._part_started_at.get(part_id),
+            )
+            input_detail = self._safe_detail(state.get("input", ""))
+            output_detail = self._safe_detail(
+                state.get("error", "") if status == "error" else state.get("output", "")
+            )
+            detail = output_detail if status == "error" else input_detail
             self._emit(ConversationEvent(
                 "error" if status == "error" else "tool",
                 tool,
-                self._safe_detail(detail),
+                detail,
+                call_id=part_id,
+                status=status,
+                input_detail=input_detail,
+                output_detail=output_detail,
+                duration_seconds=duration,
             ))
 
     def _bounded_diagnostic_data(self, value: Any) -> Any:
@@ -1021,7 +1066,22 @@ class UnifiedCopilot:
             rendered = json.dumps(value, ensure_ascii=False, default=str)
         except Exception:
             rendered = str(value)
-        return redact_text(rendered)[:2000]
+        return redact_text(rendered)[:12000]
+
+    @staticmethod
+    def _tool_duration_seconds(
+        state: Mapping[str, Any], started_at: Optional[float]
+    ) -> Optional[float]:
+        timing = state.get("time")
+        if isinstance(timing, Mapping):
+            start = timing.get("start", timing.get("created"))
+            end = timing.get("end", timing.get("completed"))
+            if isinstance(start, (int, float)) and isinstance(end, (int, float)) and end >= start:
+                # OpenCode timestamps are milliseconds since epoch.
+                return round((float(end) - float(start)) / 1000.0, 3)
+        if started_at is not None and str(state.get("status")) in {"completed", "error"}:
+            return round(max(0.0, time.monotonic() - started_at), 3)
+        return None
 
     def _emit(self, event: ConversationEvent) -> None:
         if event.kind == "status":

@@ -48,6 +48,11 @@ class ConversationEvent:
     detail: str = ""
     permission_id: str = ""
     permission_name: str = ""
+    call_id: str = ""
+    status: str = ""
+    input_detail: str = ""
+    output_detail: str = ""
+    duration_seconds: Optional[float] = None
 
 
 def _log_identifier(value: Any) -> str:
@@ -94,6 +99,7 @@ class FormExtractorAgent:
         self._on_event: Callable[[ConversationEvent], None] = lambda _event: None
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
+        self._part_started_at: dict[str, float] = {}
         self._permission_ids: set[str] = set()
         self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
@@ -653,26 +659,29 @@ class FormExtractorAgent:
             tool = str(part.get("tool") or state.get("title") or "MCP tool")
             if status == "pending":
                 return
-            if status == "completed" and previous in {"running", "completed"}:
-                return
-            if status == "error" and previous in {"running", "completed"}:
-                self._emit(ConversationEvent(
-                    "status",
-                    f"Ошибка инструмента {tool}",
-                    self._safe_detail(state.get("error", "")),
-                ))
-                return
             if previous == status:
                 return
-            detail_value = (
-                state.get("error")
-                if status == "error"
-                else state.get("input", "")
+            if part_id and status == "running":
+                self._part_started_at.setdefault(part_id, time.monotonic())
+            duration = self._tool_duration_seconds(
+                state,
+                self._part_started_at.pop(part_id, None)
+                if part_id and status in {"completed", "error"}
+                else self._part_started_at.get(part_id),
+            )
+            input_detail = self._safe_detail(state.get("input", ""))
+            output_detail = self._safe_detail(
+                state.get("error", "") if status == "error" else state.get("output", "")
             )
             self._emit(ConversationEvent(
                 "tool" if status != "error" else "error",
                 tool,
-                self._safe_detail(detail_value),
+                output_detail if status == "error" else input_detail,
+                call_id=part_id,
+                status=status,
+                input_detail=input_detail,
+                output_detail=output_detail,
+                duration_seconds=duration,
             ))
 
     @staticmethod
@@ -681,7 +690,21 @@ class FormExtractorAgent:
             rendered = json.dumps(value, ensure_ascii=False, default=str)
         except Exception:
             rendered = str(value)
-        return redact_text(rendered)[:2000]
+        return redact_text(rendered)[:12000]
+
+    @staticmethod
+    def _tool_duration_seconds(
+        state: Mapping[str, Any], started_at: Optional[float]
+    ) -> Optional[float]:
+        timing = state.get("time")
+        if isinstance(timing, Mapping):
+            start = timing.get("start", timing.get("created"))
+            end = timing.get("end", timing.get("completed"))
+            if isinstance(start, (int, float)) and isinstance(end, (int, float)) and end >= start:
+                return round((float(end) - float(start)) / 1000.0, 3)
+        if started_at is not None and str(state.get("status")) in {"completed", "error"}:
+            return round(max(0.0, time.monotonic() - started_at), 3)
+        return None
 
     def _emit(self, event: ConversationEvent) -> None:
         if event.kind == "status":

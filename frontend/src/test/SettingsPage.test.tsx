@@ -24,6 +24,7 @@ describe('SettingsPage', () => {
     const token = await screen.findByLabelText(/TFS token/)
     expect(token).toHaveAttribute('placeholder', expect.stringContaining('настроено'))
     await user.type(token, 'new-token')
+    expect(token.closest('.configuration-field')).toHaveClass('changed')
     await user.click(screen.getByRole('button', { name: /Сохранить настройки/ }))
     const call = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ values: { TFS_TOKEN: 'new-token' }, clear: [] })

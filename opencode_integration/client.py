@@ -615,6 +615,24 @@ class OpenCodeClient:
         )
         _log.info("session deleted id=%s", session_id)
 
+    def list_sessions(self, timeout: Optional[float] = None) -> list[Dict[str, Any]]:
+        payload = _unwrap_data(self._request("GET", "/session", timeout=timeout))
+        if not isinstance(payload, list):
+            raise OpenCodeError("Некорректный ответ списка OpenCode sessions")
+        return [dict(item) for item in payload if isinstance(item, dict)]
+
+    def list_session_messages(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> list[Dict[str, Any]]:
+        payload = _unwrap_data(self._request(
+            "GET",
+            f"/session/{urllib.parse.quote(session_id, safe='')}/message",
+            timeout=timeout,
+        ))
+        if not isinstance(payload, list):
+            raise OpenCodeError("Некорректный ответ истории OpenCode session")
+        return [dict(item) for item in payload if isinstance(item, dict)]
+
     def abort_session(self, session_id: str) -> None:
         self._request(
             "POST",

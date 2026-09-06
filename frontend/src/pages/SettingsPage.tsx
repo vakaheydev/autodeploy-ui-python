@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
-import { Check, KeyRound, ShieldCheck, X } from '../components/Icons'
+import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
+import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
 import type { SettingField, SettingsDocument } from '../types'
 
 function draftFrom(document: SettingsDocument): Record<string, string | boolean> {
@@ -21,6 +22,10 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [activeGroup, setActiveGroup] = useState('')
+  const [mcpItems, setMcpItems] = useState<Array<{ name: string; status: string; error: string }>>([])
+  const [mcpConnected, setMcpConnected] = useState(false)
+  const [mcpLoading, setMcpLoading] = useState(false)
 
   const applyDocument = (next: SettingsDocument) => {
     setDocument(next)
@@ -28,6 +33,21 @@ export function SettingsPage() {
     setChanged(new Set())
     setClear(new Set())
     setVisibleSecrets(new Set())
+    setActiveGroup((current) => current && next.groups.some((group) => group.name === current) ? current : next.groups[0]?.name ?? '')
+  }
+
+  const loadMcp = async () => {
+    setMcpLoading(true)
+    try {
+      const result = await api<{ connected: boolean; items: Array<{ name: string; status: string; error: string }> }>('/api/v1/opencode/mcp')
+      setMcpConnected(result.connected === true)
+      setMcpItems(Array.isArray(result.items) ? result.items : [])
+    } catch {
+      setMcpConnected(false)
+      setMcpItems([])
+    } finally {
+      setMcpLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -36,6 +56,7 @@ export function SettingsPage() {
       .then(applyDocument)
       .catch((reason: unknown) => !controller.signal.aborted && setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => !controller.signal.aborted && setLoading(false))
+    void loadMcp()
     return () => controller.abort()
   }, [])
 
@@ -44,7 +65,12 @@ export function SettingsPage() {
 
   const changeValue = (field: SettingField, value: string | boolean) => {
     setDraft((current) => ({ ...current, [field.key]: value }))
-    setChanged((current) => new Set(current).add(field.key))
+    setChanged((current) => {
+      const next = new Set(current)
+      const original = field.kind === 'secret' ? '' : field.value ?? ''
+      value === original ? next.delete(field.key) : next.add(field.key)
+      return next
+    })
     setClear((current) => {
       const next = new Set(current)
       next.delete(field.key)
@@ -93,24 +119,42 @@ export function SettingsPage() {
 
   if (loading) return <Spinner label="Загружаю настройки…" />
 
+  const mcpOptions = mcpItems.map((item) => ({
+    value: item.name,
+    label: item.name,
+    description: item.status === 'connected' ? 'Подключён' : item.error || `Статус: ${item.status}`,
+  }))
+  const visibleGroups = document?.groups.filter((group) => group.name === activeGroup) ?? []
+
   return (
     <div className="page-stack settings-page">
       <div className="page-title"><div><span className="eyebrow">Server-side configuration</span><h1>Настройки</h1><p>Конфигурация хранится в локальном `.env`; секреты доступны только на запись.</p></div><span className="server-badge"><ShieldCheck size={16} /> Секреты скрыты API</span></div>
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {notice && <div className="alert success"><Check size={17} /><p>{notice}</p></div>}
       <div className="settings-security-note"><KeyRound size={22} /><div><strong>Сохранённые секреты не отправляются в браузер</strong><p>Пустое поле оставляет секрет без изменений. Для удаления используйте «Очистить».</p></div></div>
-      {document?.groups.map((group) => (
+      <nav className="settings-tabs" aria-label="Разделы настроек">
+        {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => setActiveGroup(group.name)}>{group.name}<span>{group.fields.length}</span></button>)}
+      </nav>
+      {activeGroup === 'OpenCode' && <div className="settings-source-status"><span className={`status-dot ${mcpConnected ? 'online' : ''}`} /> <span>{mcpConnected ? `${mcpItems.length} MCP получено от OpenCode` : 'OpenCode не подключён — сохранённые значения останутся доступны'}</span><button type="button" className="icon-button" title="Обновить MCP" disabled={mcpLoading} onClick={() => void loadMcp()}><RefreshCw size={15} className={mcpLoading ? 'spin' : ''} /></button></div>}
+      {visibleGroups.map((group) => (
         <section className="configuration-group" key={group.name}>
           <div className="section-heading"><div><h2>{group.name}</h2><span>{group.fields.length} параметров</span></div></div>
           <div className="configuration-grid">
             {group.fields.map((field) => {
               const isCleared = clear.has(field.key)
+              const isChanged = changed.has(field.key)
               const inputType = field.kind === 'secret' && !visibleSecrets.has(field.key) ? 'password' : field.kind === 'number' ? 'number' : 'text'
-              return <label className={`configuration-field ${isCleared ? 'cleared' : ''}`} key={field.key}>
-                <span className="configuration-label"><span>{field.label}{field.required && <b>*</b>}</span>{field.restart_required && <small>restart</small>}</span>
+              const inputId = `setting-${field.key}`
+              return <div className={`configuration-field ${isCleared ? 'cleared' : ''} ${isChanged ? 'changed' : ''}`} key={field.key}>
+                <span className="configuration-label"><label htmlFor={inputId}>{field.label}{field.required && <b>*</b>}</label><span>{isChanged && <small className="changed-badge">изменено</small>}{field.restart_required && <small>restart</small>}</span></span>
                 {field.kind === 'boolean'
-                  ? <span className="settings-switch"><input type="checkbox" checked={Boolean(draft[field.key])} onChange={(event) => changeValue(field, event.target.checked)} /><span className="switch" /><span>{Boolean(draft[field.key]) ? 'Включено' : 'Выключено'}</span></span>
-                  : <span className="configuration-input"><input
+                  ? <label className="settings-switch" htmlFor={inputId}><input id={inputId} type="checkbox" checked={Boolean(draft[field.key])} onChange={(event) => changeValue(field, event.target.checked)} /><span className="switch" /><span>{Boolean(draft[field.key]) ? 'Включено' : 'Выключено'}</span></label>
+                  : field.picker === 'mcp'
+                    ? <McpSinglePicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
+                    : field.picker === 'mcp_multi'
+                      ? <McpMultiPicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
+                      : <span className="configuration-input"><input
+                    id={inputId}
                     type={inputType}
                     value={String(draft[field.key] ?? '')}
                     min={field.minimum ?? undefined}
@@ -119,9 +163,9 @@ export function SettingsPage() {
                     autoComplete="off"
                     placeholder={field.kind === 'secret' && field.configured ? '••••••••  настроено' : field.default || 'Не задано'}
                     onChange={(event) => changeValue(field, event.target.value)}
-                  />{field.kind === 'secret' && <button type="button" className="button ghost small" onClick={() => setVisibleSecrets((current) => { const next = new Set(current); next.has(field.key) ? next.delete(field.key) : next.add(field.key); return next })}>{visibleSecrets.has(field.key) ? 'Скрыть' : 'Показать'}</button>}{field.kind === 'secret' && field.configured && <button type="button" className={`button small ${isCleared ? 'secondary' : 'danger'}`} onClick={() => toggleClear(field)}>{isCleared ? 'Отменить' : 'Очистить'}</button>}</span>}
+                  />{field.picker === 'file' || field.picker === 'directory' ? <PathSettingPicker value={String(draft[field.key] ?? '')} mode={field.picker} disabled={isCleared} onChange={(value) => changeValue(field, value)} /> : null}{field.kind === 'secret' && <button type="button" className="button ghost small" onClick={() => setVisibleSecrets((current) => { const next = new Set(current); next.has(field.key) ? next.delete(field.key) : next.add(field.key); return next })}>{visibleSecrets.has(field.key) ? 'Скрыть' : 'Показать'}</button>}{field.kind === 'secret' && field.configured && <button type="button" className={`button small ${isCleared ? 'secondary' : 'danger'}`} onClick={() => toggleClear(field)}>{isCleared ? 'Отменить' : 'Очистить'}</button>}</span>}
                 <span className="configuration-meta"><code>{field.key}</code>{field.description && <small>{field.description}</small>}{field.kind === 'secret' && <small className={field.configured && !isCleared ? 'configured' : ''}>{isCleared ? 'Будет удалён' : field.configured ? 'Секрет настроен' : 'Не настроен'}</small>}</span>
-              </label>
+              </div>
             })}
           </div>
         </section>

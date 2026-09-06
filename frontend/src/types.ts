@@ -130,6 +130,7 @@ export interface SettingField {
   label: string
   group: string
   kind: 'text' | 'secret' | 'number' | 'boolean' | 'path'
+  picker?: '' | 'file' | 'directory' | 'mcp' | 'mcp_multi'
   default: string
   description: string
   required: boolean

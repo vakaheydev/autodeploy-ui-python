@@ -51,6 +51,11 @@ def create_session(_body: ChatSessionRequest, request: Request):
         translate(exc)
 
 
+@router.get("/sessions")
+def list_sessions(request: Request):
+    return service(request).list_sessions()
+
+
 @router.get("/sessions/{session_id}")
 def session(session_id: str, request: Request):
     try:
