@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { AppWindow, Boxes, History, Search, ServerCog, Sparkles } from '../components/Icons'
+import { Boxes, History, Search, ServerCog, Sparkles } from '../components/Icons'
 import { Copilot } from '../components/Copilot'
 
 interface Status { state: string; address: string; message: string }
@@ -28,12 +28,7 @@ export function HomePage() {
   return (
     <div className="page-stack">
       <section className="hero-panel">
-        <div>
-          <span className="hero-kicker"><Sparkles size={15} /> Единое рабочее пространство</span>
-          <h1>Gravitee AutoDeploy</h1>
-          <p>Формы, справочники, поиск и AI-помощник — в одном локальном веб-приложении.</p>
-        </div>
-        <div className="hero-visual"><AppWindow size={42} /></div>
+        <h1 className="hero-title"><Sparkles aria-hidden="true" /> Gravitee AutoDeploy</h1>
       </section>
 
       {status?.state === 'ready' && <Copilot />}

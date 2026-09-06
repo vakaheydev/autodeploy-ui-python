@@ -25,6 +25,8 @@ describe('App shell', () => {
   it('renders the modern shell and Python-backed modules', async () => {
     render(<MemoryRouter><App /></MemoryRouter>)
     expect(await screen.findByRole('heading', { name: 'Gravitee AutoDeploy' })).toBeInTheDocument()
+    expect(screen.queryByText('Единое рабочее пространство')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Формы, справочники, поиск и AI-помощник/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Формы/ })).toBeInTheDocument()
     await waitFor(() => expect(fetch).toHaveBeenCalled())
   })

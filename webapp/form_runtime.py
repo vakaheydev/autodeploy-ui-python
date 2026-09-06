@@ -37,6 +37,13 @@ class FormVersionConflict(ValueError):
     pass
 
 
+class _ConditionValues(dict[str, Any]):
+    """Legacy-compatible condition values where an unfilled field is ``None``."""
+
+    def __missing__(self, _key: str) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class RuntimeValidation:
     valid: bool
@@ -116,7 +123,7 @@ def _visible(field: FieldDefinition, values: Mapping[str, Any]) -> bool:
     if field.condition is None:
         return True
     try:
-        return bool(field.condition(dict(values)))
+        return bool(field.condition(_ConditionValues(values)))
     except Exception:
         _log.exception("form condition failed field=%s", field.key)
         return False

@@ -136,6 +136,7 @@ export function SettingsPage() {
     description: item.status === 'connected' ? 'Подключён' : item.error || `Статус: ${item.status}`,
   }))
   const visibleGroups = document?.groups.filter((group) => group.name === activeGroup) ?? []
+  const hasChanges = changed.size > 0 || clear.size > 0
 
   return (
     <div className="page-stack settings-page">
@@ -182,7 +183,7 @@ export function SettingsPage() {
           </div>
         </section>
       ))}
-      <footer className="settings-actions"><button className="button secondary" disabled={saving || (!changed.size && !clear.size)} onClick={() => document && applyDocument(document)}><X size={16} /> Сбросить правки</button><button className="button primary large" disabled={saving || (!changed.size && !clear.size)} onClick={() => void save()}><Check size={17} /> {saving ? 'Сохраняю…' : 'Сохранить настройки'}</button></footer>
+      {hasChanges && <footer className="settings-actions"><button className="button secondary" disabled={saving} onClick={() => document && applyDocument(document)}><X size={16} /> Сбросить правки</button><button className="button primary large" disabled={saving} onClick={() => void save()}><Check size={17} /> {saving ? 'Сохраняю…' : 'Сохранить настройки'}</button></footer>}
     </div>
   )
 }

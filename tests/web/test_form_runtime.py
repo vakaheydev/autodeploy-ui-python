@@ -104,6 +104,52 @@ def test_required_field_error_is_not_duplicated_by_base_form_validation(
     )
 
 
+def test_legacy_condition_key_access_treats_unfilled_fields_as_none(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class ConditionalForm(BaseForm):
+        form_id = "test.legacy-condition"
+        title = "Legacy condition"
+        category = "other"
+        fields = [
+            FieldDefinition("plan_type", "Plan type", FieldType.SELECT, required=False),
+            FieldDefinition(
+                "plan_jwt_type",
+                "JWT plan type",
+                FieldType.SELECT,
+                required=False,
+                condition=lambda values: values["plan_type"] == "JWT",
+            ),
+        ]
+
+        def build_payload(self, form_data):
+            return dict(form_data)
+
+        def get_submit_endpoint(self, environment: str) -> str:
+            return "https://example.invalid"
+
+    monkeypatch.setattr(
+        container.forms, "get_form", lambda _form_id: ConditionalForm()
+    )
+
+    hidden = container.forms.describe("test.legacy-condition", "test_int")
+    jwt_field = next(
+        field for field in hidden["fields"] if field["key"] == "plan_jwt_type"
+    )
+    assert jwt_field["visible"] is False
+    assert "form condition failed" not in caplog.text
+
+    visible = container.forms.state(
+        "test.legacy-condition", "test_int", {"plan_type": "JWT"}
+    )
+    jwt_field = next(
+        field for field in visible["fields"] if field["key"] == "plan_jwt_type"
+    )
+    assert jwt_field["visible"] is True
+
+
 def test_large_reference_is_searched_server_side_and_keeps_selection(
     container: ApplicationContainer,
 ) -> None:

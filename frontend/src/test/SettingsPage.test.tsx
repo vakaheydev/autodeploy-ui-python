@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -24,11 +24,19 @@ describe('SettingsPage', () => {
     render(<MemoryRouter><SettingsPage /></MemoryRouter>)
     const token = await screen.findByLabelText(/TFS token/)
     expect(token).toHaveAttribute('placeholder', expect.stringContaining('настроено'))
+    expect(screen.queryByRole('button', { name: /Сохранить настройки/ })).not.toBeInTheDocument()
     await user.type(token, 'new-token')
     expect(token.closest('.configuration-field')).toHaveClass('changed')
+    expect(screen.getByRole('button', { name: /Сохранить настройки/ })).toBeVisible()
     await user.click(screen.getByRole('button', { name: /Сохранить настройки/ }))
     const call = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ values: { TFS_TOKEN: 'new-token' }, clear: [] })
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Сохранить настройки/ })).not.toBeInTheDocument())
+
+    await user.type(token, 'another-token')
+    await user.click(screen.getByRole('button', { name: /Сбросить правки/ }))
+    expect(token).toHaveValue('')
+    expect(screen.queryByRole('button', { name: /Сохранить настройки/ })).not.toBeInTheDocument()
   })
 
   it('opens OpenCode Server management inside the OpenCode settings section', async () => {
