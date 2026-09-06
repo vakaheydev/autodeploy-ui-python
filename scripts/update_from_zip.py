@@ -1,4 +1,4 @@
-r"""Replace a local checkout with an HTTP ZIP archive while preserving ``.env``.
+r"""Replace a local checkout while preserving ``.env`` and ``.venv``.
 
 Configure ``ARCHIVE_URL`` and ``TARGET_DIR`` below, copy this script outside the
 directory being updated, stop AutoDeploy, and run it with a system Python:
@@ -7,8 +7,9 @@ directory being updated, stop AutoDeploy, and run it with a system Python:
 
 The updater does not require ``requests``.  It downloads into a sibling
 temporary directory, rejects unsafe ZIP entries, validates project markers,
-copies the existing root ``.env`` into the staged version, and swaps the target
-directory.  If the swap fails, the previous directory is restored.
+copies the existing root ``.env`` into the staged version, moves ``.venv``
+without copying it, and swaps the target directory. If the swap fails, the
+previous directory is restored.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ EXPECTED_SHA256 = ""
 
 # Files copied from the current target after the archive has been staged.
 # Paths are relative to TARGET_DIR. The archive's versions are never retained.
-PRESERVE_RELATIVE_PATHS = (Path(".env"),)
+PRESERVE_RELATIVE_PATHS = (Path(".env"), Path(".venv"))
 
 # A correct public-core archive must contain these paths after its single
 # GitHub-generated top-level directory has been removed.
@@ -58,6 +59,8 @@ MAX_ARCHIVE_FILES = 50_000
 # False removes the old tree after a successful swap. During the swap it still
 # exists and is restored automatically if activation fails. If True, it remains
 # beside TARGET_DIR and may contain a copy of .env, so protect it accordingly.
+# Preserved directories are copied in this optional mode so that both versions
+# remain independently usable. With the default False they are moved instantly.
 KEEP_BACKUP = False
 
 
@@ -205,7 +208,14 @@ def _remove_staged_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _preserve_files(current: Path, staged: Path) -> None:
+def _prepare_preserved_paths(
+    current: Path,
+    staged: Path,
+    *,
+    copy_directories: bool,
+) -> tuple[Path, ...]:
+    """Copy files and return directories that should be moved after the swap."""
+    directories: list[Path] = []
     for relative in PRESERVE_RELATIVE_PATHS:
         old = current / relative
         new = staged / relative
@@ -216,12 +226,56 @@ def _preserve_files(current: Path, staged: Path) -> None:
 
         if not old.exists() and not old.is_symlink():
             continue
-        if old.is_symlink() or not old.is_file():
-            raise UpdateError(
-                f"Сохраняемый путь должен быть обычным файлом: {old}"
-            )
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(old, new)
+        if old.is_symlink():
+            raise UpdateError(f"Сохраняемый путь не должен быть symbolic link: {old}")
+        if old.is_file():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, new)
+            continue
+        if old.is_dir():
+            if copy_directories:
+                shutil.copytree(old, new)
+            else:
+                directories.append(relative)
+            continue
+        raise UpdateError(f"Неподдерживаемый сохраняемый путь: {old}")
+    return tuple(directories)
+
+
+def _move_preserved_directories(
+    backup: Path,
+    target: Path,
+    directories: tuple[Path, ...],
+) -> None:
+    for relative in directories:
+        source = backup / relative
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+
+
+def _restore_previous_target(
+    target: Path,
+    backup: Path,
+    work: Path,
+    directories: tuple[Path, ...],
+) -> None:
+    """Put moved directories back, discard staged activation, restore backup."""
+    for relative in reversed(directories):
+        live = target / relative
+        previous = backup / relative
+        if (live.exists() or live.is_symlink()) and not (
+            previous.exists() or previous.is_symlink()
+        ):
+            previous.parent.mkdir(parents=True, exist_ok=True)
+            live.rename(previous)
+
+    if target.exists() or target.is_symlink():
+        failed = work / "failed-activation"
+        if failed.exists() or failed.is_symlink():
+            _remove_staged_path(failed)
+        target.rename(failed)
+    backup.rename(target)
 
 
 def replace_directory_from_zip(
@@ -238,6 +292,7 @@ def replace_directory_from_zip(
     extracted.mkdir()
     backup: Path | None = None
     activated = False
+    preserved_directories: tuple[Path, ...] = ()
     try:
         _extract_safely(archive, extracted)
         payload = _payload_root(extracted)
@@ -253,7 +308,11 @@ def replace_directory_from_zip(
         if target.exists():
             if not target.is_dir() or target.is_symlink():
                 raise UpdateError(f"TARGET_DIR должен быть обычной папкой: {target}")
-            _preserve_files(target, staged)
+            preserved_directories = _prepare_preserved_paths(
+                target,
+                staged,
+                copy_directories=keep_backup,
+            )
             suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
             backup = target.parent / f".{target.name}.backup-{suffix}"
             counter = 1
@@ -265,9 +324,21 @@ def replace_directory_from_zip(
         try:
             staged.rename(target)
             activated = True
+            if backup is not None:
+                _move_preserved_directories(
+                    backup,
+                    target,
+                    preserved_directories,
+                )
         except Exception:
-            if backup is not None and backup.exists() and not target.exists():
-                backup.rename(target)
+            if backup is not None and backup.exists():
+                _restore_previous_target(
+                    target,
+                    backup,
+                    work,
+                    preserved_directories,
+                )
+                activated = False
             raise
 
         if backup is not None and not keep_backup:
@@ -303,7 +374,7 @@ def update() -> Path | None:
 
         print(f"Заменяю папку: {target}")
         backup = replace_directory_from_zip(archive, target)
-        print("Обновление завершено. Текущий .env сохранён.")
+        print("Обновление завершено. Текущие .env и .venv сохранены.")
         if backup is not None:
             print(f"Предыдущая версия оставлена: {backup}")
         return backup

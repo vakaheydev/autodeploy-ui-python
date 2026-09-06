@@ -19,6 +19,11 @@ def test_replaces_tree_and_preserves_env(tmp_path: Path) -> None:
     target = tmp_path / "gravitee-autodeploy"
     target.mkdir()
     (target / ".env").write_text("TOKEN=corporate-secret\n", encoding="utf-8")
+    (target / ".venv" / "Scripts").mkdir(parents=True)
+    (target / ".venv" / "Scripts" / "python.exe").write_text(
+        "existing interpreter",
+        encoding="utf-8",
+    )
     (target / "obsolete.txt").write_text("old", encoding="utf-8")
     archive = _archive(
         tmp_path / "source.zip",
@@ -27,6 +32,7 @@ def test_replaces_tree_and_preserves_env(tmp_path: Path) -> None:
             "repository-branch/webapp/__init__.py": "",
             "repository-branch/current.txt": "new",
             "repository-branch/.env": "TOKEN=archive-value\n",
+            "repository-branch/.venv/archive.txt": "must not be used",
         },
     )
 
@@ -34,6 +40,10 @@ def test_replaces_tree_and_preserves_env(tmp_path: Path) -> None:
 
     assert backup is None
     assert (target / ".env").read_text(encoding="utf-8") == "TOKEN=corporate-secret\n"
+    assert (target / ".venv" / "Scripts" / "python.exe").read_text(
+        encoding="utf-8"
+    ) == "existing interpreter"
+    assert not (target / ".venv" / "archive.txt").exists()
     assert (target / "current.txt").read_text(encoding="utf-8") == "new"
     assert not (target / "obsolete.txt").exists()
 
