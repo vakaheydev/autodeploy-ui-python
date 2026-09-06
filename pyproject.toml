@@ -12,7 +12,7 @@ license = "LicenseRef-Proprietary"
 authors = [{ name = "Gravitee AutoDeploy Team" }]
 dependencies = [
   "fastapi==0.116.1",
-  "starlette==0.47.3",
+  "starlette==0.47.2",
   "jsonschema>=4.23,<5",
   "uvicorn==0.35.0",
 ]
