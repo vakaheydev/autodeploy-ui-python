@@ -121,7 +121,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "prepare_form_draft",
-        "description": "Create or revise an expiring local form draft after get_form_schema. Pass only evidenced field proposals, using exact field paths and the live form version. Python resolves references, recalculates state and validates. This never submits or calls an external write. Use draft_id only when revising an existing draft.",
+        "description": "Create or revise a persistent local form draft after get_form_schema. Pass only evidenced field proposals, using exact field paths and the live form version. Python resolves references, recalculates state and validates. The draft remains available until successful submission or explicit deletion. This never submits or calls an external write. Use draft_id only when revising an existing draft.",
         "inputSchema": _object_schema({
             "workflow_id": _WORKFLOW,
             "form_id": _FORM,

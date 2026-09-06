@@ -125,6 +125,36 @@ def test_form_validation_contract(server: str) -> None:
 
 
 @pytest.mark.integration
+def test_persistent_draft_api_lifecycle(server: str) -> None:
+    status, _, content = request(server, "/api/v1/forms/api.create?environment=test_int")
+    document = json.loads(content)
+    status, _, content = request(
+        server,
+        "/api/v1/drafts/api.create",
+        method="PUT",
+        body={
+            "environment": "test_int",
+            "form_version": document["version"],
+            "values": {"name": "Черновик API"},
+            "draft_id": "",
+            "clear_review": False,
+        },
+    )
+    saved = json.loads(content)
+    assert status == 200
+    assert saved["source"] == "manual"
+    assert saved["result"]["values"]["name"] == "Черновик API"
+
+    status, _, content = request(server, "/api/v1/drafts")
+    items = json.loads(content)["items"]
+    assert status == 200
+    assert any(item["id"] == saved["id"] for item in items)
+
+    assert request(server, f"/api/v1/drafts/{saved['id']}", method="DELETE")[0] == 204
+    assert request(server, f"/api/v1/ai/drafts/{saved['id']}")[0] == 404
+
+
+@pytest.mark.integration
 def test_browser_origin_and_request_limits(server: str) -> None:
     status, _, content = request(
         server, "/api/v1/health", headers={"Origin": "https://malicious.example"}

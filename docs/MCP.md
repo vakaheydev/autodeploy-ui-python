@@ -20,7 +20,7 @@ must be recreated after changing the setting.
 
 The JSON-RPC transport does not require a server-side MCP connection object.
 Three workflow tools do use an opaque `workflow_id` to reach the owning Copilot
-session, its lazy form-search session and its expiring drafts.
+session, its lazy form-search session and its persistent drafts.
 
 ## Agent workflow
 
@@ -40,7 +40,7 @@ session, its lazy form-search session and its expiring drafts.
    remains separate and human-controlled.
 
 The MCP intentionally has no submit, deploy or external update/delete tool. It
-may prepare an expiring local draft, but only the user can confirm a side effect
+may prepare a persistent local draft, but only the user can confirm a side effect
 in the web UI.
 
 ## Tools
@@ -55,7 +55,7 @@ in the web UI.
 - `search_reference_options` — paged select/multiselect reference search.
 - `validate_form_values` — authoritative Python and domain validation.
 - `preview_form_submission` — builds but does not send the request.
-- `prepare_form_draft` — creates or revises an expiring, Python-validated local
+- `prepare_form_draft` — creates or revises a persistent, Python-validated local
   draft; it never submits or performs an external write.
 - `research_repository` — delegates one bounded complex question to an isolated
   read-only JSON Repository Researcher and deletes that session afterwards.
@@ -63,7 +63,7 @@ in the web UI.
   read-only corporate services.
 
 Every tool is non-destructive and idempotent. `prepare_form_draft` advertises
-`readOnlyHint=false` because it stores temporary local state; all other tools
+`readOnlyHint=false` because it stores persistent local state; all other tools
 are read-only. The endpoint never exposes the settings API or stored secret
 values and contains no submit/deploy tool.
 

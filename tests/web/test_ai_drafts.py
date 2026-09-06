@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from webapp.ai_drafts import FormDraftStore
+from webapp.api import submit_form
 from webapp.container import ApplicationContainer
+from webapp.models import SubmitRequest
 from webapp.settings import WebSettings
 
 
@@ -184,3 +187,92 @@ def test_failed_refinement_does_not_replace_previous_draft(
     after = draft.snapshot()
     assert after["status"] == "error"
     assert after["result"] == before
+
+
+def test_manual_draft_is_persistent_until_explicit_delete(
+    container: ApplicationContainer,
+) -> None:
+    document = container.forms.describe("api.create", "test_int")
+    store = FormDraftStore(container)
+    draft = store.save_values(
+        form_id="api.create",
+        environment="test_int",
+        version=document["version"],
+        values={"name": "Незавершённый API"},
+    )
+
+    assert draft.source == "manual"
+    assert draft.expires_at == 0
+    assert (container.settings.data_dir / "drafts.json").is_file()
+
+    restored = FormDraftStore(container).require(draft.id)
+    assert restored.values["name"] == "Незавершённый API"
+    assert restored.source == "manual"
+
+    store.delete(draft.id)
+    assert FormDraftStore(container).get(draft.id) is None
+
+
+def test_ai_draft_survives_workflow_and_process_lifecycle(
+    container: ApplicationContainer,
+) -> None:
+    document = container.forms.describe("api.create", "test_int")
+    store = FormDraftStore(container)
+    draft = store.prepare(
+        workflow_id="workflow-persistent",
+        form_id="api.create",
+        environment="test_int",
+        version=document["version"],
+        proposals=_proposals(),
+    )
+
+    store.delete_workflow("workflow-persistent")
+
+    restored = FormDraftStore(container).require(draft.id)
+    assert restored.workflow_id == "workflow-persistent"
+    assert restored.source == "ai"
+    assert restored.fields
+
+    reviewed = store.save_values(
+        form_id=draft.form_id,
+        environment=draft.environment,
+        version=draft.form_version,
+        values=draft.values,
+        draft_id=draft.id,
+        pending_review_fields=["context_path"],
+    )
+    assert [item["key"] for item in reviewed.fields] == ["context_path"]
+    assert [item["key"] for item in FormDraftStore(container).require(draft.id).fields] == ["context_path"]
+
+
+def test_successful_submit_deletes_the_exact_draft() -> None:
+    deleted: list[str] = []
+    fake_container = SimpleNamespace(
+        ai=SimpleNamespace(
+            draft=lambda draft_id: {
+                "id": draft_id,
+                "form_id": "api.create",
+                "environment": "test_int",
+            },
+            delete_draft=deleted.append,
+        ),
+        forms=SimpleNamespace(submit=lambda *_args: {"success": True}),
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        container=fake_container,
+    )))
+
+    result = submit_form(
+        "api.create",
+        SubmitRequest(
+            environment="test_int",
+            values={"name": "Orders"},
+            form_version="v1",
+            confirmation_token="",
+            draft_id="draft-1",
+        ),
+        request,  # type: ignore[arg-type]
+    )
+
+    assert result == {"success": True}
+    assert deleted == ["draft-1"]

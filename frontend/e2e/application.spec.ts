@@ -58,3 +58,26 @@ test('filters the catalog by Python field keywords and switches theme', async ({
   await page.getByRole('button', { name: /OpenCode/ }).click()
   await expect(page.getByText('Встроенный MCP Server')).toBeVisible()
 })
+
+test('autosaves, restores and manually deletes a form draft', async ({ page }) => {
+  await page.goto('/forms/api.create')
+  await expect(page.getByRole('heading', { name: 'Создание АПИ' })).toBeVisible()
+  const savedResponse = page.waitForResponse((response) => (
+    response.url().includes('/api/v1/drafts/api.create')
+      && response.request().method() === 'PUT'
+      && response.status() === 200
+  ))
+  await page.getByPlaceholder('Введите название АПИ').fill('Persistent draft API')
+  const saved = await (await savedResponse).json() as { id: string }
+  await expect(page.getByText('черновик сохранён')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`draft=${saved.id}`))
+
+  await page.reload()
+  await expect(page.getByPlaceholder('Введите название АПИ')).toHaveValue('Persistent draft API')
+  await page.getByRole('link', { name: /Каталог форм/ }).click()
+  await page.getByRole('tab', { name: /Черновики/ }).click()
+  const link = page.locator(`a[href="/forms/api.create?draft=${saved.id}"]`)
+  await expect(link).toBeVisible()
+  await link.locator('xpath=..').getByRole('button', { name: 'Удалить черновик Создание АПИ' }).click()
+  await expect(link).toHaveCount(0)
+})

@@ -132,3 +132,35 @@ def test_persisted_opencode_history_is_restored_for_chat_switching() -> None:
     assert events[2].payload["duration_seconds"] == 1.0
     assert "api-1" in events[2].payload["output_detail"]
     assert events[3].payload["elapsed_seconds"] == 1.5
+
+
+def test_restored_chat_rebuilds_permanent_draft_link_from_mcp_result() -> None:
+    events = WebAIService._history_from_opencode([{
+        "info": {
+            "role": "assistant",
+            "variant": "none",
+            "time": {"created": 1_000, "completed": 2_000},
+        },
+        "parts": [
+            {
+                "id": "tool-draft",
+                "type": "tool",
+                "tool": "gravitee_autodeploy_prepare_form_draft",
+                "state": {
+                    "status": "completed",
+                    "input": {"form_id": "api.create"},
+                    "output": {
+                        "draft_id": "persistent-draft",
+                        "form_id": "api.create",
+                        "environment": "test_int",
+                        "valid": True,
+                    },
+                },
+            },
+            {"type": "text", "text": "Форма заполнена."},
+        ],
+    }])
+
+    assistant = next(event for event in events if event.kind == "assistant")
+    assert assistant.payload["selected_form_id"] == "api.create"
+    assert assistant.payload["draft_id"] == "persistent-draft"

@@ -36,6 +36,7 @@ from opencode_integration.researcher import RepositoryResearcher
 from opencode_integration.thinking import decide_copilot_thinking, decide_extractor_thinking
 from opencode_integration.workflow import ExtractionDirective
 from webapp.ai_drafts import FormDraftStore
+from webapp.form_runtime import form_version
 
 
 _log = logging.getLogger("web.ai")
@@ -122,6 +123,7 @@ class ExtractionJob:
     progress: str = "Подготовка…"
     result: Optional[dict[str, Any]] = None
     error: str = ""
+    draft_id: str = ""
     agent: Optional[FormExtractorAgent] = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -414,15 +416,38 @@ class WebAIService:
                 continue
             if role != "assistant":
                 continue
+            message_drafts: list[dict[str, Any]] = []
             for part in parts:
                 if not isinstance(part, Mapping) or part.get("type") != "tool":
                     continue
                 state = part.get("state") if isinstance(part.get("state"), Mapping) else {}
                 status = str(state.get("status") or "completed")
+                output_value = state.get("output", "")
+                tool_name = str(part.get("tool") or state.get("title") or "MCP tool")
+                decoded_output: Any = output_value
+                if isinstance(decoded_output, str):
+                    try:
+                        decoded_output = json.loads(decoded_output)
+                    except (TypeError, ValueError):
+                        pass
+                if (
+                    status == "completed"
+                    and tool_name.endswith("prepare_form_draft")
+                    and isinstance(decoded_output, Mapping)
+                    and decoded_output.get("draft_id")
+                    and decoded_output.get("form_id")
+                ):
+                    message_drafts.append({
+                        "draft_id": str(decoded_output["draft_id"]),
+                        "form_id": str(decoded_output["form_id"]),
+                        "environment": str(decoded_output.get("environment") or ""),
+                        "valid": bool(decoded_output.get("valid")),
+                        "revision": int(decoded_output.get("revision") or 1),
+                    })
                 sequence += 1
                 event = ConversationEvent(
                     "error" if status == "error" else "tool",
-                    str(part.get("tool") or state.get("title") or "MCP tool"),
+                    tool_name,
                     cls._safe_detail(state.get("input", "")),
                     call_id=str(part.get("id") or part.get("callID") or ""),
                     status=status,
@@ -449,11 +474,23 @@ class WebAIService:
             ).strip()
             if answer:
                 sequence += 1
-                events.append(WebEvent(sequence, "assistant", timestamp, {
+                assistant_payload = {
                     "text": answer,
                     "thinking": str(info.get("variant") or "—"),
                     "elapsed_seconds": opencode_message_duration(info),
-                }))
+                }
+                if len(message_drafts) == 1:
+                    assistant_payload.update({
+                        "intent": "single_form",
+                        "selected_form_id": message_drafts[0]["form_id"],
+                        "draft_id": message_drafts[0]["draft_id"],
+                    })
+                elif message_drafts:
+                    assistant_payload.update({
+                        "intent": "execution_plan",
+                        "drafts": message_drafts,
+                    })
+                events.append(WebEvent(sequence, "assistant", timestamp, assistant_payload))
         if events:
             events.insert(0, WebEvent(0, "system", events[0].timestamp, {
                 "title": "Сессия восстановлена из OpenCode",
@@ -850,6 +887,53 @@ class WebAIService:
     def draft(self, draft_id: str) -> dict[str, Any]:
         return self._drafts.require(draft_id).snapshot()
 
+    def list_drafts(self) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        for draft in self._drafts.list_all():
+            try:
+                form = self.container.forms.get_form(draft.form_id)
+                title = form.title
+                current_version = form_version(form)
+            except Exception:
+                title = draft.form_id
+                current_version = ""
+            items.append({
+                "id": draft.id,
+                "form_id": draft.form_id,
+                "title": title,
+                "environment": draft.environment,
+                "form_version": draft.form_version,
+                "revision": draft.revision,
+                "source": draft.source,
+                "created_at": draft.created_at,
+                "updated_at": draft.updated_at,
+                "valid": draft.valid,
+                "stale": not current_version or current_version != draft.form_version,
+                "review_count": len(draft.fields),
+            })
+        return {"items": items}
+
+    def save_draft(
+        self,
+        *,
+        form_id: str,
+        environment: str,
+        form_version: str,
+        values: Mapping[str, Any],
+        draft_id: str = "",
+        clear_review: bool = False,
+        pending_review_fields: Optional[Sequence[str]] = None,
+    ) -> dict[str, Any]:
+        return self._drafts.save_values(
+            form_id=form_id,
+            environment=environment,
+            version=form_version,
+            values=values,
+            draft_id=draft_id,
+            clear_review=clear_review,
+            pending_review_fields=pending_review_fields,
+        ).snapshot()
+
     def delete_draft(self, draft_id: str) -> None:
         self._drafts.delete(draft_id)
 
@@ -935,6 +1019,7 @@ class WebAIService:
                 "progress": job.progress,
                 "result": job.result,
                 "error": job.error,
+                "draft_id": job.draft_id,
             }
 
     def refine_extraction(self, job_id: str, guidance: str) -> dict[str, Any]:
@@ -1090,8 +1175,18 @@ class WebAIService:
                     on_progress=progress,
                 )
                 result = agent.finalize()
+            payload = self._validated_payload(result)
+            persistent = self._drafts.save_ai_result(
+                workflow_id=handoff.session_id,
+                form_id=handoff.form_id,
+                environment=job.environment,
+                version=form_version(form),
+                baseline=job.current_values,
+                result=payload,
+            )
             with job.lock:
-                job.result = self._validated_payload(result)
+                job.result = persistent.snapshot()["result"]
+                job.draft_id = persistent.id
                 job.status = "complete"
                 job.progress = "Предложения готовы"
         except Exception as exc:

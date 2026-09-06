@@ -1,14 +1,23 @@
-"""Expiring, non-submitting AI form drafts backed by the Python form runtime."""
+"""Persistent, non-submitting form drafts backed by the Python form runtime.
+
+Manual edits and AI proposals intentionally share this store and representation.
+Drafts live in the per-user data directory until the operator submits or deletes
+them; the browser is never the system of record.
+"""
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import logging
+import os
 import re
 import secrets
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from forms.fields import FieldDefinition, FieldType
@@ -18,6 +27,7 @@ from webapp.form_runtime import form_version
 
 CONFIDENCE_VALUES = {"high", "medium", "low", "unknown"}
 _PLURAL_PATH_RE = re.compile(r"^(?P<base>[A-Za-z_][A-Za-z0-9_.-]*?)_(?P<index>\d+)$")
+_log = logging.getLogger("web.drafts")
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,7 @@ class FormDraft:
     created_at: float
     updated_at: float
     expires_at: float
+    source: str = "ai"
     revision: int = 1
     status: str = "complete"
     progress: str = "Черновик готов"
@@ -70,6 +81,7 @@ class FormDraft:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "expires_at": self.expires_at,
+                "source": self.source,
                 "result": {
                     "values": copy.deepcopy(self.values),
                     "baseline": copy.deepcopy(self.baseline),
@@ -84,12 +96,28 @@ class FormDraft:
 class FormDraftStore:
     """Thread-safe draft capabilities; no method performs form submission."""
 
-    def __init__(self, container: Any, *, ttl_seconds: float = 24 * 3600) -> None:
+    def __init__(
+        self,
+        container: Any,
+        *,
+        path: Optional[Path] = None,
+        ttl_seconds: float = 0,
+    ) -> None:
         self.container = container
-        self.ttl_seconds = max(60.0, float(ttl_seconds))
+        # Kept as a compatibility attribute for private extensions. A value of
+        # zero means persistent-until-deleted and is the public web default.
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
         self._drafts: dict[str, FormDraft] = {}
         self._fingerprints: dict[str, str] = {}
         self._lock = threading.RLock()
+        configured_path = path
+        if configured_path is None:
+            settings = getattr(container, "settings", None)
+            data_dir = getattr(settings, "data_dir", None)
+            if data_dir is not None:
+                configured_path = Path(data_dir) / "drafts.json"
+        self._path = configured_path.resolve() if configured_path is not None else None
+        self._load()
 
     def prepare(
         self,
@@ -165,7 +193,8 @@ class FormDraftStore:
                 existing.progress = "Черновик уже актуален"
                 existing.error = ""
                 existing.updated_at = time.time()
-                existing.expires_at = existing.updated_at + self.ttl_seconds
+                existing.expires_at = self._expires_at(existing.updated_at)
+            self._persist()
             return existing
         if existing is None:
             with self._lock:
@@ -323,13 +352,14 @@ class FormDraftStore:
                 valid=validation.valid,
                 created_at=now,
                 updated_at=now,
-                expires_at=now + self.ttl_seconds,
+                expires_at=self._expires_at(now),
                 request_fingerprint=fingerprint,
             )
             with self._lock:
                 self._prune_locked(now)
                 self._drafts[draft.id] = draft
                 self._fingerprints[fingerprint] = draft.id
+                self._persist_locked()
             return draft
 
         with existing.lock:
@@ -341,7 +371,7 @@ class FormDraftStore:
             existing.errors = [dict(item) for item in validation.errors]
             existing.valid = validation.valid
             existing.updated_at = now
-            existing.expires_at = now + self.ttl_seconds
+            existing.expires_at = self._expires_at(now)
             existing.revision += 1
             existing.status = "complete"
             existing.progress = "Уточнённый черновик готов"
@@ -353,20 +383,19 @@ class FormDraftStore:
             if self._fingerprints.get(previous_fingerprint) == existing.id:
                 self._fingerprints.pop(previous_fingerprint, None)
             self._fingerprints[fingerprint] = existing.id
+            self._persist_locked()
         return existing
 
     def get(self, draft_id: str) -> Optional[FormDraft]:
         if not draft_id:
             return None
-        now = time.time()
         with self._lock:
-            self._prune_locked(now)
             return self._drafts.get(draft_id)
 
     def require(self, draft_id: str) -> FormDraft:
         value = self.get(draft_id)
         if value is None:
-            raise KeyError("AI-черновик не найден или истёк")
+            raise KeyError("Черновик не найден")
         return value
 
     def begin_refinement(
@@ -397,6 +426,8 @@ class FormDraftStore:
             draft.progress = "Copilot применяет уточнение…"
             draft.error = ""
             draft.updated_at = time.time()
+            draft.expires_at = self._expires_at(draft.updated_at)
+        self._persist()
         return draft
 
     def fail(self, draft_id: str, message: str) -> None:
@@ -410,6 +441,7 @@ class FormDraftStore:
             draft.updated_at = time.time()
             draft.pending_baseline = None
             draft.pending_field_paths = ()
+        self._persist()
 
     def delete(self, draft_id: str, *, workflow_id: str = "") -> None:
         with self._lock:
@@ -421,43 +453,277 @@ class FormDraftStore:
             del self._drafts[draft_id]
             if self._fingerprints.get(draft.request_fingerprint) == draft_id:
                 self._fingerprints.pop(draft.request_fingerprint, None)
+            self._persist_locked()
 
     def delete_workflow(self, workflow_id: str) -> None:
+        """Retain drafts when a chat ends; kept for extension compatibility."""
+        del workflow_id
+
+    def save_values(
+        self,
+        *,
+        form_id: str,
+        environment: str,
+        version: str,
+        values: Mapping[str, Any],
+        draft_id: str = "",
+        clear_review: bool = False,
+        pending_review_fields: Optional[Sequence[str]] = None,
+    ) -> FormDraft:
+        """Create or update a user-editable draft without submitting anything."""
+        form = self.container.forms.get_form(form_id)
+        actual_version = form_version(form)
+        if version != actual_version:
+            raise ValueError("Версия формы устарела; обновите страницу")
+        validation = self.container.forms.validate(
+            form_id,
+            environment,
+            values,
+            version,
+            validate_references=False,
+        )
+        now = time.time()
+        existing = self.get(draft_id) if draft_id else None
+        if existing is not None and (
+            existing.form_id != form_id or existing.environment != environment
+        ):
+            raise ValueError("Черновик относится к другой форме или окружению")
+        pending_review: Optional[set[str]] = None
+        if existing is not None and pending_review_fields is not None:
+            pending_review = {
+                str(item).strip()
+                for item in pending_review_fields
+                if str(item).strip()
+            }
+            with existing.lock:
+                known = {str(item.get("key") or "") for item in existing.fields}
+            unknown = sorted(pending_review - known)
+            if unknown:
+                raise ValueError("Неизвестные поля review: " + ", ".join(unknown))
+        if existing is None:
+            document = self.container.forms.describe(form_id, environment)
+            draft = FormDraft(
+                id=secrets.token_urlsafe(24),
+                workflow_id="",
+                form_id=form_id,
+                environment=environment,
+                form_version=actual_version,
+                baseline=copy.deepcopy(document["initial_values"]),
+                values=copy.deepcopy(validation.values),
+                fields=[],
+                warnings=[],
+                errors=[dict(item) for item in validation.errors],
+                valid=validation.valid,
+                created_at=now,
+                updated_at=now,
+                expires_at=0,
+                source="manual",
+                progress="Черновик сохранён",
+            )
+            with self._lock:
+                self._drafts[draft.id] = draft
+                self._persist_locked()
+            return draft
+        with existing.lock:
+            existing.values = copy.deepcopy(validation.values)
+            existing.errors = [dict(item) for item in validation.errors]
+            existing.valid = validation.valid
+            existing.form_version = actual_version
+            existing.updated_at = now
+            existing.expires_at = 0
+            existing.revision += 1
+            existing.status = "complete"
+            existing.progress = "Черновик сохранён"
+            existing.error = ""
+            existing.pending_baseline = None
+            existing.pending_field_paths = ()
+            if clear_review:
+                existing.baseline = copy.deepcopy(validation.values)
+                existing.fields = []
+                existing.warnings = []
+            elif pending_review is not None:
+                existing.fields = [
+                    item for item in existing.fields
+                    if str(item.get("key") or "") in pending_review
+                ]
+                if not existing.fields:
+                    existing.baseline = copy.deepcopy(validation.values)
+                    existing.warnings = []
+        self._persist()
+        return existing
+
+    def save_ai_result(
+        self,
+        *,
+        workflow_id: str,
+        form_id: str,
+        environment: str,
+        version: str,
+        baseline: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> FormDraft:
+        """Persist the legacy Extractor result in the same durable draft store."""
+        actual_version = form_version(self.container.forms.get_form(form_id))
+        if version != actual_version:
+            raise ValueError("Версия формы устарела; повторите заполнение")
+        now = time.time()
+        values = copy.deepcopy(dict(result.get("values") or {}))
+        validation = self.container.forms.validate(
+            form_id,
+            environment,
+            values,
+            version,
+            validate_references=False,
+        )
+        draft = FormDraft(
+            id=secrets.token_urlsafe(24),
+            workflow_id=workflow_id,
+            form_id=form_id,
+            environment=environment,
+            form_version=actual_version,
+            baseline=copy.deepcopy(dict(baseline)),
+            values=copy.deepcopy(validation.values),
+            fields=copy.deepcopy(list(result.get("fields") or [])),
+            warnings=[str(item) for item in result.get("warnings") or []],
+            errors=[dict(item) for item in validation.errors],
+            valid=validation.valid,
+            created_at=now,
+            updated_at=now,
+            expires_at=0,
+            source="ai",
+            progress="Черновик Copilot готов",
+        )
         with self._lock:
-            removed = {
-                key: value
-                for key, value in self._drafts.items()
-                if value.workflow_id == workflow_id
+            self._drafts[draft.id] = draft
+            self._persist_locked()
+        return draft
+
+    def list_all(self) -> list[FormDraft]:
+        with self._lock:
+            return sorted(
+                self._drafts.values(),
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )
+
+    def _expires_at(self, now: float) -> float:
+        return now + self.ttl_seconds if self.ttl_seconds > 0 else 0
+
+    def _load(self) -> None:
+        if self._path is None or not self._path.is_file():
+            return
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                raise ValueError("draft storage root must be a list")
+            loaded: dict[str, FormDraft] = {}
+            for raw in payload:
+                if not isinstance(raw, Mapping):
+                    continue
+                draft_id = str(raw.get("id") or "").strip()
+                form_id = str(raw.get("form_id") or "").strip()
+                environment = str(raw.get("environment") or "").strip()
+                if not draft_id or not form_id or not environment:
+                    continue
+                status = str(raw.get("status") or "complete")
+                if status == "running":
+                    status = "complete"
+                draft = FormDraft(
+                    id=draft_id,
+                    workflow_id=str(raw.get("workflow_id") or ""),
+                    form_id=form_id,
+                    environment=environment,
+                    form_version=str(raw.get("form_version") or ""),
+                    baseline=copy.deepcopy(dict(raw.get("baseline") or {})),
+                    values=copy.deepcopy(dict(raw.get("values") or {})),
+                    fields=copy.deepcopy(list(raw.get("fields") or [])),
+                    warnings=[str(item) for item in raw.get("warnings") or []],
+                    errors=copy.deepcopy(list(raw.get("errors") or [])),
+                    valid=bool(raw.get("valid")),
+                    created_at=float(raw.get("created_at") or time.time()),
+                    updated_at=float(raw.get("updated_at") or time.time()),
+                    expires_at=0,
+                    source=str(raw.get("source") or "ai"),
+                    revision=max(1, int(raw.get("revision") or 1)),
+                    status=status,
+                    progress=str(raw.get("progress") or "Черновик сохранён"),
+                    error=str(raw.get("error") or ""),
+                    request_fingerprint=str(raw.get("request_fingerprint") or ""),
+                )
+                loaded[draft.id] = draft
+            self._drafts = loaded
+            self._fingerprints = {
+                item.request_fingerprint: item.id
+                for item in loaded.values()
+                if item.request_fingerprint
             }
-            self._drafts = {
-                key: value
-                for key, value in self._drafts.items()
-                if value.workflow_id != workflow_id
-            }
-            for draft in removed.values():
-                if self._fingerprints.get(draft.request_fingerprint) == draft.id:
-                    self._fingerprints.pop(draft.request_fingerprint, None)
+        except Exception as exc:
+            _log.warning(
+                "Draft storage read failed file=%s error_type=%s",
+                self._path.name,
+                type(exc).__name__,
+            )
+
+    def _persist(self) -> None:
+        with self._lock:
+            self._persist_locked()
+
+    def _persist_locked(self) -> None:
+        if self._path is None:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        records: list[dict[str, Any]] = []
+        for draft in sorted(self._drafts.values(), key=lambda item: item.updated_at):
+            with draft.lock:
+                records.append({
+                    "id": draft.id,
+                    "workflow_id": draft.workflow_id,
+                    "form_id": draft.form_id,
+                    "environment": draft.environment,
+                    "form_version": draft.form_version,
+                    "baseline": copy.deepcopy(draft.baseline),
+                    "values": copy.deepcopy(draft.values),
+                    "fields": copy.deepcopy(draft.fields),
+                    "warnings": list(draft.warnings),
+                    "errors": copy.deepcopy(draft.errors),
+                    "valid": draft.valid,
+                    "created_at": draft.created_at,
+                    "updated_at": draft.updated_at,
+                    "expires_at": 0,
+                    "source": draft.source,
+                    "revision": draft.revision,
+                    "status": draft.status,
+                    "progress": draft.progress,
+                    "error": draft.error,
+                    "request_fingerprint": draft.request_fingerprint,
+                })
+        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        try:
+            temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+        os.replace(temporary, self._path)
 
     def _prune_locked(self, now: float) -> None:
         removed = {
             key: value
             for key, value in self._drafts.items()
-            if value.expires_at < now
+            if value.expires_at > 0 and value.expires_at < now
         }
         self._drafts = {
             key: value
             for key, value in self._drafts.items()
-            if value.expires_at >= now
+            if value.expires_at <= 0 or value.expires_at >= now
         }
         for draft in removed.values():
             if self._fingerprints.get(draft.request_fingerprint) == draft.id:
                 self._fingerprints.pop(draft.request_fingerprint, None)
-        if len(self._drafts) > 1000:
-            ordered = sorted(self._drafts.values(), key=lambda item: item.updated_at)
-            for item in ordered[: len(self._drafts) - 1000]:
-                self._drafts.pop(item.id, None)
-                if self._fingerprints.get(item.request_fingerprint) == item.id:
-                    self._fingerprints.pop(item.request_fingerprint, None)
+        # Persistent drafts are deliberately not capped: lifecycle is explicit
+        # (successful submit or manual delete), not an arbitrary LRU policy.
 
     @staticmethod
     def _fingerprint(

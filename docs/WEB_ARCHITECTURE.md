@@ -145,7 +145,7 @@ prefix (`/api/v2`), so future MCP or other clients can rely on `/api/v1`.
   atomic pointer write; failed startup triggers rollback to the previous version.
 
 The optional MCP delegates to this same `FormRuntime`, so it cannot bypass form
-versions, reference resolution or Python validation. It can store an expiring
+versions, reference resolution or Python validation. It can store a persistent
 non-submitting draft; submission remains a separate human action in the web UI.
 Enable it with `AUTODEPLOY_MCP_ENABLED=true`; detailed tool guidance is in
 [MCP.md](MCP.md).

@@ -27,10 +27,17 @@ class ReferenceRequest(StrictModel):
 
 class SubmitRequest(ValuesRequest):
     confirmation_token: str = Field(default="", max_length=300)
+    draft_id: str = Field(default="", max_length=200)
 
 
 class ActionRequest(ValuesRequest):
     confirmation_token: str = Field(default="", max_length=300)
+
+
+class DraftSaveRequest(ValuesRequest):
+    draft_id: str = Field(default="", max_length=200)
+    clear_review: bool = False
+    pending_review_fields: Optional[List[str]] = Field(default=None, max_length=100)
 
 
 class TicketRequest(StrictModel):

@@ -86,7 +86,7 @@ operator message
        -> Python field-path/type checks
        -> Python reference label-to-ID resolution
        -> Python dynamic state and domain validation
-       -> expiring local draft_id; no submission
+       -> persistent local draft_id; no submission
     -> normal Markdown answer + draft link in chat
     -> proposed values are rendered directly in the live web form
     -> operator accepts/rejects each value or all values
@@ -135,8 +135,10 @@ and source. It:
 - is content-addressed so an OpenCode retry returns the same draft;
 - never calls preview submission, submit, deployment or an external write.
 
-Drafts are in-memory capabilities with a 24-hour default TTL. They are removed
-when rejected/accepted, when their owning workflow closes, or when they expire.
+Drafts are written atomically to the server's per-user data directory. Manual
+edits and AI proposals use the same representation. They survive browser,
+server and OpenCode restarts and are removed only after successful submission
+or explicit operator deletion.
 Refinement reuses the same draft and main Copilot conversation. The visible form
 values and still-pending review fields are sent back; accepted/manual values are
 preserved and a failed refinement leaves the previous proposal set intact.

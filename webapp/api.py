@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import string
 from pathlib import Path
@@ -15,6 +16,7 @@ from forms.registry import FormRegistry
 from webapp.form_runtime import FormNotFoundError, FormVersionConflict, form_version
 from webapp.models import (
     ActionRequest,
+    DraftSaveRequest,
     ReferenceRequest,
     SearchRequest,
     SettingsUpdateRequest,
@@ -26,6 +28,7 @@ from webapp.configuration import settings_snapshot, update_settings
 
 
 router = APIRouter(prefix="/api/v1")
+_log = logging.getLogger("web.drafts")
 
 
 def container(request: Request):
@@ -136,6 +139,40 @@ def forms(request: Request, category: str = Query(default="", max_length=80)):
     return {"items": container(request).forms.list_forms(category)}
 
 
+@router.get("/drafts", tags=["drafts"])
+def drafts(request: Request):
+    return container(request).ai.list_drafts()
+
+
+@router.put("/drafts/{form_id}", tags=["drafts"])
+def save_draft(form_id: str, body: DraftSaveRequest, request: Request):
+    try:
+        return container(request).ai.save_draft(
+            form_id=form_id,
+            environment=body.environment,
+            form_version=body.form_version,
+            values=body.values,
+            draft_id=body.draft_id,
+            clear_review=body.clear_review,
+            pending_review_fields=body.pending_review_fields,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.delete(
+    "/drafts/{draft_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["drafts"],
+)
+def delete_draft(draft_id: str, request: Request) -> Response:
+    try:
+        container(request).ai.delete_draft(draft_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Черновик не найден") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/forms/{form_id}", tags=["forms"])
 def form_document(
     form_id: str,
@@ -181,8 +218,19 @@ def preview_form(form_id: str, body: ValuesRequest, request: Request):
 
 @router.post("/forms/{form_id}/submit", tags=["forms"])
 def submit_form(form_id: str, body: SubmitRequest, request: Request):
+    app_container = container(request)
+    if body.draft_id:
+        try:
+            draft = app_container.ai.draft(body.draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Черновик не найден") from exc
+        if draft.get("form_id") != form_id or draft.get("environment") != body.environment:
+            raise HTTPException(
+                status_code=409,
+                detail="Черновик относится к другой форме или окружению",
+            )
     try:
-        result = container(request).forms.submit(
+        result = app_container.forms.submit(
             form_id,
             body.environment,
             body.values,
@@ -195,6 +243,18 @@ def submit_form(form_id: str, body: SubmitRequest, request: Request):
         code = result.get("code")
         status_code = 409 if code == "confirmation_required" else 422
         raise HTTPException(status_code=status_code, detail=result)
+    if body.draft_id:
+        try:
+            app_container.ai.delete_draft(body.draft_id)
+        except Exception as exc:
+            # Submission has already succeeded; an idempotently absent draft
+            # or a local cleanup failure must not turn the external operation
+            # into a client-visible failure that invites a duplicate retry.
+            _log.warning(
+                "Submitted draft cleanup failed draft_id=%s error_type=%s",
+                body.draft_id,
+                type(exc).__name__,
+            )
     return result
 
 

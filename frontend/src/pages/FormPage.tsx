@@ -10,7 +10,7 @@ import type { FormDocument, PreviewResult, SubmitResult, ValidationError, Valida
 interface LocationState { values?: Record<string, unknown>; handoffToken?: string; draftId?: string }
 interface AIFieldResult { key: string; proposed_value: unknown; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }
 interface ExtractionResult { values: Record<string, unknown>; baseline?: Record<string, unknown>; fields: AIFieldResult[]; warnings: string[]; errors?: ValidationError[]; valid?: boolean }
-interface ExtractionState { id: string; workflow_id?: string; form_id?: string; environment?: string; status: string; progress: string; result: ExtractionResult | null; error: string }
+interface ExtractionState { id: string; draft_id?: string; workflow_id?: string; form_id?: string; environment?: string; status: string; progress: string; result: ExtractionResult | null; error: string }
 interface ReviewEntry { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }
 type AIResource = 'draft' | 'extraction' | null
 
@@ -92,7 +92,8 @@ export function FormPage() {
   const navigate = useNavigate()
   const restored = (location.state as LocationState | null)?.values
   const handoffToken = (location.state as LocationState | null)?.handoffToken
-  const draftId = (location.state as LocationState | null)?.draftId
+  const legacyDraftId = (location.state as LocationState | null)?.draftId
+  const linkedDraftId = new URLSearchParams(location.search).get('draft') ?? legacyDraftId ?? ''
   const { environment, setEnvironment } = useEnvironment()
   const [document, setDocument] = useState<FormDocument | null>(null)
   const [values, setValues] = useState<Record<string, unknown>>({})
@@ -117,10 +118,17 @@ export function FormPage() {
   const [refineModal, setRefineModal] = useState(false)
   const [guidance, setGuidance] = useState('')
   const [actionConfirm, setActionConfirm] = useState<{ id: string; text: string; token: string } | null>(null)
+  const [activeDraftId, setActiveDraftId] = useState(linkedDraftId)
+  const activeDraftIdRef = useRef(linkedDraftId)
+  const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(linkedDraftId ? 'saved' : 'idle')
+  const [editRevision, setEditRevision] = useState(0)
+  const latestValuesRef = useRef(values)
+
+  useEffect(() => { latestValuesRef.current = values }, [values])
 
   useEffect(() => {
     const controller = new AbortController()
-    const scope = `${formId}|${environment}|${location.key}`
+    const scope = `${formId}|${environment}`
     loadedScope.current = ''
     if (extractionId.current) {
       void api(`/api/v1/ai/extractions/${encodeURIComponent(extractionId.current)}?cancel=true`, { method: 'DELETE' }).catch(() => undefined)
@@ -133,6 +141,9 @@ export function FormPage() {
     setReview({})
     setLoading(true)
     setError('')
+    activeDraftIdRef.current = linkedDraftId
+    setActiveDraftId(linkedDraftId)
+    setDraftSaveState(linkedDraftId ? 'saved' : 'idle')
     api<FormDocument>(`/api/v1/forms/${encodeURIComponent(formId)}?environment=${encodeURIComponent(environment)}`, { signal: controller.signal })
       .then((value) => {
         loadedScope.current = scope
@@ -144,7 +155,7 @@ export function FormPage() {
       .catch((reason: unknown) => !controller.signal.aborted && setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => !controller.signal.aborted && setLoading(false))
     return () => controller.abort()
-  }, [environment, formId, location.key])
+  }, [environment, formId])
 
   useEffect(() => () => {
     if (extractionId.current) {
@@ -154,9 +165,9 @@ export function FormPage() {
   }, [])
 
   useEffect(() => {
-    const scope = `${formId}|${environment}|${location.key}`
+    const scope = `${formId}|${environment}`
     const operation = `${handoffToken ?? ''}|${scope}`
-    if (!document || draftId || !handoffToken || loadedScope.current !== scope || handoffStarted.current === operation) return
+    if (!document || linkedDraftId || !handoffToken || loadedScope.current !== scope || handoffStarted.current === operation) return
     handoffStarted.current = operation
     const baseline = { ...values }
     setReviewBaseline(baseline)
@@ -170,23 +181,26 @@ export function FormPage() {
       setExtraction({ id: job_id, status: 'pending', progress: 'Подготавливаю AI-предложения…', result: null, error: '' })
     })
       .catch((reason: unknown) => { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
-  }, [document, environment, formId, handoffToken, draftId, location.key])
+  }, [document, environment, formId, handoffToken, linkedDraftId])
 
   useEffect(() => {
-    const scope = `${formId}|${environment}|${location.key}`
-    const operation = `${draftId ?? ''}|${scope}`
-    if (!document || !draftId || loadedScope.current !== scope || draftStarted.current === operation) return
+    const scope = `${formId}|${environment}`
+    const operation = `${linkedDraftId}|${scope}`
+    if (!document || !linkedDraftId || loadedScope.current !== scope || draftStarted.current === operation) return
     draftStarted.current = operation
     setBusy(true)
-    api<ExtractionState>(`/api/v1/ai/drafts/${encodeURIComponent(draftId)}`)
+    api<ExtractionState>(`/api/v1/ai/drafts/${encodeURIComponent(linkedDraftId)}`)
       .then((next) => {
-        if (next.form_id && next.form_id !== formId) throw new Error('AI-черновик относится к другой форме')
+        if (next.form_id && next.form_id !== formId) throw new Error('Черновик относится к другой форме')
         if (next.environment && next.environment !== environment) {
           draftStarted.current = ''
           setEnvironment(next.environment)
           return
         }
         setAIResource('draft')
+        activeDraftIdRef.current = next.id
+        setActiveDraftId(next.id)
+        setDraftSaveState('saved')
         setExtraction(next)
         if (next.result) {
           const baseline = next.result.baseline ?? { ...values }
@@ -198,11 +212,11 @@ export function FormPage() {
         if (next.status === 'complete') setBusy(false)
         if (['error', 'cancelled'].includes(next.status)) {
           setBusy(false)
-          setError(next.error || 'AI-черновик завершился ошибкой')
+          setError(next.error || 'Черновик содержит ошибку')
         }
       })
       .catch((reason: unknown) => { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
-  }, [document, draftId, environment, formId, location.key, setEnvironment])
+  }, [document, linkedDraftId, environment, formId, setEnvironment])
 
   useEffect(() => {
     if (!extraction || !['pending', 'running'].includes(extraction.status)) return
@@ -214,6 +228,13 @@ export function FormPage() {
         .then((next) => {
           setExtraction(next)
           if (next.status === 'complete' && next.result) {
+            if (next.draft_id) {
+              activeDraftIdRef.current = next.draft_id
+              setActiveDraftId(next.draft_id)
+              setDraftSaveState('saved')
+              draftStarted.current = `${next.draft_id}|${formId}|${environment}`
+              navigate(`${location.pathname}?draft=${encodeURIComponent(next.draft_id)}`, { replace: true })
+            }
             if (next.result.baseline) setReviewBaseline(next.result.baseline)
             setValues((current) => ({ ...current, ...next.result!.values }))
             setReview(reviewEntries(next.result, aiResource === 'draft'))
@@ -226,7 +247,7 @@ export function FormPage() {
         .catch((reason: unknown) => { window.clearInterval(timer); setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) })
     }, 700)
     return () => window.clearInterval(timer)
-  }, [aiResource, extraction?.id, extraction?.status])
+  }, [aiResource, extraction?.id, extraction?.status, location.pathname, navigate])
 
   useEffect(() => {
     if (!document || loading) return
@@ -244,6 +265,41 @@ export function FormPage() {
     }, 160)
     return () => window.clearTimeout(timer)
   }, [values, environment, formId, document?.version])
+
+  useEffect(() => {
+    if (!document || loading || editRevision === 0) return
+    const revision = editRevision
+    const timer = window.setTimeout(() => {
+      setDraftSaveState('saving')
+      api<ExtractionState>(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          environment,
+          values: latestValuesRef.current,
+          form_version: document.version,
+          draft_id: activeDraftIdRef.current,
+        }),
+      }).then((saved) => {
+        const isNew = !activeDraftIdRef.current
+        activeDraftIdRef.current = saved.id
+        setActiveDraftId(saved.id)
+        setDraftSaveState('saved')
+        if (isNew) {
+          const scope = `${formId}|${environment}`
+          draftStarted.current = `${saved.id}|${scope}`
+          navigate(`${location.pathname}?draft=${encodeURIComponent(saved.id)}`, {
+            replace: true,
+          })
+        }
+      }).catch((reason: unknown) => {
+        // Do not replace the current form with an error screen. The operator's
+        // values stay in memory and the next edit retries autosave.
+        if (revision === editRevision) setDraftSaveState('error')
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [document, editRevision, environment, formId, loading, location.pathname, navigate])
 
   useEffect(() => {
     if (!result?.polling || !result.poll_interval_ms) return
@@ -292,10 +348,18 @@ export function FormPage() {
         values: prepared.values,
         form_version: document.version,
         confirmation_token: prepared.confirmation_token ?? '',
+        draft_id: activeDraftIdRef.current,
       })
       setValues(prepared.values)
       setResult(submitted)
       setPreview(null)
+      activeDraftIdRef.current = ''
+      setActiveDraftId('')
+      setDraftSaveState('idle')
+      setExtraction(null)
+      setAIResource(null)
+      setReview({})
+      navigate(location.pathname, { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -313,6 +377,7 @@ export function FormPage() {
         ticket_id: ticketId.trim(),
       })
       setValues((current) => ({ ...current, ...response.values }))
+      setEditRevision((current) => current + 1)
       setErrors(response.errors)
       setTicketModal(false)
     } catch (reason) {
@@ -324,11 +389,7 @@ export function FormPage() {
 
   const closeAIResource = async (cancel = false) => {
     if (!extraction) return
-    if (aiResource === 'draft') {
-      await api(`/api/v1/ai/drafts/${encodeURIComponent(extraction.id)}`, {
-        method: 'DELETE',
-      }).catch(() => undefined)
-    } else {
+    if (aiResource !== 'draft') {
       await api(`/api/v1/ai/extractions/${encodeURIComponent(extraction.id)}?cancel=${cancel ? 'true' : 'false'}`, {
         method: 'DELETE',
       }).catch(() => undefined)
@@ -357,8 +418,20 @@ export function FormPage() {
       })
       setValues(validation.values)
       setErrors(validation.errors)
+      if (activeDraftIdRef.current) {
+        await api(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            environment,
+            values: validation.values,
+            form_version: document.version,
+            draft_id: activeDraftIdRef.current,
+            clear_review: true,
+          }),
+        })
+        setDraftSaveState('saved')
+      }
       await closeAIResource()
-      navigate(location.pathname, { replace: true, state: { values: validation.values } })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -378,7 +451,25 @@ export function FormPage() {
     setValues(nextValues)
     setReview(nextReview)
     setErrors((current) => current.filter((item) => item.field !== key))
-    if (!Object.keys(nextReview).length) void closeCompletedReview(nextValues)
+    const pendingFields = Object.keys(nextReview)
+    if (!pendingFields.length) {
+      void closeCompletedReview(nextValues)
+    } else if (document && activeDraftIdRef.current) {
+      setDraftSaveState('saving')
+      void api(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          environment,
+          values: nextValues,
+          form_version: document.version,
+          draft_id: activeDraftIdRef.current,
+          pending_review_fields: pendingFields,
+        }),
+      }).then(() => setDraftSaveState('saved')).catch((reason: unknown) => {
+        setDraftSaveState('error')
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    }
   }
 
   const finishReview = async (accept: boolean) => {
@@ -399,8 +490,20 @@ export function FormPage() {
       setValues(validation.values)
       setErrors(validation.errors)
       setReview({})
+      if (activeDraftIdRef.current) {
+        await api(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            environment,
+            values: validation.values,
+            form_version: document.version,
+            draft_id: activeDraftIdRef.current,
+            clear_review: true,
+          }),
+        })
+        setDraftSaveState('saved')
+      }
       await closeAIResource()
-      navigate(location.pathname, { replace: true, state: { values: validation.values } })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -436,7 +539,10 @@ export function FormPage() {
         setErrors(response.validation?.errors ?? [])
         setError(response.message ?? 'Действие не выполнено')
       } else {
-        if (response.values) setValues((current) => ({ ...current, ...response.values }))
+        if (response.values) {
+          setValues((current) => ({ ...current, ...response.values }))
+          setEditRevision((current) => current + 1)
+        }
         setActionConfirm(null)
         if (response.message) setResult({ success: true, message: response.message, submission_id: '', status: 'success', title: 'Действие выполнено', content: '', response: null, payload: null, polling: false, poll_interval_ms: null })
       }
@@ -453,7 +559,7 @@ export function FormPage() {
           <Link to="/forms" className="back-link"><ArrowLeft size={16} /> Каталог форм</Link>
           <span className="eyebrow">{document.category_label}</span>
           <h1>{document.title}</h1>
-          <p><code>{document.id}</code> · версия схемы {document.version.slice(0, 8)}</p>
+          <p><code>{document.id}</code> · версия схемы {document.version.slice(0, 8)}{(activeDraftId || draftSaveState !== 'idle') && <> · <span className={`draft-save-state ${draftSaveState}`}>{draftSaveState === 'saving' ? 'сохраняю черновик…' : draftSaveState === 'error' ? 'ошибка сохранения' : 'черновик сохранён'}</span></>}</p>
         </div>
         <span className="server-badge"><span className="status-dot online" /> Python runtime</span>
       </div>
@@ -471,7 +577,7 @@ export function FormPage() {
           formId={formId}
           errors={errors}
           disabled={busy}
-          onValuesChange={(next) => { setValues(next); setErrors((current) => current.filter((item) => !item.field)) }}
+          onValuesChange={(next) => { setValues(next); setEditRevision((current) => current + 1); setErrors((current) => current.filter((item) => !item.field)) }}
           review={review}
           onReview={decideReview}
         />
@@ -489,7 +595,7 @@ export function FormPage() {
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
           {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => setTicketModal(true)}><Sparkles size={17} /> Подтянуть заявку</button>}
-          <button className="button ghost" disabled={busy} onClick={() => { setValues(document.initial_values); setErrors([]); setResult(null) }}><RefreshCw size={16} /> Сбросить</button>
+          <button className="button ghost" disabled={busy} onClick={() => { setValues(document.initial_values); setEditRevision((current) => current + 1); setErrors([]); setResult(null) }}><RefreshCw size={16} /> Сбросить</button>
         </div>
         <button className="button primary large" disabled={busy} onClick={() => void requestPreview('submit')}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />} Отправить</button>
         </>}

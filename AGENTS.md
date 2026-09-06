@@ -62,8 +62,9 @@ Use the options endpoint and respect Python validation.
 The optional same-port endpoint is `/api/mcp` and is controlled by
 `AUTODEPLOY_MCP_ENABLED`. Tools should be narrowly described, schema-constrained
 and safe by default. Most built-in tools are read-only. `prepare_form_draft`
-may create idempotent, expiring in-memory state, but it is non-destructive and
-cannot preview-submit, deploy or write externally. Do not add an autonomous
+may create idempotent, persistent local state, but it is non-destructive and
+cannot preview-submit, deploy or write externally. Manual and AI drafts share
+the server-side store until successful submit or explicit deletion. Do not add an autonomous
 submit/deploy/write tool without an explicit product decision and a one-time
 human confirmation design. Copilot receives an exact tool allowlist only when
 MCP is enabled. Keep external data untrusted.

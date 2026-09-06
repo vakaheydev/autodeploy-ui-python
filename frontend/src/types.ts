@@ -125,6 +125,21 @@ export interface RunRecord {
   stale: boolean
 }
 
+export interface FormDraftSummary {
+  id: string
+  form_id: string
+  title: string
+  environment: string
+  form_version: string
+  revision: number
+  source: 'ai' | 'manual' | string
+  created_at: number
+  updated_at: number
+  valid: boolean
+  stale: boolean
+  review_count: number
+}
+
 export interface SettingField {
   key: string
   label: string
