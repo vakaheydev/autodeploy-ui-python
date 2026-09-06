@@ -48,7 +48,28 @@ test('searches a large API dictionary on the Python server', async ({ page }) =>
   ))
   await search.fill('/api/v1/users/service103')
   await expect((await response).status()).toBe(200)
-  await expect(page.getByRole('option', { name: /service103/ })).toBeAttached()
+  const option = page.getByRole('option', { name: /service103/ })
+  await expect(option).toBeAttached()
+  await option.click({ button: 'right' })
+  const card = page.getByRole('dialog', { name: /Карточка: service103/ })
+  await expect(card).toBeVisible()
+  const copyContextPath = card.getByTitle('Скопировать context_path')
+  await copyContextPath.click()
+  await expect(copyContextPath).toHaveClass(/copied/)
+})
+
+test('uses dark surfaces and high-contrast form labels in the dark theme', async ({ page }) => {
+  await page.goto('/forms/api.create')
+  await page.getByRole('button', { name: 'Включить тёмную тему' }).click()
+
+  const input = page.getByPlaceholder('Введите название АПИ')
+  const label = page.locator('label[for="name"]')
+  const secondaryButton = page.getByRole('button', { name: /Просмотр JSON/ })
+  const select = page.getByRole('button', { name: 'Категория АПИ' })
+  for (const control of [input, secondaryButton, select]) {
+    await expect.poll(() => control.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe('rgb(255, 255, 255)')
+  }
+  await expect.poll(() => label.evaluate((element) => getComputedStyle(element).color)).toBe('rgb(229, 237, 248)')
 })
 
 test('filters the catalog by Python field keywords and switches theme', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FormFields } from '../components/FormFields'
@@ -47,6 +47,30 @@ describe('FormFields', () => {
     expect(screen.getByRole('checkbox', { name: 'Internal' })).toBeChecked()
     await user.click(screen.getByRole('checkbox', { name: 'External' }))
     expect(onValuesChange).toHaveBeenLastCalledWith({ ingresses: ['internal', 'external'] })
+  })
+
+  it('keeps selected reference items first and opens a copyable read-only card', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText')
+    const field = base({
+      key: 'ingresses', path: 'ingresses', label: 'Ингрессы', type: 'multiselect',
+      reference: { source: 'local', resource: 'ingress.json', value_key: 'id', label_key: 'name', search_keys: ['name'], detail_keys: [], required_params: [], endpoint: '/options' },
+      options: [{ id: 'internal', name: 'Internal', description: 'Внутренний' }, { id: 'external', name: 'External', description: 'Внешний' }],
+    })
+
+    render(<FormFields fields={[field]} values={{ ingresses: ['external'] }} environment="test_int" formId="x" errors={[]} onValuesChange={() => undefined} />)
+
+    const choices = within(screen.getByRole('group', { name: 'Ингрессы' })).getAllByRole('checkbox')
+    expect(choices[0]).toHaveAccessibleName('External')
+    await user.type(screen.getByPlaceholderText('Фильтр значений…'), 'Internal')
+    const filteredChoices = within(screen.getByRole('group', { name: 'Ингрессы' })).getAllByRole('checkbox')
+    expect(filteredChoices[0]).toHaveAccessibleName('External')
+    expect(filteredChoices[1]).toHaveAccessibleName('Internal')
+    fireEvent.contextMenu(screen.getByText('External'))
+    const card = screen.getByRole('dialog', { name: 'Карточка: External' })
+    expect(within(card).getByText('Только чтение · нажмите на поле, чтобы скопировать его значение')).toBeVisible()
+    await user.click(within(card).getByTitle('Скопировать description'))
+    expect(writeText).toHaveBeenCalledWith('Внешний')
   })
 
   it('does not render a server-hidden conditional field', () => {
@@ -114,5 +138,12 @@ describe('FormFields', () => {
       host_2: '',
       host_3: 'three',
     })
+  })
+
+  it('names the add button after a repeatable block', () => {
+    const block = base({ key: 'plan', path: 'plan', label: 'План', type: 'block', plural: true, fields: [] })
+    render(<FormFields fields={[block]} values={{ plan: {} }} environment="test_int" formId="x" errors={[]} onValuesChange={() => undefined} />)
+    expect(screen.getByRole('button', { name: 'Добавить план' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Добавить значение' })).not.toBeInTheDocument()
   })
 })

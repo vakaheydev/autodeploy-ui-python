@@ -5,6 +5,7 @@ export interface SelectOption {
   value: string
   label: string
   description?: string
+  data?: unknown
 }
 
 export function SearchableSelect({
@@ -21,6 +22,7 @@ export function SearchableSelect({
   id,
   compact = false,
   clearable = true,
+  onOptionContextMenu,
 }: {
   value: string
   options: SelectOption[]
@@ -35,6 +37,7 @@ export function SearchableSelect({
   id?: string
   compact?: boolean
   clearable?: boolean
+  onOptionContextMenu?: (option: SelectOption) => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -72,7 +75,7 @@ export function SearchableSelect({
       <label className="select-search"><Search size={15} /><input autoFocus value={query} onChange={(event) => changeQuery(event.target.value)} placeholder={searchPlaceholder} onKeyDown={(event) => event.key === 'Escape' && setOpen(false)} />{query && <button type="button" aria-label="Очистить поиск" onClick={() => changeQuery('')}><X size={13} /></button>}</label>
       <div className="select-options" role="listbox" aria-label={ariaLabel}>
         {clearable && <button type="button" className={!value ? 'selected' : ''} role="option" aria-selected={!value} onClick={() => { onChange(''); setOpen(false) }}><span>{placeholder}</span>{!value && <Check size={14} />}</button>}
-        {visible.map((option) => <button type="button" className={option.value === value ? 'selected' : ''} role="option" aria-selected={option.value === value} key={option.value} onClick={() => { onChange(option.value); setOpen(false) }}><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>{option.value === value && <Check size={14} />}</button>)}
+        {visible.map((option) => <button type="button" className={option.value === value ? 'selected' : ''} role="option" aria-selected={option.value === value} key={option.value} title={onOptionContextMenu ? 'ПКМ — открыть карточку' : undefined} onContextMenu={(event) => { if (!onOptionContextMenu) return; event.preventDefault(); onOptionContextMenu(option) }} onClick={() => { onChange(option.value); setOpen(false) }}><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>{option.value === value && <Check size={14} />}</button>)}
         {!loading && !visible.length && <div className="select-empty">{emptyText}</div>}
         {loading && <div className="select-empty"><span className="typing-dots"><i /><i /><i /></span> Загружаю…</div>}
       </div>

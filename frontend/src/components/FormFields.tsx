@@ -1,8 +1,9 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
-import { FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
+import { Check, Copy, FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
 import { SearchableSelect } from './SearchableSelect'
+import { Modal } from './Feedback'
 
 interface FieldProps {
   field: FieldDocument
@@ -38,7 +39,10 @@ function ReferenceField(props: FieldProps) {
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [total, setTotal] = useState(field.options?.length ?? 0)
+  const [detailItem, setDetailItem] = useState<ReferenceItem | null>(null)
+  const [copiedKey, setCopiedKey] = useState('')
   const requestSequence = useRef(0)
+  const itemCache = useRef(new Map<string, ReferenceItem>())
   const dependency = field.depends_on ? values[field.depends_on] : undefined
   const serverBacked = field.options === undefined
 
@@ -71,6 +75,7 @@ function ReferenceField(props: FieldProps) {
     // Invalidate a request started for the previous field/environment before
     // changing to inline data or an unavailable dependency.
     requestSequence.current += 1
+    itemCache.current.clear()
     if (field.options !== undefined) {
       setItems(field.options)
       setTotal(field.options.length)
@@ -102,6 +107,55 @@ function ReferenceField(props: FieldProps) {
   }, [items, query, reference.search_keys, serverBacked])
   const label = (item: ReferenceItem) => String(item[reference.label_key] ?? item[reference.value_key] ?? '')
   const identifier = (item: ReferenceItem) => String(item[reference.value_key] ?? '')
+  useEffect(() => {
+    items.forEach((item) => itemCache.current.set(String(item[reference.value_key] ?? ''), item))
+  }, [items, reference.value_key])
+  const selectedIds = new Set(field.type === 'select'
+    ? (props.value === undefined || props.value === null || props.value === '' ? [] : [String(props.value)])
+    : (Array.isArray(props.value) ? props.value.map(String) : []))
+  const shownById = new Map(shown.map((item) => [identifier(item), item]))
+  const pinned = [...selectedIds].map((id) => shownById.get(id) ?? itemCache.current.get(id)).filter((item): item is ReferenceItem => Boolean(item))
+  const ordered = [...pinned, ...shown.filter((item) => !selectedIds.has(identifier(item)))]
+
+  const openDetails = (item: ReferenceItem) => {
+    setCopiedKey('')
+    setDetailItem(item)
+  }
+  const displayValue = (value: unknown) => {
+    if (value === null) return 'null'
+    if (typeof value === 'object') return JSON.stringify(value, null, 2)
+    return String(value)
+  }
+  const copyField = async (key: string, value: unknown) => {
+    const text = displayValue(value)
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API is unavailable')
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const fallback = document.createElement('textarea')
+      fallback.value = text
+      fallback.setAttribute('readonly', '')
+      fallback.style.position = 'fixed'
+      fallback.style.opacity = '0'
+      document.body.appendChild(fallback)
+      fallback.select()
+      document.execCommand('copy')
+      fallback.remove()
+    }
+    setCopiedKey(key)
+  }
+  const details = detailItem && <Modal title={`Карточка: ${label(detailItem)}`} onClose={() => setDetailItem(null)}>
+    <p className="reference-card-hint">Только чтение · нажмите на поле, чтобы скопировать его значение</p>
+    <div className="reference-card-fields">
+      {Object.entries(detailItem).map(([key, value]) => (
+        <button type="button" className={copiedKey === key ? 'copied' : ''} key={key} onClick={() => void copyField(key, value)} title={`Скопировать ${key}`}>
+          <span>{key}</span>
+          <code>{displayValue(value)}</code>
+          {copiedKey === key ? <Check size={16} /> : <Copy size={15} />}
+        </button>
+      ))}
+    </div>
+  </Modal>
 
   if (field.type === 'select') {
     return (
@@ -113,9 +167,10 @@ function ReferenceField(props: FieldProps) {
             value={String(props.value ?? '')}
             disabled={disabled}
             loading={loading}
-            options={shown.map((item) => ({ value: identifier(item), label: label(item), description: reference.detail_keys.map((key) => String(item[key] ?? '')).filter(Boolean).join(' · ') }))}
+            options={ordered.map((item) => ({ value: identifier(item), label: label(item), description: reference.detail_keys.map((key) => String(item[key] ?? '')).filter(Boolean).join(' · '), data: item }))}
             onChange={onChange}
             onSearch={searchable ? setQuery : undefined}
+            onOptionContextMenu={(option) => openDetails(option.data as ReferenceItem)}
             searchPlaceholder={`Найти: ${reference.search_keys.join(', ')}`}
           />
           {reference.source === 'http' && <button type="button" className="icon-button reference-refresh" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
@@ -123,11 +178,12 @@ function ReferenceField(props: FieldProps) {
         {loading && <small className="muted">Загружаю справочник…</small>}
         {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
         {loadError && <small className="field-load-error">{loadError}</small>}
+        {details}
       </div>
     )
   }
 
-  const selected = new Set(Array.isArray(props.value) ? props.value.map(String) : [])
+  const selected = selectedIds
   const toggle = (id: string) => {
     const next = new Set(selected)
     next.has(id) ? next.delete(id) : next.add(id)
@@ -140,15 +196,16 @@ function ReferenceField(props: FieldProps) {
         {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
       </div>
       <div className="option-list" role="group" aria-label={field.label}>
-        {shown.map((item) => {
+        {ordered.map((item) => {
           const id = identifier(item)
-          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id}><input type="checkbox" checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span>{label(item)}</span></label>
+          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id} title="ПКМ — открыть карточку" onContextMenu={(event) => { event.preventDefault(); openDetails(item) }}><input type="checkbox" checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span>{label(item)}</span>{selected.has(id) && <Check className="option-selected-mark" size={15} />}</label>
         })}
         {!loading && shown.length === 0 && <span className="muted option-empty">Значения не найдены</span>}
       </div>
       <small className="selection-count">Выбрано: {selected.size}</small>
       {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
       {loadError && <small className="field-load-error">{loadError}</small>}
+      {details}
     </div>
   )
 }
@@ -237,6 +294,9 @@ export function PluralField(props: FieldProps) {
     while (Object.prototype.hasOwnProperty.call(values, `${field.key}_${nextIndex}`)) nextIndex += 1
     props.onObjectChange?.(`${field.key}_${nextIndex}`, field.default ?? '')
   }
+  const addLabel = field.type === 'block' && field.label
+    ? `Добавить ${field.label.charAt(0).toLocaleLowerCase('ru')}${field.label.slice(1)}`
+    : 'Добавить значение'
   return (
     <div className="plural-group">
       {instances.map((key, index) => (
@@ -245,7 +305,7 @@ export function PluralField(props: FieldProps) {
           {index > 0 && props.onObjectDelete && <button type="button" className="icon-button danger floating-remove" onClick={() => props.onObjectDelete?.(key)} aria-label="Удалить значение"><Trash2 size={16} /></button>}
         </div>
       ))}
-      <button type="button" className="button ghost small" onClick={add} disabled={Boolean(field.plural_max && instances.length >= field.plural_max)}><Plus size={15} /> Добавить значение</button>
+      <button type="button" className="button ghost small" onClick={add} disabled={Boolean(field.plural_max && instances.length >= field.plural_max)}><Plus size={15} /> {addLabel}</button>
     </div>
   )
 }
