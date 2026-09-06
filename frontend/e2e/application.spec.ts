@@ -8,6 +8,15 @@ test('opens the bundled application and validates a Python form', async ({ page 
   await page.getByRole('link', { name: /Создание АПИ/ }).click()
   await expect(page.getByRole('heading', { name: 'Создание АПИ' })).toBeVisible()
 
+  const fields = page.locator('.fields-grid > .form-field')
+  const firstField = await fields.nth(0).boundingBox()
+  const secondField = await fields.nth(1).boundingBox()
+  expect(firstField).not.toBeNull()
+  expect(secondField).not.toBeNull()
+  expect(secondField!.y).toBeGreaterThanOrEqual(firstField!.y + firstField!.height)
+  expect(Math.abs(secondField!.x - firstField!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(secondField!.width - firstField!.width)).toBeLessThanOrEqual(1)
+
   await page.getByPlaceholder('Введите название АПИ').fill('Orders API')
   await page.getByPlaceholder('Имя команды или ответственного').fill('Payments Team')
   await page.getByRole('button', { name: 'Категория АПИ' }).click()
