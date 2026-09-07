@@ -19,6 +19,8 @@ _SUBMIT_URLS: Dict[str, str] = {
 class DisableIngressForm(BaseForm):
     """Форма выключения ингрессов для выбранных приложений."""
 
+    description = "Выключение выбранных ingress для существующего приложения."
+
     @property
     def form_id(self) -> str:
         return "other.ingress.disable"

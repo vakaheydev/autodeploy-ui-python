@@ -53,6 +53,7 @@ export interface FormSummary {
   title: string
   category: string
   category_label: string
+  description?: string
   version: string
   field_count: number
   confirm_submit: boolean

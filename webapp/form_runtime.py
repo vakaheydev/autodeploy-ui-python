@@ -189,6 +189,7 @@ class FormRuntime:
                 "title": form.title,
                 "category": form.category,
                 "category_label": CATEGORIES.get(form.category, form.category),
+                "description": str(form.description or "").strip(),
                 "version": form_version(form),
                 "field_count": len(form.fields),
                 "confirm_submit": form.confirm_submit(),
@@ -201,7 +202,13 @@ class FormRuntime:
     @staticmethod
     def _form_keywords(form: BaseForm) -> list[str]:
         """Searchable public vocabulary without loading reference values."""
-        values = [form.form_id, form.title, form.category, CATEGORIES.get(form.category, "")]
+        values = [
+            form.form_id,
+            form.title,
+            form.description,
+            form.category,
+            CATEGORIES.get(form.category, ""),
+        ]
 
         def collect(fields: Iterable[FieldDefinition]) -> None:
             for field in fields:
@@ -1060,12 +1067,60 @@ class FormRuntime:
             current = candidate
         return current
 
-    @staticmethod
-    def _with_defaults(fields: Iterable[FieldDefinition], values: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _with_defaults(
+        cls,
+        fields: Iterable[FieldDefinition],
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply defaults to the complete form tree, including block instances.
+
+        A block is represented by a nested mapping.  Applying defaults only to
+        the root made a nested unchecked ``CHECKBOX`` indistinguishable from an
+        absent value during the initial schema projection.  Conditions using
+        an explicit comparison such as ``values["enabled"] is False`` therefore
+        changed behavior only after the checkbox had been toggled.  A checkbox
+        without an explicit default is materialised as ``False`` to match both
+        the React and legacy Tkinter controls.
+
+        Preserve the legacy flat/plural representation while materialising a
+        block only when it has its own default or at least one nested default.
+        Existing block mappings are copied before recursion so caller-owned
+        values are never mutated.
+        """
         result = dict(values)
-        for field in fields:
-            if field.key not in result and field.default is not None:
-                result[field.key] = copy.deepcopy(field.default)
+        for field in tuple(fields):
+            if field.key not in result:
+                if field.default is not None:
+                    result[field.key] = copy.deepcopy(field.default)
+                elif field.field_type == FieldType.CHECKBOX:
+                    result[field.key] = False
+            if field.field_type != FieldType.BLOCK:
+                continue
+
+            instance_keys = [
+                key
+                for key in result
+                if key == field.key
+                or (
+                    field.plural
+                    and (match := _PLURAL_RE.match(key)) is not None
+                    and match.group(1) == field.key
+                )
+            ]
+            if field.key not in result:
+                nested_defaults = cls._with_defaults(field.block_fields, {})
+                if nested_defaults:
+                    result[field.key] = nested_defaults
+                    instance_keys.insert(0, field.key)
+
+            for key in instance_keys:
+                block_values = result.get(key)
+                if isinstance(block_values, Mapping):
+                    result[key] = cls._with_defaults(
+                        field.block_fields,
+                        dict(block_values),
+                    )
         return result
 
     @staticmethod

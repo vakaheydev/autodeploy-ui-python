@@ -40,10 +40,12 @@ describe('FormFields', () => {
     const onValuesChange = vi.fn()
     const field = base({
       key: 'ingresses', path: 'ingresses', label: 'Ингрессы', type: 'multiselect',
-      reference: { source: 'local', resource: 'ingress.json', value_key: 'id', label_key: 'name', search_keys: ['name'], detail_keys: [], required_params: [], endpoint: '/options' },
-      options: [{ id: 'internal', name: 'Internal' }, { id: 'external', name: 'External' }],
+      reference: { source: 'local', resource: 'ingress.json', value_key: 'id', label_key: 'name', search_keys: ['name', 'context_path', 'id'], detail_keys: [], required_params: [], endpoint: '/options' },
+      options: [{ id: 'internal', name: 'Internal', context_path: '/inside' }, { id: 'external', name: 'External', context_path: '/outside' }],
     })
     render(<FormFields fields={[field]} values={{ ingresses: ['internal'] }} environment="test_int" formId="x" errors={[]} onValuesChange={onValuesChange} />)
+    expect(screen.getByPlaceholderText('Можно искать по: name, context_path, id')).toBeVisible()
+    expect(screen.getByText('context_path: /inside · id: internal')).toBeVisible()
     expect(screen.getByRole('checkbox', { name: 'Internal' })).toBeChecked()
     await user.click(screen.getByRole('checkbox', { name: 'External' }))
     expect(onValuesChange).toHaveBeenLastCalledWith({ ingresses: ['internal', 'external'] })
@@ -94,7 +96,9 @@ describe('FormFields', () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
     await userEvent.click(screen.getByRole('button', { name: 'API' }))
-    expect(await screen.findByRole('option', { name: /service103/ })).toBeInTheDocument()
+    const option = await screen.findByRole('option', { name: /service103/ })
+    expect(screen.getByPlaceholderText('Можно искать по: name, context_path')).toBeVisible()
+    expect(within(option).getByText('context_path: /api/v1/users/service103')).toBeVisible()
   })
 
   it('addresses nested AI review controls by the complete field path', async () => {

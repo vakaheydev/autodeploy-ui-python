@@ -38,6 +38,8 @@ def container(tmp_path: Path):
 
 def test_existing_python_form_is_projected_and_validated(container: ApplicationContainer) -> None:
     summary = next(item for item in container.forms.list_forms() if item["id"] == "api.create")
+    assert summary["description"] == "Создание и первичная настройка нового API в Gravitee."
+    assert summary["description"] in summary["keywords"]
     assert "Название АПИ" in summary["keywords"]
     document = container.forms.describe("api.create", "test_int")
     assert document["title"] == "Создание АПИ"
@@ -148,6 +150,77 @@ def test_legacy_condition_key_access_treats_unfilled_fields_as_none(
         field for field in visible["fields"] if field["key"] == "plan_jwt_type"
     )
     assert jwt_field["visible"] is True
+
+
+def test_nested_condition_uses_checkbox_default_on_initial_projection(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ConditionalBlockForm(BaseForm):
+        form_id = "test.conditional-block"
+        title = "Conditional block"
+        category = "other"
+        fields = [FieldDefinition(
+            "settings",
+            "Settings",
+            FieldType.BLOCK,
+            required=False,
+            block_fields=[
+                FieldDefinition(
+                    "disabled",
+                    "Disabled",
+                    FieldType.CHECKBOX,
+                    required=False,
+                ),
+                FieldDefinition(
+                    "catalog_item",
+                    "Catalog item",
+                    FieldType.SELECT,
+                    required=False,
+                    reference=ReferenceConfig(
+                        source="corp_http",
+                        resource="catalog",
+                        value_key="id",
+                        label_key="name",
+                    ),
+                    condition=lambda values: values["disabled"] is False,
+                ),
+            ],
+        )]
+
+        def build_payload(self, form_data):
+            return dict(form_data)
+
+        def get_submit_endpoint(self, environment: str) -> str:
+            return "https://example.invalid"
+
+    monkeypatch.setattr(
+        container.forms,
+        "get_form",
+        lambda _form_id: ConditionalBlockForm(),
+    )
+
+    initial = container.forms.describe("test.conditional-block", "test_int")
+    settings = initial["fields"][0]
+    catalog = next(
+        field for field in settings["fields"] if field["key"] == "catalog_item"
+    )
+
+    assert initial["initial_values"] == {"settings": {"disabled": False}}
+    assert catalog["visible"] is True
+
+    toggled = container.forms.state(
+        "test.conditional-block",
+        "test_int",
+        {"settings": {"disabled": True}},
+        initial["version"],
+    )
+    toggled_catalog = next(
+        field
+        for field in toggled["fields"][0]["fields"]
+        if field["key"] == "catalog_item"
+    )
+    assert toggled_catalog["visible"] is False
 
 
 def test_large_reference_is_searched_server_side_and_keeps_selection(

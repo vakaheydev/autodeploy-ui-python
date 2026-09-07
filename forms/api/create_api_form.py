@@ -22,6 +22,8 @@ _SUBMIT_URLS: Dict[str, str] = {
 class CreateApiForm(BaseForm):
     """Форма создания нового АПИ в Gravitee."""
 
+    description = "Создание и первичная настройка нового API в Gravitee."
+
     @property
     def form_id(self) -> str:
         return "api.create"

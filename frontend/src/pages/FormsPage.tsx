@@ -31,7 +31,7 @@ export function FormsPage() {
     return forms.data.categories.map((category) => ({
       ...category,
       forms: category.forms.filter((form) => {
-        const haystack = [form.id, form.title, form.category_label, ...(form.keywords ?? [])].join(' ').toLocaleLowerCase('ru')
+        const haystack = [form.id, form.title, form.description ?? '', form.category_label, ...(form.keywords ?? [])].join(' ').toLocaleLowerCase('ru')
         return words.every((word) => haystack.includes(word))
       }),
     })).filter((category) => category.forms.length)
@@ -77,7 +77,7 @@ export function FormsPage() {
               {category.forms.map((form) => (
                 <Link to={`/forms/${form.id}`} className="form-card" key={form.id}>
                   <span className="form-card-icon"><Boxes size={19} /></span>
-                  <div><h3>{form.title}</h3><p>{form.field_count} полей{form.confirm_submit ? ' · требует подтверждения' : ''}</p><code>{form.id}</code></div>
+                  <div><h3>{form.title}</h3>{form.description && <p>{form.description}</p>}</div>
                   <ChevronDown className="rotate-left" size={18} />
                 </Link>
               ))}

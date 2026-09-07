@@ -559,9 +559,8 @@ export function FormPage() {
           <Link to="/forms" className="back-link"><ArrowLeft size={16} /> Каталог форм</Link>
           <span className="eyebrow">{document.category_label}</span>
           <h1>{document.title}</h1>
-          <p><code>{document.id}</code> · версия схемы {document.version.slice(0, 8)}{(activeDraftId || draftSaveState !== 'idle') && <> · <span className={`draft-save-state ${draftSaveState}`}>{draftSaveState === 'saving' ? 'сохраняю черновик…' : draftSaveState === 'error' ? 'ошибка сохранения' : 'черновик сохранён'}</span></>}</p>
+          {(activeDraftId || draftSaveState !== 'idle') && <p><span className={`draft-save-state ${draftSaveState}`}>{draftSaveState === 'saving' ? 'сохраняю черновик…' : draftSaveState === 'error' ? 'ошибка сохранения' : 'черновик сохранён'}</span></p>}
         </div>
-        <span className="server-badge"><span className="status-dot online" /> Python runtime</span>
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}

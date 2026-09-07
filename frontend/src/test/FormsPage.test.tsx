@@ -12,13 +12,17 @@ describe('FormsPage search', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).endsWith('/api/v1/drafts') ? { items: [] } : {
       environments: [{ key: 'test_int', label: 'Test Internal' }],
       categories: [{ id: 'api', label: 'API', forms: [
-        { id: 'api.create', title: 'Создание API', category: 'api', category_label: 'API', version: '1', field_count: 4, confirm_submit: false, itsm_support: false, keywords: ['context path', 'владелец'] },
+        { id: 'api.create', title: 'Создание API', description: 'Создание и первичная настройка API.', category: 'api', category_label: 'API', version: '1', field_count: 4, confirm_submit: false, itsm_support: false, keywords: ['context path', 'владелец'] },
         { id: 'api.delete', title: 'Удаление API', category: 'api', category_label: 'API', version: '1', field_count: 1, confirm_submit: true, itsm_support: false, keywords: ['удалить'] },
       ] }],
     }), { status: 200, headers: { 'content-type': 'application/json' } })))
     const user = userEvent.setup()
     render(<MemoryRouter><EnvironmentProvider><FormsPage /></EnvironmentProvider></MemoryRouter>)
     await screen.findByText('Создание API')
+    expect(screen.getByText('Создание и первичная настройка API.')).toBeVisible()
+    expect(screen.queryByText('api.create')).not.toBeInTheDocument()
+    expect(screen.queryByText(/полей/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/требует подтверждения/)).not.toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Поиск форм' }), 'context path')
     expect(screen.getByText('Создание API')).toBeInTheDocument()
     expect(screen.queryByText('Удаление API')).not.toBeInTheDocument()

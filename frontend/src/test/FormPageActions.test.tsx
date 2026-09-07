@@ -52,5 +52,8 @@ describe('FormPage custom actions', () => {
     expect(commonActions).toContainElement(screen.getByRole('button', { name: /Просмотр JSON/ }))
     expect(commonActions).toContainElement(screen.getByRole('button', { name: /Подтянуть заявку/ }))
     expect(screen.queryByText('Дополнительные действия')).not.toBeInTheDocument()
+    expect(screen.queryByText('api.create')).not.toBeInTheDocument()
+    expect(screen.queryByText(/версия схемы/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Python runtime')).not.toBeInTheDocument()
   })
 })

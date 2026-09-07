@@ -22,6 +22,8 @@ _SUBMIT_URLS: Dict[str, str] = {
 class DeployAppForm(BaseForm):
     """Форма запуска деплоя приложения."""
 
+    description = "Запуск деплоя выбранной версии приложения или сервиса."
+
     @property
     def form_id(self) -> str:
         return "apps.deploy"

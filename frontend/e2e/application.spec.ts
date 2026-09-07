@@ -5,8 +5,12 @@ test('opens the bundled application and validates a Python form', async ({ page 
   await expect(page.getByRole('heading', { name: 'Gravitee AutoDeploy' })).toBeVisible()
   await page.getByRole('link', { name: /Формы/ }).first().click()
   await expect(page.getByRole('heading', { name: 'Каталог форм' })).toBeVisible()
+  await expect(page.getByText('Создание и первичная настройка нового API в Gravitee.')).toBeVisible()
+  await expect(page.getByText(/требует подтверждения/)).toHaveCount(0)
   await page.getByRole('link', { name: /Создание АПИ/ }).click()
   await expect(page.getByRole('heading', { name: 'Создание АПИ' })).toBeVisible()
+  await expect(page.getByText(/версия схемы/)).toHaveCount(0)
+  await expect(page.getByText('Python runtime')).toHaveCount(0)
 
   const fields = page.locator('.fields-grid > .form-field')
   const firstField = await fields.nth(0).boundingBox()
@@ -72,7 +76,7 @@ test('searches a large API dictionary on the Python server', async ({ page }) =>
   await page.goto('/forms/other.ingress.enable')
   await expect(page.getByRole('heading', { name: 'Включение ингрессов' })).toBeVisible()
   await page.getByRole('button', { name: 'АПИ' }).click()
-  const search = page.getByPlaceholder('Найти: name, context_path').first()
+  const search = page.getByPlaceholder('Можно искать по: name, context_path, id').first()
   await expect(search).toBeVisible()
 
   const response = page.waitForResponse((value) => (
@@ -82,6 +86,8 @@ test('searches a large API dictionary on the Python server', async ({ page }) =>
   await expect((await response).status()).toBe(200)
   const option = page.getByRole('option', { name: /service103/ })
   await expect(option).toBeAttached()
+  await expect(option).toContainText('context_path: /api/v1/users/service103')
+  await expect(option).toContainText('id: 550e8400-e29b-41d4-a716-446655440002')
   await option.click({ button: 'right' })
   const card = page.getByRole('dialog', { name: /Карточка: service103/ })
   await expect(card).toBeVisible()

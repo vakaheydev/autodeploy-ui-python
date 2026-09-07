@@ -31,6 +31,12 @@ function FieldError({ field, errors }: { field: FieldDocument; errors: Validatio
   return relevant.length ? <div className="field-errors">{relevant.map((item) => <span key={`${item.code}-${item.message}`}>{item.message}</span>)}</div> : null
 }
 
+function referenceSearchPlaceholder(searchKeys: string[]) {
+  return searchKeys.length > 1
+    ? `Можно искать по: ${searchKeys.join(', ')}`
+    : 'Фильтр значений…'
+}
+
 function ReferenceField(props: FieldProps) {
   const { field, values, environment, formId, disabled, onChange } = props
   const reference = field.reference!
@@ -106,6 +112,15 @@ function ReferenceField(props: FieldProps) {
   }, [items, query, reference.search_keys, serverBacked])
   const label = (item: ReferenceItem) => String(item[reference.label_key] ?? item[reference.value_key] ?? '')
   const identifier = (item: ReferenceItem) => String(item[reference.value_key] ?? '')
+  const searchableDetails = (item: ReferenceItem) => reference.search_keys
+    .filter((key) => key !== reference.label_key)
+    .map((key) => {
+      const value = String(item[key] ?? '').trim()
+      return value ? `${key}: ${value}` : ''
+    })
+    .filter(Boolean)
+    .join(' · ')
+  const searchPlaceholder = referenceSearchPlaceholder(reference.search_keys)
   useEffect(() => {
     items.forEach((item) => itemCache.current.set(String(item[reference.value_key] ?? ''), item))
   }, [items, reference.value_key])
@@ -131,11 +146,11 @@ function ReferenceField(props: FieldProps) {
             value={String(props.value ?? '')}
             disabled={disabled}
             loading={loading}
-            options={ordered.map((item) => ({ value: identifier(item), label: label(item), description: reference.detail_keys.map((key) => String(item[key] ?? '')).filter(Boolean).join(' · '), data: item }))}
+            options={ordered.map((item) => ({ value: identifier(item), label: label(item), description: searchableDetails(item), data: item }))}
             onChange={onChange}
             onSearch={searchable ? setQuery : undefined}
             onOptionContextMenu={(option) => openDetails(option.data as ReferenceItem)}
-            searchPlaceholder={`Найти: ${reference.search_keys.join(', ')}`}
+            searchPlaceholder={searchPlaceholder}
           />
           {reference.source === 'http' && <button type="button" className="icon-button reference-refresh" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
         </div>
@@ -156,13 +171,14 @@ function ReferenceField(props: FieldProps) {
   return (
     <div className="reference-control multiselect">
       <div className="reference-toolbar">
-        <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Фильтр значений…" /></label>
+        <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder} /></label>
         {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
       </div>
       <div className="option-list" role="group" aria-label={field.label}>
         {ordered.map((item) => {
           const id = identifier(item)
-          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id} title="ПКМ — открыть карточку" onContextMenu={(event) => { event.preventDefault(); openDetails(item) }}><input type="checkbox" checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span>{label(item)}</span>{selected.has(id) && <Check className="option-selected-mark" size={15} />}</label>
+          const detailsText = searchableDetails(item)
+          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id} title="ПКМ — открыть карточку" onContextMenu={(event) => { event.preventDefault(); openDetails(item) }}><input type="checkbox" aria-label={label(item)} checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span className="option-copy"><strong>{label(item)}</strong>{detailsText && <small>{detailsText}</small>}</span>{selected.has(id) && <Check className="option-selected-mark" size={15} />}</label>
         })}
         {!loading && shown.length === 0 && <span className="muted option-empty">Значения не найдены</span>}
       </div>
