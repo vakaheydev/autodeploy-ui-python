@@ -411,6 +411,47 @@ class _ActionForm(BaseForm):
         return {"message": "Done"}
 
 
+class _ConditionalPatchForm(BaseForm):
+    form_id = "test.conditional-patch"
+    title = "Conditional patch"
+    category = "other"
+    fields = [
+        FieldDefinition(
+            "create_application",
+            "Create application",
+            FieldType.CHECKBOX,
+            default=False,
+        ),
+        FieldDefinition(
+            "application_name",
+            "Application name",
+            FieldType.TEXT,
+            # Compatibility case from legacy corporate forms: False meant
+            # "there is no value while the field is hidden".
+            default=False,
+            condition=lambda values: values["create_application"] is True,
+        ),
+    ]
+
+    def build_payload(self, form_data):
+        return dict(form_data)
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
+
+    def get_server_actions(self):
+        return [ServerAction(
+            "fill",
+            "Fill",
+            lambda _environment, _values: {
+                "values": {
+                    "create_application": True,
+                    "application_name": False,
+                },
+            },
+        )]
+
+
 class _TicketPatchForm(BaseForm):
     form_id = "test.ticket-patch"
     title = "Ticket patch"
@@ -642,6 +683,65 @@ def test_server_action_requires_one_time_confirmation(container: ApplicationCont
             first["confirmation_token"],
         )
         assert repeated["confirmation_required"] is True
+    finally:
+        registry.clear()
+        register_all_forms()
+
+
+def test_boolean_empty_marker_never_populates_conditional_text_field(
+    container: ApplicationContainer,
+) -> None:
+    registry = FormRegistry()
+    registry.register(_ConditionalPatchForm())
+    try:
+        form = container.forms.get_form("test.conditional-patch", "test_int")
+        version = form_version(form)
+
+        initial = container.forms.describe(form.form_id, "test_int")
+        conditional = next(
+            field for field in initial["fields"]
+            if field["key"] == "application_name"
+        )
+        assert initial["initial_values"] == {"create_application": False}
+        assert conditional["visible"] is False
+        assert conditional["default"] is None
+
+        enabled = container.forms.state(
+            form.form_id,
+            "test_int",
+            {"create_application": True},
+            version,
+        )
+        conditional = next(
+            field for field in enabled["fields"]
+            if field["key"] == "application_name"
+        )
+        assert conditional["visible"] is True
+        assert "application_name" not in enabled["initial_values"]
+
+        action = container.forms.run_action(
+            form.form_id,
+            "fill",
+            "test_int",
+            {"create_application": False},
+            version,
+            "",
+        )
+        assert action["values"] == {"create_application": True}
+
+        validation = container.forms.validate(
+            form.form_id,
+            "test_int",
+            {"create_application": True, "application_name": False},
+            version,
+            validate_references=False,
+        )
+        assert "application_name" not in validation.values
+        assert any(
+            error["field"] == "application_name"
+            and error["code"] == "invalid_type"
+            for error in validation.errors
+        )
     finally:
         registry.clear()
         register_all_forms()

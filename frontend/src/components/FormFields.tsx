@@ -46,6 +46,12 @@ function referenceSearchPlaceholder(searchKeys: string[]) {
     : 'Фильтр значений…'
 }
 
+function stringControlValue(value: unknown) {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : ''
+}
+
 function ReferenceField(props: FieldProps) {
   const { field, values, environment, formId, disabled, onChange } = props
   const reference = field.reference!
@@ -61,8 +67,9 @@ function ReferenceField(props: FieldProps) {
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const dependency = field.depends_on ? values[field.depends_on] : undefined
   const serverBacked = field.options === undefined
+  const selectedValue = stringControlValue(props.value)
   const selectedValues = field.type === 'select'
-    ? (props.value === undefined || props.value === null || props.value === '' ? [] : [String(props.value)])
+    ? (selectedValue ? [selectedValue] : [])
     : (Array.isArray(props.value) ? props.value.map(String) : [])
   const selectedIds = new Set(selectedValues)
   // Draft values arrive after the initial form document.  A server-backed
@@ -160,7 +167,7 @@ function ReferenceField(props: FieldProps) {
           <SearchableSelect
             id={field.path}
             ariaLabel={field.label}
-            value={String(props.value ?? '')}
+            value={selectedValue}
             disabled={disabled}
             loading={loading}
             options={ordered.map((item) => ({ value: identifier(item), label: label(item), description: searchableDetails(item), data: item }))}
@@ -219,7 +226,7 @@ function BasicField(props: FieldProps) {
   }
   if (field.reference) return <ReferenceField {...props} onChange={commit} />
   if (field.type === 'textarea') {
-    return <textarea id={field.path} rows={5} value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
+    return <textarea id={field.path} rows={5} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
   }
   if (field.type === 'checkbox') {
     return <label className="switch-control"><input id={field.path} type="checkbox" checked={Boolean(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} onChange={(event) => commit(event.target.checked)} /><span className="switch" /><span>{Boolean(value) ? 'Включено' : 'Выключено'}</span></label>
@@ -235,9 +242,9 @@ function BasicField(props: FieldProps) {
       reader.onload = () => commit(String(reader.result ?? ''))
       reader.readAsText(file)
     }
-    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => commit(event.target.value)} /></div>
+    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => commit(event.target.value)} /></div>
   }
-  return <input id={field.path} type="text" value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
+  return <input id={field.path} type="text" value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
 }
 
 function SingleField(props: FieldProps) {

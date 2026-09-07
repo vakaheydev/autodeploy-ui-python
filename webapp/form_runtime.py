@@ -27,6 +27,12 @@ _log = logging.getLogger("web.forms")
 _PLURAL_RE = re.compile(r"^(.+)_(\d+)$")
 _INLINE_REFERENCE_MAX_ITEMS = 99
 _INLINE_REFERENCE_MAX_BYTES = 64 * 1024
+_STRING_FIELD_TYPES = {
+    FieldType.TEXT,
+    FieldType.TEXTAREA,
+    FieldType.FILE,
+    FieldType.SELECT,
+}
 
 
 class FormNotFoundError(KeyError):
@@ -127,6 +133,21 @@ def _visible(field: FieldDefinition, values: Mapping[str, Any]) -> bool:
     except Exception:
         _log.exception("form condition failed field=%s", field.key)
         return False
+
+
+def _declared_default(field: FieldDefinition) -> Any:
+    """Return a default that is compatible with the field's runtime type.
+
+    Some legacy forms used ``False`` as an "empty" marker for values that are
+    shown only after another checkbox is enabled.  Tkinter treated that marker
+    as an empty text value, while the web client received a JSON boolean and
+    rendered the literal word ``false``.  A boolean is a value only for a
+    checkbox; for every other field it means that no usable default was
+    declared.
+    """
+    if isinstance(field.default, bool) and field.field_type != FieldType.CHECKBOX:
+        return None
+    return field.default
 
 
 def _public_item(item: Mapping[str, Any], reference: ReferenceConfig) -> dict[str, Any]:
@@ -384,6 +405,32 @@ class FormRuntime:
             raise ValueError("Server action values должен быть объектом")
         applied = context.applied_values
         applied.update(copy.deepcopy(dict(proposed or {})))
+        # Server actions are allowed to return a partial patch, including data
+        # produced by legacy corporate integrations.  Normalise that patch
+        # through the same Python field contracts before it reaches React.  In
+        # particular, a legacy ``False`` empty marker must never become the
+        # visible string "false" when a controlling checkbox reveals a text
+        # field.
+        structural_errors: list[dict[str, Any]] = []
+        combined = copy.deepcopy(validation.values)
+        combined.update(copy.deepcopy(applied))
+        normalised = self._normalize_object(
+            form.fields,
+            combined,
+            structural_errors,
+            environment,
+            prefix="",
+        )
+        normalised = {
+            key: value
+            for key, value in normalised.items()
+            if self._top_level_visible(form.fields, key, normalised)
+        }
+        applied = {
+            key: copy.deepcopy(normalised[key])
+            for key in applied
+            if key in normalised
+        }
         return {
             "success": True,
             "message": str(result.get("message", "Действие выполнено")),
@@ -412,7 +459,7 @@ class FormRuntime:
             "visible": visible,
             "dynamic": field.condition is not None,
             "placeholder": field.placeholder,
-            "default": _json_safe(field.default),
+            "default": _json_safe(_declared_default(field)),
             "hint": field.hint,
             "file_type": field.file_type,
             "width": field.width,
@@ -915,8 +962,8 @@ class FormRuntime:
     ) -> Any:
         if value is None:
             return None
-        if field.field_type in {FieldType.TEXT, FieldType.TEXTAREA, FieldType.FILE, FieldType.SELECT}:
-            if isinstance(value, (dict, list, tuple, set)):
+        if field.field_type in _STRING_FIELD_TYPES:
+            if isinstance(value, (bool, dict, list, tuple, set)):
                 raise TypeError("Ожидалось строковое значение")
             text = str(value)
             max_length = 1_000_000 if field.field_type == FieldType.FILE else 100_000
@@ -928,6 +975,8 @@ class FormRuntime:
                 raise TypeError("Ожидался список значений")
             if len(value) > 1000:
                 raise ValueError("Выбрано больше 1000 значений")
+            if any(isinstance(item, bool) for item in value):
+                raise TypeError("Элементы списка должны быть строковыми идентификаторами")
             return [str(item) for item in value]
         if field.field_type == FieldType.CHECKBOX:
             if isinstance(value, bool):
@@ -1170,8 +1219,9 @@ class FormRuntime:
         result = dict(values)
         for field in tuple(fields):
             if field.key not in result:
-                if field.default is not None:
-                    result[field.key] = copy.deepcopy(field.default)
+                declared_default = _declared_default(field)
+                if declared_default is not None:
+                    result[field.key] = copy.deepcopy(declared_default)
                 elif field.field_type == FieldType.CHECKBOX:
                     result[field.key] = False
             if field.field_type != FieldType.BLOCK:

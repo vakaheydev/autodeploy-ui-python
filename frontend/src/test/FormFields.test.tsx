@@ -98,6 +98,19 @@ describe('FormFields', () => {
     expect(screen.queryByText('Название')).not.toBeInTheDocument()
   })
 
+  it('renders a legacy boolean empty marker as blank when a conditional text field appears', () => {
+    render(<FormFields
+      fields={[base({ dynamic: true, visible: true })]}
+      values={{ name: false }}
+      environment="test_int"
+      formId="x"
+      errors={[]}
+      onValuesChange={() => undefined}
+    />)
+
+    expect(screen.getByRole('textbox', { name: /Название/ })).toHaveValue('')
+  })
+
   it('loads a large reference from the server once and renders the result', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       items: [{ id: 'api-103', name: 'service103', context_path: '/api/v1/users/service103' }],
