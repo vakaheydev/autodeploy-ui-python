@@ -119,6 +119,41 @@ describe('FormFields', () => {
     expect(within(option).getByText('context_path: /api/v1/users/service103')).toBeVisible()
   })
 
+  it('reloads a server catalog and pins a selection restored from a draft', async () => {
+    const selected = { id: 'api-634', name: 'Last API', context_path: '/last' }
+    const first = { id: 'api-001', name: 'First API', context_path: '/first' }
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { values?: Record<string, unknown> }
+      const hasDraftSelection = body.values?.api === selected.id
+      return new Response(JSON.stringify({
+        items: hasDraftSelection ? [selected, first] : [first],
+        total: hasDraftSelection ? 2 : 633,
+        has_more: !hasDraftSelection,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const field = base({
+      key: 'api', path: 'api', label: 'API', type: 'select',
+      reference: { source: 'http', resource: 'apis', value_key: 'id', label_key: 'name', search_keys: ['name', 'context_path'], detail_keys: [], required_params: [], endpoint: '/api/v1/forms/x/fields/api/options' },
+    })
+    const common = {
+      fields: [field], environment: 'test_int', formId: 'x', errors: [],
+      onValuesChange: () => undefined,
+    }
+    const view = render(<FormFields {...common} values={{}} />)
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    // This mirrors FormPage applying a persisted manual/AI draft after the
+    // form document (and possibly its first options page) has already loaded.
+    view.rerender(<FormFields {...common} values={{ api: selected.id }} />)
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    await userEvent.click(screen.getByRole('button', { name: 'API' }))
+    const options = screen.getAllByRole('option')
+    expect(options[1]).toHaveTextContent('Last API')
+    expect(options[2]).toHaveTextContent('First API')
+  })
+
   it('addresses nested AI review controls by the complete field path', async () => {
     const user = userEvent.setup()
     const onReview = vi.fn()

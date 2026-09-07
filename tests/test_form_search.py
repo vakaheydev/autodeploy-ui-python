@@ -61,10 +61,10 @@ def test_catalog_and_search_session_are_lazy_and_reused(monkeypatch) -> None:
         return [{
             "form_id": "api.create",
             "title": "Создание API",
+            "category": "api",
             "purpose": "Создать API",
             "use_when": ["нужно новое API"],
             "avoid_when": [],
-            "fields": [],
         }]
 
     monkeypatch.setattr("opencode_integration.form_search.build_form_catalog", catalog)
@@ -91,6 +91,8 @@ def test_catalog_and_search_session_are_lazy_and_reused(monkeypatch) -> None:
     assert client.created == 1
     assert len(client.contexts) == 1
     assert "TRUSTED_FORM_CATALOG" in client.contexts[0]["prompt"]
+    assert '"fields"' not in client.contexts[0]["prompt"]
+    assert "routing-only catalog" in client.contexts[0]["prompt"]
     assert len(client.messages) == 2
     assert all(item["variant"] == "none" for item in client.messages)
     assert "enum" not in client.messages[0]["schema"]["properties"]["candidates"]["items"]["properties"]["form_id"]
@@ -105,10 +107,10 @@ def test_active_search_can_be_aborted_without_waiting_for_model(monkeypatch) -> 
     monkeypatch.setattr("opencode_integration.form_search.build_form_catalog", lambda _forms: [{
         "form_id": "api.create",
         "title": "Создание API",
+        "category": "api",
         "purpose": "Создать API",
         "use_when": ["нужно новое API"],
         "avoid_when": [],
-        "fields": [],
     }])
 
     class BlockingClient(_SearchClient):

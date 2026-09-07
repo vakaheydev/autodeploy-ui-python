@@ -11,9 +11,11 @@ sessions:
    that talks to the operator. It decides whether tools are needed and creates
    Python-validated form drafts through AutoDeploy MCP.
 2. `form-search` is a tool-free, long-lived semantic index owned by the same web
-   workflow. It is created lazily on the first form-related request, receives the
-   trusted form catalog once and always runs with the exact `none` thinking
-   variant. Later searches reuse this session.
+   workflow. It is created lazily on the first form-related request, receives a
+   routing-only catalog once and always runs with the exact `none` thinking
+   variant. The catalog contains form identity plus `purpose`, `use_when` and
+   `avoid_when`, but no fields, schemas or reference values. Later searches
+   reuse this session.
 3. `repository-researcher` is a short-lived optional worker for a genuinely
    complex JSON Repository investigation. It receives one bounded question,
    can call only the approved read-only repository tools and is deleted after
@@ -49,7 +51,8 @@ web workflow (opaque workflow_id)
 |   `-- complete form catalog           NOT present
 |
 +-- semantic form-search session        created on first semantic_search_forms
-|   +-- complete trusted catalog        stored once with noReply
+|   +-- routing-only trusted catalog    stored once with noReply
+|   +-- fields/schemas/references        NOT present
 |   +-- thinking                         none
 |   +-- MCP/files/shell/web             unavailable
 |   `-- reused until main workflow closes
@@ -63,10 +66,11 @@ web workflow (opaque workflow_id)
 
 Creating a chat does not build, serialize or send the form catalog. Greetings
 therefore initialize only the small Copilot context. The first
-`semantic_search_forms` call builds the catalog from registered Python forms,
-starts `form-search`, stores it once, and returns authoritative catalog entries
-enriched with model-produced score/reason. A second call uses the same search
-session and sends only the new query.
+`semantic_search_forms` call builds the compact catalog from registered forms and
+their explicit routing configuration, starts `form-search`, stores it once, and
+returns authoritative routing entries enriched with model-produced score/reason.
+Only after Copilot selects a candidate does it request that one form's live
+schema. A second search uses the same session and sends only the new query.
 
 Both the main and form-search sessions are cancelled together and deleted when
 the web workflow is deleted. Researcher cancellation is also connected to the

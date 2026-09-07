@@ -1,8 +1,8 @@
 """Доверенный каталог назначений форм для AI-маршрутизации заявок.
 
-Это не справочник значений полей: в OpenCode передаются только назначение формы
-и компактное описание её полей. Реальные reference ID по-прежнему разрешаются
-локальным Python-кодом уже после выбора формы.
+Каталог содержит только идентификацию формы и явные routing-описания.
+Схемы, поля и справочники сюда не входят: они запрашиваются только для уже
+выбранной формы и обрабатываются Python-кодом.
 """
 from __future__ import annotations
 
@@ -72,7 +72,11 @@ FORM_ROUTING: dict[str, FormRoutingDescription] = {
 
 
 def build_form_catalog(forms: Iterable[BaseForm]) -> list[dict[str, Any]]:
-    """Строит компактный каталог и требует явного описания каждой формы."""
+    """Строит routing-only каталог и требует описания каждой формы.
+
+    Намеренно не обращается к ``form.fields``: семантическому
+    поиску нужно выбрать форму, а не знать её схему.
+    """
     registered = sorted(forms, key=lambda item: item.form_id)
     registered_ids = {form.form_id for form in registered}
     configured_ids = set(FORM_ROUTING)
@@ -98,14 +102,5 @@ def build_form_catalog(forms: Iterable[BaseForm]) -> list[dict[str, Any]]:
             "purpose": routing.purpose,
             "use_when": list(routing.use_when),
             "avoid_when": list(routing.avoid_when),
-            "fields": [
-                {
-                    "key": field.key,
-                    "label": field.label,
-                    "type": field.field_type.value,
-                    "required": field.required,
-                }
-                for field in form.fields
-            ],
         })
     return catalog

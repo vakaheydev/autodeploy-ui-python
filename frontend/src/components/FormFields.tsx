@@ -61,6 +61,15 @@ function ReferenceField(props: FieldProps) {
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const dependency = field.depends_on ? values[field.depends_on] : undefined
   const serverBacked = field.options === undefined
+  const selectedValues = field.type === 'select'
+    ? (props.value === undefined || props.value === null || props.value === '' ? [] : [String(props.value)])
+    : (Array.isArray(props.value) ? props.value.map(String) : [])
+  const selectedIds = new Set(selectedValues)
+  // Draft values arrive after the initial form document.  A server-backed
+  // catalog may already have loaded its first page without those IDs, so use a
+  // stable selection signature to request the selected records once they are
+  // restored (manual and AI drafts share this path).
+  const selectionSignature = JSON.stringify(selectedValues)
 
   const load = async (refresh = false, requestedQuery = query) => {
     const sequence = ++requestSequence.current
@@ -112,7 +121,7 @@ function ReferenceField(props: FieldProps) {
     if (field.depends_on && (dependency === undefined || dependency === null || dependency === '')) return
     const timer = window.setTimeout(() => void load(false, query), 260)
     return () => window.clearTimeout(timer)
-  }, [query, serverBacked, field.depends_on, environment, reference.endpoint, dependency])
+  }, [query, serverBacked, field.depends_on, environment, reference.endpoint, dependency, selectionSignature])
 
   const searchable = items.length > 8 || serverBacked
   const shown = useMemo(() => {
@@ -135,9 +144,6 @@ function ReferenceField(props: FieldProps) {
   useEffect(() => {
     items.forEach((item) => itemCache.current.set(String(item[reference.value_key] ?? ''), item))
   }, [items, reference.value_key])
-  const selectedIds = new Set(field.type === 'select'
-    ? (props.value === undefined || props.value === null || props.value === '' ? [] : [String(props.value)])
-    : (Array.isArray(props.value) ? props.value.map(String) : []))
   const shownById = new Map(shown.map((item) => [identifier(item), item]))
   const pinned = [...selectedIds].map((id) => shownById.get(id) ?? itemCache.current.get(id)).filter((item): item is ReferenceItem => Boolean(item))
   const ordered = [...pinned, ...shown.filter((item) => !selectedIds.has(identifier(item)))]

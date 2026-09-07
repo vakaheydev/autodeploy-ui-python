@@ -1672,8 +1672,13 @@ class RoutingTests(unittest.TestCase):
     def test_form_catalog_contains_descriptions_but_no_reference_values(self) -> None:
         catalog = build_form_catalog(_all_forms())
         self.assertEqual({item["form_id"] for item in catalog}, set(self.form_ids))
+        self.assertTrue(all(set(item) == {
+            "form_id", "title", "category", "purpose", "use_when", "avoid_when"
+        } for item in catalog))
         rendered = json.dumps(catalog, ensure_ascii=False)
         self.assertIn("purpose", rendered)
+        self.assertNotIn('"fields"', rendered)
+        self.assertNotIn("context_path", rendered)
         self.assertNotIn("reference", rendered.lower())
         self.assertNotIn("api_categories.json", rendered)
 
