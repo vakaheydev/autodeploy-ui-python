@@ -233,6 +233,68 @@ def test_global_search_uses_extension_catalog_configuration(
     }
 
 
+def test_global_search_reports_cache_timestamp_per_environment(
+    container: ApplicationContainer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = ReferenceConfig(
+        source="corp_search",
+        resource="authoritative_apis",
+        value_key="uuid",
+        label_key="display_name",
+        search_keys=("route",),
+    )
+    monkeypatch.setattr(container, "search_catalogs", {"api": reference})
+    container.reference_cache.set(
+        reference.resource,
+        "test_int",
+        [{"uuid": "api-42", "display_name": "Payments", "route": "/payments"}],
+    )
+
+    result = container.forms.search_cache_status(
+        "api", ["test_int", "test_int", "prod_ext"]
+    )
+
+    assert [item["environment"] for item in result["items"]] == [
+        "test_int", "prod_ext",
+    ]
+    assert isinstance(result["items"][0]["updated_at"], float)
+    assert result["items"][1]["updated_at"] is None
+
+
+def test_global_search_refresh_invalidates_and_reloads_selected_environments(
+    container: ApplicationContainer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = ReferenceConfig(
+        source="corp_search",
+        resource="authoritative_apis",
+        value_key="uuid",
+        label_key="display_name",
+        search_keys=("route",),
+    )
+
+    class Resolver:
+        calls: list[str] = []
+
+        def resolve(self, _config, environment="", extra_params=None):
+            self.calls.append(environment)
+            return [{"uuid": environment, "display_name": environment, "route": "/"}]
+
+    resolver = Resolver()
+    monkeypatch.setattr(container, "search_catalogs", {"api": reference})
+    monkeypatch.setattr(container, "new_reference_resolver", lambda: resolver)
+    container.reference_cache.set(reference.resource, "test_int", [{"old": True}])
+
+    result = container.forms.refresh_search_catalog(
+        "api", ["test_int", "prod_ext"]
+    )
+
+    assert resolver.calls == ["test_int", "prod_ext"]
+    assert [item["count"] for item in result["items"]] == [1, 1]
+    assert container.reference_cache.get_timestamp(
+        reference.resource, "test_int"
+    ) is None
+
+
 class _ActionForm(BaseForm):
     @property
     def form_id(self) -> str:

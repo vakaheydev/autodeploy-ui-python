@@ -1,9 +1,9 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
-import { Check, Copy, FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
+import { Check, FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
 import { SearchableSelect } from './SearchableSelect'
-import { Modal } from './Feedback'
+import { ReferenceDetailsModal } from './ReferenceDetailsModal'
 
 interface FieldProps {
   field: FieldDocument
@@ -40,7 +40,6 @@ function ReferenceField(props: FieldProps) {
   const [loadError, setLoadError] = useState('')
   const [total, setTotal] = useState(field.options?.length ?? 0)
   const [detailItem, setDetailItem] = useState<ReferenceItem | null>(null)
-  const [copiedKey, setCopiedKey] = useState('')
   const requestSequence = useRef(0)
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const dependency = field.depends_on ? values[field.depends_on] : undefined
@@ -118,44 +117,9 @@ function ReferenceField(props: FieldProps) {
   const ordered = [...pinned, ...shown.filter((item) => !selectedIds.has(identifier(item)))]
 
   const openDetails = (item: ReferenceItem) => {
-    setCopiedKey('')
     setDetailItem(item)
   }
-  const displayValue = (value: unknown) => {
-    if (value === null) return 'null'
-    if (typeof value === 'object') return JSON.stringify(value, null, 2)
-    return String(value)
-  }
-  const copyField = async (key: string, value: unknown) => {
-    const text = displayValue(value)
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API is unavailable')
-      await navigator.clipboard.writeText(text)
-    } catch {
-      const fallback = document.createElement('textarea')
-      fallback.value = text
-      fallback.setAttribute('readonly', '')
-      fallback.style.position = 'fixed'
-      fallback.style.opacity = '0'
-      document.body.appendChild(fallback)
-      fallback.select()
-      document.execCommand('copy')
-      fallback.remove()
-    }
-    setCopiedKey(key)
-  }
-  const details = detailItem && <Modal title={`Карточка: ${label(detailItem)}`} onClose={() => setDetailItem(null)}>
-    <p className="reference-card-hint">Только чтение · нажмите на поле, чтобы скопировать его значение</p>
-    <div className="reference-card-fields">
-      {Object.entries(detailItem).map(([key, value]) => (
-        <button type="button" className={copiedKey === key ? 'copied' : ''} key={key} onClick={() => void copyField(key, value)} title={`Скопировать ${key}`}>
-          <span>{key}</span>
-          <code>{displayValue(value)}</code>
-          {copiedKey === key ? <Check size={16} /> : <Copy size={15} />}
-        </button>
-      ))}
-    </div>
-  </Modal>
+  const details = detailItem && <ReferenceDetailsModal item={detailItem} title={label(detailItem)} onClose={() => setDetailItem(null)} />
 
   if (field.type === 'select') {
     return (

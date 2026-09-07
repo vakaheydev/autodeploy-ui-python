@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api } from '../api'
+import { ApiError, api } from '../api'
 import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
 import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
@@ -14,6 +14,50 @@ function draftFrom(document: SettingsDocument): Record<string, string | boolean>
   ])))
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function settingFieldErrors(
+  reason: unknown,
+  fields: SettingField[],
+  pendingKeys: string[],
+): Record<string, string> {
+  if (!(reason instanceof ApiError) || reason.status !== 422) return {}
+  const known = new Set(fields.map((field) => field.key))
+  const keys = new Set<string>()
+  const payload = asRecord(reason.detail)
+  const detail = payload?.detail
+  const detailRecord = asRecord(detail)
+  const declared = detailRecord?.fields
+  if (Array.isArray(declared)) {
+    declared.forEach((key) => typeof key === 'string' && known.has(key) && keys.add(key))
+  }
+  if (typeof detailRecord?.field === 'string' && known.has(detailRecord.field)) keys.add(detailRecord.field)
+
+  const validationDetails = Array.isArray(detail)
+    ? detail
+    : Array.isArray(asRecord(payload?.error)?.details) ? asRecord(payload?.error)?.details as unknown[] : []
+  validationDetails.forEach((item) => {
+    const loc = asRecord(item)?.loc
+    if (Array.isArray(loc)) loc.forEach((part) => typeof part === 'string' && known.has(part) && keys.add(part))
+  })
+
+  if (keys.size === 0) {
+    const normalizedMessage = reason.message.toLocaleLowerCase()
+    fields.forEach((field) => {
+      if (normalizedMessage.includes(field.key.toLocaleLowerCase()) || normalizedMessage.includes(field.label.toLocaleLowerCase())) {
+        keys.add(field.key)
+      }
+    })
+  }
+  const uniquePending = [...new Set(pendingKeys)].filter((key) => known.has(key))
+  if (keys.size === 0 && uniquePending.length === 1) keys.add(uniquePending[0])
+  return Object.fromEntries([...keys].map((key) => [key, reason.message]))
+}
+
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedGroup = searchParams.get('section')
@@ -25,6 +69,7 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [notice, setNotice] = useState('')
   const [activeGroup, setActiveGroup] = useState('')
   const [mcpItems, setMcpItems] = useState<Array<{ name: string; status: string; error: string }>>([])
@@ -36,6 +81,7 @@ export function SettingsPage() {
     setDraft(draftFrom(next))
     setChanged(new Set())
     setClear(new Set())
+    setFieldErrors({})
     setVisibleSecrets(new Set())
     setActiveGroup((current) => {
       if (current && next.groups.some((group) => group.name === current)) return current
@@ -87,6 +133,13 @@ export function SettingsPage() {
       next.delete(field.key)
       return next
     })
+    setFieldErrors((current) => {
+      if (!current[field.key]) return current
+      const next = { ...current }
+      delete next[field.key]
+      return next
+    })
+    setError('')
     setNotice('')
   }
 
@@ -102,12 +155,19 @@ export function SettingsPage() {
       return next
     })
     setDraft((current) => ({ ...current, [field.key]: '' }))
+    setFieldErrors((current) => {
+      if (!current[field.key]) return current
+      const next = { ...current }
+      delete next[field.key]
+      return next
+    })
+    setError('')
     setNotice('')
   }
 
   const save = async () => {
     if (!document) return
-    setSaving(true); setError(''); setNotice('')
+    setSaving(true); setError(''); setFieldErrors({}); setNotice('')
     const values = Object.fromEntries([...changed]
       .filter((key) => fieldByKey.get(key)?.kind !== 'secret' || String(draft[key] ?? '').length > 0)
       .map((key) => [key, draft[key]]))
@@ -122,7 +182,18 @@ export function SettingsPage() {
       setNotice(messages.join(' '))
       applyDocument(next)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      const inlineErrors = settingFieldErrors(reason, fields, [...changed, ...clear])
+      const firstKey = Object.keys(inlineErrors)[0]
+      if (firstKey) {
+        setFieldErrors(inlineErrors)
+        const group = fieldByKey.get(firstKey)?.group
+        if (group) {
+          setActiveGroup(group)
+          setSearchParams({ section: group }, { replace: true })
+        }
+      } else {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      }
     } finally {
       setSaving(false)
     }
@@ -156,12 +227,14 @@ export function SettingsPage() {
             {group.fields.map((field) => {
               const isCleared = clear.has(field.key)
               const isChanged = changed.has(field.key)
+              const fieldError = fieldErrors[field.key]
               const inputType = field.kind === 'secret' && !visibleSecrets.has(field.key) ? 'password' : field.kind === 'number' ? 'number' : 'text'
               const inputId = `setting-${field.key}`
-              return <div className={`configuration-field ${isCleared ? 'cleared' : ''} ${isChanged ? 'changed' : ''}`} key={field.key}>
+              const errorId = `${inputId}-error`
+              return <div className={`configuration-field ${isCleared ? 'cleared' : ''} ${isChanged ? 'changed' : ''} ${fieldError ? 'invalid' : ''}`} data-setting-key={field.key} key={field.key}>
                 <span className="configuration-label"><label htmlFor={inputId}>{field.label}{field.required && <b>*</b>}</label><span>{isChanged && <small className="changed-badge">изменено</small>}{field.restart_required && <small>restart</small>}</span></span>
                 {field.kind === 'boolean'
-                  ? <label className="settings-switch" htmlFor={inputId}><input id={inputId} type="checkbox" checked={Boolean(draft[field.key])} onChange={(event) => changeValue(field, event.target.checked)} /><span className="switch" /><span>{Boolean(draft[field.key]) ? 'Включено' : 'Выключено'}</span></label>
+                  ? <label className="settings-switch" htmlFor={inputId}><input id={inputId} type="checkbox" checked={Boolean(draft[field.key])} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? errorId : undefined} onChange={(event) => changeValue(field, event.target.checked)} /><span className="switch" /><span>{Boolean(draft[field.key]) ? 'Включено' : 'Выключено'}</span></label>
                   : field.picker === 'mcp'
                     ? <McpSinglePicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
                     : field.picker === 'mcp_multi'
@@ -173,10 +246,13 @@ export function SettingsPage() {
                     min={field.minimum ?? undefined}
                     max={field.maximum ?? undefined}
                     disabled={isCleared}
+                    aria-invalid={Boolean(fieldError)}
+                    aria-describedby={fieldError ? errorId : undefined}
                     autoComplete="off"
                     placeholder={field.kind === 'secret' && field.configured ? '••••••••  настроено' : field.default || 'Не задано'}
                     onChange={(event) => changeValue(field, event.target.value)}
                   />{field.picker === 'file' || field.picker === 'directory' ? <PathSettingPicker value={String(draft[field.key] ?? '')} mode={field.picker} disabled={isCleared} onChange={(value) => changeValue(field, value)} /> : null}{field.kind === 'secret' && <button type="button" className="button ghost small" onClick={() => setVisibleSecrets((current) => { const next = new Set(current); next.has(field.key) ? next.delete(field.key) : next.add(field.key); return next })}>{visibleSecrets.has(field.key) ? 'Скрыть' : 'Показать'}</button>}{field.kind === 'secret' && field.configured && <button type="button" className={`button small ${isCleared ? 'secondary' : 'danger'}`} onClick={() => toggleClear(field)}>{isCleared ? 'Отменить' : 'Очистить'}</button>}</span>}
+                {fieldError && <span className="configuration-error" id={errorId} role="alert"><X size={13} />{fieldError}</span>}
                 <span className="configuration-meta"><code>{field.key}</code>{field.description && <small>{field.description}</small>}{field.kind === 'secret' && <small className={field.configured && !isCleared ? 'configured' : ''}>{isCleared ? 'Будет удалён' : field.configured ? 'Секрет настроен' : 'Не настроен'}</small>}</span>
               </div>
             })}

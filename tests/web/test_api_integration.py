@@ -209,6 +209,15 @@ def test_settings_keep_secrets_write_only(server: str) -> None:
     updated = [field for group in json.loads(content)["groups"] for field in group["fields"]]
     assert next(field for field in updated if field["key"] == "TFS_TOKEN")["configured"] is True
 
+    status, _, content = request(
+        server, "/api/v1/settings", method="PUT",
+        body={"values": {"AUTODEPLOY_PORT": "0"}, "clear": []},
+    )
+    error = json.loads(content)["detail"]
+    assert status == 422
+    assert error["fields"] == ["AUTODEPLOY_PORT"]
+    assert "минимум 1" in error["message"]
+
 
 @pytest.mark.integration
 def test_streamable_http_mcp_lists_and_calls_documented_tools(server: str) -> None:

@@ -583,8 +583,6 @@ export function FormPage() {
         />
       </section>
 
-      {document.custom_actions.length > 0 && <section className="legacy-actions"><strong>Дополнительные действия</strong>{document.custom_actions.map((action) => <button className={`button ${action.style.toLowerCase() === 'primary' ? 'primary' : 'secondary'}`} disabled={!action.available || busy} title={action.reason} onClick={() => void runAction(action.id)} key={action.id}>{action.label}</button>)}</section>}
-
       {result && <section className={`result-card ${result.status}`}>
         <div className="result-icon">{result.status === 'success' ? <Check /> : result.status === 'error' ? <X /> : <LoaderCircle className={result.polling ? 'spin' : ''} />}</div>
         <div><span className="eyebrow">Результат операции</span><h2>{result.title}</h2><p>{result.message}</p><pre>{result.content}</pre>{result.polling && <small>Статус обновляется автоматически</small>}</div>
@@ -595,6 +593,7 @@ export function FormPage() {
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
           {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => setTicketModal(true)}><Sparkles size={17} /> Подтянуть заявку</button>}
+          {document.custom_actions.map((action) => <button className={`button ${action.style.toLowerCase() === 'primary' ? 'primary' : 'secondary'}`} disabled={!action.available || busy} title={action.reason} onClick={() => void runAction(action.id)} key={action.id}>{action.label}</button>)}
           <button className="button ghost" disabled={busy} onClick={() => { setValues(document.initial_values); setEditRevision((current) => current + 1); setErrors([]); setResult(null) }}><RefreshCw size={16} /> Сбросить</button>
         </div>
         <button className="button primary large" disabled={busy} onClick={() => void requestPreview('submit')}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />} Отправить</button>

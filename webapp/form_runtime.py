@@ -726,6 +726,52 @@ class FormRuntime:
                     return {"items": result, "truncated": True}
         return {"items": result, "truncated": False}
 
+    def search_cache_status(
+        self,
+        kind: str,
+        environments: Iterable[str],
+    ) -> dict[str, Any]:
+        """Describe when each selected search catalog was last cached."""
+        reference = self.container.search_catalogs.get(kind)
+        if reference is None:
+            raise ValueError("Неизвестный тип поиска")
+        items = []
+        for environment in dict.fromkeys(environments):
+            self._ensure_environment(environment)
+            items.append({
+                "environment": environment,
+                "updated_at": self.container.reference_cache.get_timestamp(
+                    reference.resource, environment
+                ),
+            })
+        return {"items": items}
+
+    def refresh_search_catalog(
+        self,
+        kind: str,
+        environments: Iterable[str],
+    ) -> dict[str, Any]:
+        """Invalidate and eagerly reload a search catalog for selected ENV values."""
+        reference = self.container.search_catalogs.get(kind)
+        if reference is None:
+            raise ValueError("Неизвестный тип поиска")
+        resolver = self.container.new_reference_resolver()
+        items = []
+        for environment in dict.fromkeys(environments):
+            self._ensure_environment(environment)
+            self.container.reference_cache.invalidate(
+                reference.resource, environment
+            )
+            loaded = resolver.resolve(reference, environment)
+            items.append({
+                "environment": environment,
+                "updated_at": self.container.reference_cache.get_timestamp(
+                    reference.resource, environment
+                ),
+                "count": len(loaded),
+            })
+        return {"items": items}
+
     def _normalize_object(
         self,
         fields: Iterable[FieldDefinition],

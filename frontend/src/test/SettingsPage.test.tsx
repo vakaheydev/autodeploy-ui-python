@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -37,6 +37,35 @@ describe('SettingsPage', () => {
     await user.click(screen.getByRole('button', { name: /Сбросить правки/ }))
     expect(token).toHaveValue('')
     expect(screen.queryByRole('button', { name: /Сохранить настройки/ })).not.toBeInTheDocument()
+  })
+
+  it('shows a 422 validation error beside the setting that caused it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return new Response(JSON.stringify({
+          detail: { message: 'TFS token: значение отклонено сервером', fields: ['TFS_TOKEN'] },
+        }), { status: 422, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(settings), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }))
+    const user = userEvent.setup()
+    render(<MemoryRouter><SettingsPage /></MemoryRouter>)
+
+    const token = await screen.findByLabelText(/TFS token/)
+    await user.type(token, 'invalid-token')
+    await user.click(screen.getByRole('button', { name: /Сохранить настройки/ }))
+
+    const field = token.closest('.configuration-field') as HTMLElement
+    expect(field).toHaveClass('invalid')
+    expect(await within(field).findByRole('alert')).toHaveTextContent('значение отклонено сервером')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+
+    await user.type(token, '-fixed')
+    expect(within(field).queryByRole('alert')).not.toBeInTheDocument()
+    expect(field).not.toHaveClass('invalid')
   })
 
   it('opens OpenCode Server management inside the OpenCode settings section', async () => {

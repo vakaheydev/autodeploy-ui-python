@@ -61,6 +61,14 @@ class SettingSpec:
     picker: str = ""  # file | directory | mcp | mcp_multi
 
 
+class SettingsValidationError(ValueError):
+    """A settings validation error tied to one or more UI fields."""
+
+    def __init__(self, message: str, *fields: str) -> None:
+        super().__init__(message)
+        self.fields = tuple(dict.fromkeys(field for field in fields if field))
+
+
 def _specs() -> tuple[SettingSpec, ...]:
     access = [
         SettingSpec(LOGIN_KEY, "Логин пользователя", "Доступ", required=True),
@@ -278,36 +286,41 @@ def _normalize(spec: SettingSpec, value: Any) -> str:
             return "true" if value else "false"
         lowered = str(value).strip().casefold()
         if lowered not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
-            raise ValueError(f"{spec.label}: ожидается true/false")
+            raise SettingsValidationError(
+                f"{spec.label}: ожидается true/false", spec.key
+            )
         return "true" if lowered in {"1", "true", "yes", "on"} else "false"
     if value is None or isinstance(value, (dict, list)):
-        raise ValueError(f"{spec.label}: ожидается строковое значение")
+        raise SettingsValidationError(
+            f"{spec.label}: ожидается строковое значение", spec.key
+        )
     text = str(value)
     if "\n" in text or "\r" in text or "\x00" in text:
-        raise ValueError(f"{spec.label}: переносы строк запрещены")
+        raise SettingsValidationError(f"{spec.label}: переносы строк запрещены", spec.key)
     limit = 16_384 if spec.kind == "secret" else 4_096
     if len(text) > limit:
-        raise ValueError(f"{spec.label}: значение слишком длинное")
+        raise SettingsValidationError(f"{spec.label}: значение слишком длинное", spec.key)
     if spec.kind == "secret":
         if not text:
-            raise ValueError(
-                f"{spec.label}: пустое значение не меняет секрет; используйте явную очистку"
+            raise SettingsValidationError(
+                f"{spec.label}: пустое значение не меняет секрет; используйте явную очистку",
+                spec.key,
             )
         return text
     text = text.strip()
     if spec.required and not text:
-        raise ValueError(f"{spec.label}: обязательное значение")
+        raise SettingsValidationError(f"{spec.label}: обязательное значение", spec.key)
     if spec.kind == "number":
         try:
             number = float(text)
         except ValueError as exc:
-            raise ValueError(f"{spec.label}: ожидается число") from exc
+            raise SettingsValidationError(f"{spec.label}: ожидается число", spec.key) from exc
         if not math.isfinite(number):
-            raise ValueError(f"{spec.label}: число должно быть конечным")
+            raise SettingsValidationError(f"{spec.label}: число должно быть конечным", spec.key)
         if spec.minimum is not None and number < spec.minimum:
-            raise ValueError(f"{spec.label}: минимум {spec.minimum:g}")
+            raise SettingsValidationError(f"{spec.label}: минимум {spec.minimum:g}", spec.key)
         if spec.maximum is not None and number > spec.maximum:
-            raise ValueError(f"{spec.label}: максимум {spec.maximum:g}")
+            raise SettingsValidationError(f"{spec.label}: максимум {spec.maximum:g}", spec.key)
         return str(int(number)) if number.is_integer() else str(number)
     return text
 
@@ -316,21 +329,36 @@ def _validate_relations(values: Mapping[str, str]) -> None:
     provider = values.get(OPENCODE_PROVIDER_ID_KEY, "").strip()
     model = values.get(OPENCODE_MODEL_ID_KEY, "").strip()
     if bool(provider) != bool(model):
-        raise ValueError("OpenCode Provider ID и Model ID задаются вместе")
+        raise SettingsValidationError(
+            "OpenCode Provider ID и Model ID задаются вместе",
+            OPENCODE_PROVIDER_ID_KEY,
+            OPENCODE_MODEL_ID_KEY,
+        )
     inline = int(values.get(OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY, "24576") or 24576)
     total = int(values.get(OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY, "49152") or 49152)
     if total < inline:
-        raise ValueError("Общий размер inline-справочников не может быть меньше одного справочника")
+        raise SettingsValidationError(
+            "Общий размер inline-справочников не может быть меньше одного справочника",
+            OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
+            OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
+        )
     address = values.get(OPENCODE_SERVER_URL_KEY, DEFAULT_SERVER_URL).strip()
     parsed = urlsplit(address)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise ValueError("OpenCode Server URL должен указывать на http://127.0.0.1 или localhost")
+        raise SettingsValidationError(
+            "OpenCode Server URL должен указывать на http://127.0.0.1 или localhost",
+            OPENCODE_SERVER_URL_KEY,
+        )
     try:
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("Некорректный порт OpenCode Server") from exc
+        raise SettingsValidationError(
+            "Некорректный порт OpenCode Server", OPENCODE_SERVER_URL_KEY
+        ) from exc
     if port is None:
-        raise ValueError("В OpenCode Server URL необходимо указать порт")
+        raise SettingsValidationError(
+            "В OpenCode Server URL необходимо указать порт", OPENCODE_SERVER_URL_KEY
+        )
 
 
 def _configure_opencode(manager: OpenCodeManager, values: Mapping[str, str]) -> None:

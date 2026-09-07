@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.env_manager import EnvManager
-from webapp.configuration import settings_snapshot, update_settings
+from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
 from webapp.api import settings_filesystem
 from webapp.settings import WebSettings
 
@@ -77,6 +77,18 @@ def test_settings_validation(tmp_path: Path, updates: dict[str, object], message
             updates,
             [],
         )
+
+
+def test_settings_validation_error_identifies_affected_fields(tmp_path: Path) -> None:
+    with pytest.raises(SettingsValidationError) as caught:
+        update_settings(
+            EnvManager(tmp_path / ".env"),
+            ManagerStub(),  # type: ignore[arg-type]
+            {"AUTODEPLOY_PORT": "0"},
+            [],
+        )
+
+    assert caught.value.fields == ("AUTODEPLOY_PORT",)
 
 
 def test_web_settings_reads_restart_values_from_env_file(

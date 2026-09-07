@@ -19,12 +19,13 @@ from webapp.models import (
     DraftSaveRequest,
     ReferenceRequest,
     SearchRequest,
+    SearchStatusRequest,
     SettingsUpdateRequest,
     SubmitRequest,
     TicketRequest,
     ValuesRequest,
 )
-from webapp.configuration import settings_snapshot, update_settings
+from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
 
 
 router = APIRouter(prefix="/api/v1")
@@ -73,6 +74,11 @@ def save_settings(body: SettingsUpdateRequest, request: Request):
             body.values,
             body.clear,
         )
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "fields": list(exc.fields)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -331,6 +337,28 @@ def search(body: SearchRequest, request: Request):
     try:
         return container(request).forms.search(
             body.kind, body.environments, body.query, body.limit, body.refresh
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post("/search/cache-status", tags=["search"])
+def search_cache_status(body: SearchStatusRequest, request: Request):
+    """Return per-environment cache timestamps before an explicit refresh."""
+    try:
+        return container(request).forms.search_cache_status(
+            body.kind, body.environments
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post("/search/refresh", tags=["search"])
+def refresh_search_catalog(body: SearchStatusRequest, request: Request):
+    """Explicitly reload the selected search catalogs after UI confirmation."""
+    try:
+        return container(request).forms.refresh_search_catalog(
+            body.kind, body.environments
         )
     except Exception as exc:
         _raise_runtime_error(exc)

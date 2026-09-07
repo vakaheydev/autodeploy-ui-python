@@ -58,6 +58,16 @@ class SearchRequest(StrictModel):
         return list(dict.fromkeys(value))
 
 
+class SearchStatusRequest(StrictModel):
+    kind: Literal["api", "application"]
+    environments: List[str] = Field(min_length=1, max_length=6)
+
+    @field_validator("environments")
+    @classmethod
+    def unique_environments(cls, value: List[str]) -> List[str]:
+        return list(dict.fromkeys(value))
+
+
 class ErrorItem(StrictModel):
     field: Optional[str] = None
     code: str
