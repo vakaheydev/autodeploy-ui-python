@@ -20,7 +20,7 @@ describe('SearchPage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('searches automatically after 500 ms of inactivity', async () => {
+  it('searches automatically after 200 ms of inactivity', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ items: [{
       environment: 'test_int',
@@ -34,11 +34,11 @@ describe('SearchPage', () => {
     fireEvent.change(screen.getByPlaceholderText(/Название, context path/), {
       target: { value: 'ord' },
     })
-    await act(async () => vi.advanceTimersByTimeAsync(300))
+    await act(async () => vi.advanceTimersByTimeAsync(100))
     fireEvent.change(screen.getByPlaceholderText(/Название, context path/), {
       target: { value: 'orders' },
     })
-    await act(async () => vi.advanceTimersByTimeAsync(499))
+    await act(async () => vi.advanceTimersByTimeAsync(199))
     expect(fetchMock).not.toHaveBeenCalled()
 
     await act(async () => vi.advanceTimersByTimeAsync(1))
@@ -66,7 +66,7 @@ describe('SearchPage', () => {
     fireEvent.submit(input.closest('form')!)
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    await act(async () => vi.advanceTimersByTimeAsync(500))
+    await act(async () => vi.advanceTimersByTimeAsync(200))
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -85,7 +85,7 @@ describe('SearchPage', () => {
     fireEvent.change(screen.getByPlaceholderText(/Название, context path/), {
       target: { value: 'orders' },
     })
-    await act(async () => vi.advanceTimersByTimeAsync(500))
+    await act(async () => vi.advanceTimersByTimeAsync(200))
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).environments).toEqual([
       'test_ext', 'regress_ext', 'prod_ext',

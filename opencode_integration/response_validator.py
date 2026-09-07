@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from forms.base_form import BaseForm
+from forms.base_form import BaseForm, FormValidationIssue
 from forms.fields import FieldType
 from opencode_integration.schemas import build_form_schema, field_value_schema
 
@@ -244,15 +244,18 @@ class ResponseValidator:
             # BaseForm required-проверку выше делаем точнее для списков/объектов.
             if text.startswith('Поле "') and "обязательно для заполнения" in text:
                 continue
-            lowered = text.casefold()
-            field_key = next(
-                (
-                    field_def.key
-                    for field_def in form.fields
-                    if field_def.label.casefold() in lowered
-                ),
-                "__form__",
-            )
+            if isinstance(message, FormValidationIssue):
+                field_key = message.field
+            else:
+                lowered = text.casefold()
+                field_key = next(
+                    (
+                        field_def.key
+                        for field_def in form.fields
+                        if field_def.label.casefold() in lowered
+                    ),
+                    "__form__",
+                )
             messages = target.setdefault(field_key, [])
             if text not in messages:
                 messages.append(text)

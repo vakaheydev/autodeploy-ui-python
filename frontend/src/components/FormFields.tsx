@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
-import { Check, FileJson, Plus, RefreshCw, Search, Trash2, Upload } from './Icons'
+import { Check, FileJson, Plus, RefreshCw, Search, Trash2, Upload, X } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
 import { SearchableSelect } from './SearchableSelect'
 import { ReferenceDetailsModal } from './ReferenceDetailsModal'
@@ -16,6 +16,7 @@ interface FieldProps {
   onChange: (value: unknown) => void
   onObjectChange?: (key: string, value: unknown) => void
   onObjectDelete?: (key: string) => void
+  onFieldChange?: (path: string) => void
   review?: Record<string, { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }>
   onReview?: (key: string, accept: boolean) => void
 }
@@ -26,9 +27,17 @@ interface OptionsResponse {
   has_more: boolean
 }
 
+function errorsForField(field: FieldDocument, errors: ValidationError[]) {
+  return errors.filter((item) => item.field === field.path || item.field === field.key)
+}
+
+function fieldErrorId(field: FieldDocument) {
+  return `field-error-${field.path.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+}
+
 function FieldError({ field, errors }: { field: FieldDocument; errors: ValidationError[] }) {
-  const relevant = errors.filter((item) => item.field === field.path || item.field === field.key)
-  return relevant.length ? <div className="field-errors">{relevant.map((item) => <span key={`${item.code}-${item.message}`}>{item.message}</span>)}</div> : null
+  const relevant = errorsForField(field, errors)
+  return relevant.length ? <div className="field-errors" id={fieldErrorId(field)} role="alert">{relevant.map((item) => <span key={`${item.field}-${item.code}-${item.message}`}><X size={13} />{item.message}</span>)}</div> : null
 }
 
 function referenceSearchPlaceholder(searchKeys: string[]) {
@@ -40,6 +49,8 @@ function referenceSearchPlaceholder(searchKeys: string[]) {
 function ReferenceField(props: FieldProps) {
   const { field, values, environment, formId, disabled, onChange } = props
   const reference = field.reference!
+  const invalid = errorsForField(field, props.errors).length > 0
+  const errorId = invalid ? fieldErrorId(field) : undefined
   const [items, setItems] = useState<ReferenceItem[]>(field.options ?? [])
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
@@ -151,6 +162,8 @@ function ReferenceField(props: FieldProps) {
             onSearch={searchable ? setQuery : undefined}
             onOptionContextMenu={(option) => openDetails(option.data as ReferenceItem)}
             searchPlaceholder={searchPlaceholder}
+            ariaInvalid={invalid}
+            ariaDescribedBy={errorId}
           />
           {reference.source === 'http' && <button type="button" className="icon-button reference-refresh" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
         </div>
@@ -174,7 +187,7 @@ function ReferenceField(props: FieldProps) {
         <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder} /></label>
         {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
       </div>
-      <div className="option-list" role="group" aria-label={field.label}>
+      <div className="option-list" role="group" aria-label={field.label} aria-invalid={invalid || undefined} aria-describedby={errorId}>
         {ordered.map((item) => {
           const id = identifier(item)
           const detailsText = searchableDetails(item)
@@ -192,46 +205,55 @@ function ReferenceField(props: FieldProps) {
 
 function BasicField(props: FieldProps) {
   const { field, value, disabled, onChange } = props
-  if (field.reference) return <ReferenceField {...props} />
+  const invalid = errorsForField(field, props.errors).length > 0
+  const errorId = invalid ? fieldErrorId(field) : undefined
+  const commit = (next: unknown) => {
+    onChange(next)
+    props.onFieldChange?.(field.path)
+  }
+  if (field.reference) return <ReferenceField {...props} onChange={commit} />
   if (field.type === 'textarea') {
-    return <textarea id={field.path} rows={5} value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value)} />
+    return <textarea id={field.path} rows={5} value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
   }
   if (field.type === 'checkbox') {
-    return <label className="switch-control"><input id={field.path} type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><span className="switch" /><span>{Boolean(value) ? 'Включено' : 'Выключено'}</span></label>
+    return <label className="switch-control"><input id={field.path} type="checkbox" checked={Boolean(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} onChange={(event) => commit(event.target.checked)} /><span className="switch" /><span>{Boolean(value) ? 'Включено' : 'Выключено'}</span></label>
   }
   if (field.type === 'number') {
-    return <input id={field.path} type="number" value={value === null || value === undefined ? '' : String(value)} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))} />
+    return <input id={field.path} type="number" value={value === null || value === undefined ? '' : String(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value === '' ? null : Number(event.target.value))} />
   }
   if (field.type === 'file') {
     const readFile = (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0]
       if (!file) return
       const reader = new FileReader()
-      reader.onload = () => onChange(String(reader.result ?? ''))
+      reader.onload = () => commit(String(reader.result ?? ''))
       reader.readAsText(file)
     }
-    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => onChange(event.target.value)} /></div>
+    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => commit(event.target.value)} /></div>
   }
-  return <input id={field.path} type="text" value={String(value ?? '')} disabled={disabled} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value)} />
+  return <input id={field.path} type="text" value={String(value ?? '')} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
 }
 
 function SingleField(props: FieldProps) {
   const { field, value, errors, onChange } = props
   const reviewKey = props.review?.[field.path] ? field.path : field.key
   const fieldReview = props.review?.[reviewKey]
+  const invalid = errorsForField(field, errors).length > 0
   if (!field.visible) return null
   if (field.type === 'block') {
     const block = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
     return (
-      <fieldset className="block-field">
+      <fieldset className={`block-field ${invalid ? 'invalid' : ''}`} data-form-field-path={field.path} data-form-field-key={field.key}>
         <legend><FileJson size={17} /> {field.label}{field.required && <b>*</b>}</legend>
         {field.hint && <p className="field-hint">{field.hint}</p>}
         <div className="block-fields">
-          {(field.fields ?? []).map((nested) => (
+          {(field.fields ?? []).map((nested) => {
+            const nestedField = { ...nested, path: `${field.path}.${nested.key}` }
+            return (
             <PluralField
               key={nested.key}
               {...props}
-              field={nested}
+              field={nestedField}
               values={block}
               value={block[nested.key]}
               onChange={(nestedValue) => onChange({ ...block, [nested.key]: nestedValue })}
@@ -242,14 +264,15 @@ function SingleField(props: FieldProps) {
                 onChange(next)
               }}
             />
-          ))}
+            )
+          })}
         </div>
         <FieldError field={field} errors={errors} />
       </fieldset>
     )
   }
   return (
-    <div className={`form-field ${errors.some((item) => item.field === field.path || item.field === field.key) ? 'invalid' : ''} ${fieldReview ? `ai-review confidence-${fieldReview.confidence}` : ''}`}>
+    <div className={`form-field ${invalid ? 'invalid' : ''} ${fieldReview ? `ai-review confidence-${fieldReview.confidence}` : ''}`} data-form-field-path={field.path} data-form-field-key={field.key}>
       <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <div className="field-review-controls"><span className="confidence-badge" title={[fieldReview.source, fieldReview.reason, fieldReview.conflict].filter(Boolean).join('\n')}>{fieldReview.confidence}</span><button type="button" className="review-accept" aria-label={`Принять ${field.label}`} onClick={() => props.onReview?.(reviewKey, true)}>✓</button><button type="button" className="review-reject" aria-label={`Отклонить ${field.label}`} onClick={() => props.onReview?.(reviewKey, false)}>×</button></div>}</div>
       {field.hint && <p className="field-hint">{field.hint}</p>}
       <BasicField {...props} />
@@ -272,7 +295,9 @@ export function PluralField(props: FieldProps) {
     if (field.plural_max && instances.length >= field.plural_max) return
     let nextIndex = 2
     while (Object.prototype.hasOwnProperty.call(values, `${field.key}_${nextIndex}`)) nextIndex += 1
-    props.onObjectChange?.(`${field.key}_${nextIndex}`, field.default ?? '')
+    const key = `${field.key}_${nextIndex}`
+    props.onObjectChange?.(key, field.default ?? '')
+    props.onFieldChange?.(field.path.replace(/[^.]+$/, key))
   }
   const addLabel = field.type === 'block' && field.label
     ? `Добавить ${field.label.charAt(0).toLocaleLowerCase('ru')}${field.label.slice(1)}`
@@ -282,7 +307,7 @@ export function PluralField(props: FieldProps) {
       {instances.map((key, index) => (
         <div className="plural-instance" key={key}>
           <SingleField {...props} field={{ ...field, key, path: field.path.replace(/[^.]+$/, key), label: index ? `${field.label} · ${index + 1}` : field.label, plural: false }} value={values[key]} onChange={(next) => props.onObjectChange ? props.onObjectChange(key, next) : index === 0 && onChange(next)} />
-          {index > 0 && props.onObjectDelete && <button type="button" className="icon-button danger floating-remove" onClick={() => props.onObjectDelete?.(key)} aria-label="Удалить значение"><Trash2 size={16} /></button>}
+          {index > 0 && props.onObjectDelete && <button type="button" className="icon-button danger floating-remove" onClick={() => { props.onObjectDelete?.(key); props.onFieldChange?.(field.path.replace(/[^.]+$/, key)) }} aria-label="Удалить значение"><Trash2 size={16} /></button>}
         </div>
       ))}
       <button type="button" className="button ghost small" onClick={add} disabled={Boolean(field.plural_max && instances.length >= field.plural_max)}><Plus size={15} /> {addLabel}</button>
@@ -290,7 +315,7 @@ export function PluralField(props: FieldProps) {
   )
 }
 
-export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, review, onReview }: {
+export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, review, onReview }: {
   fields: FieldDocument[]
   values: Record<string, unknown>
   environment: string
@@ -298,6 +323,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
   errors: ValidationError[]
   disabled?: boolean
   onValuesChange: (values: Record<string, unknown>) => void
+  onFieldChange?: (path: string) => void
   review?: FieldProps['review']
   onReview?: FieldProps['onReview']
 }) {
@@ -320,6 +346,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
       onChange={(value) => change(field.key, value)}
       onObjectChange={change}
       onObjectDelete={remove}
+      onFieldChange={onFieldChange}
       review={review}
       onReview={onReview}
     />

@@ -20,7 +20,7 @@ interface CacheStatus {
 type Tier = 'test' | 'regress' | 'prod' | 'all'
 type Network = 'int' | 'ext'
 
-const SEARCH_DEBOUNCE_MS = 500
+const SEARCH_DEBOUNCE_MS = 200
 const TIER_OPTIONS: Array<{ value: Tier; label: string }> = [
   { value: 'test', label: 'TEST' },
   { value: 'regress', label: 'REGRESS' },

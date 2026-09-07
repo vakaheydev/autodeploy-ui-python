@@ -37,6 +37,10 @@ application. There is no Node process on a user's machine.
    the full selected parent record; the browser still stores only its
    `value_key` and never has to reproduce that lookup rule.
 5. `/validate` and `/preview` execute server validation and `build_payload()`.
+   Structural errors already carry their field path. Custom validators should
+   return `self.validation_error("field_key", "message")`; legacy strings are
+   matched by field key/label when possible. React renders these messages inline
+   and scrolls/focuses the first invalid field.
 6. Destructive forms receive a short-lived, one-use confirmation capability.
 7. `/submit` revalidates everything and calls the original Python submit hooks.
    Browser-provided payloads and endpoints are never trusted.
@@ -55,6 +59,16 @@ fields -> validate -> build_payload -> pre_submit -> HTTP
 
 `self.screen.get_field_item(s)` inside `pre_submit()` is supported through a
 headless compatibility context containing the fully resolved reference objects.
+Every request-scoped form also receives the selected environment as the plain
+string `self.current_environment`; use it instead of
+`self.screen.app.current_environment.get()`.
+
+For gradual migration, `self.apply_form_data({...})` and the legacy
+`self.screen.apply_form_data({...})` are supported while executing a
+`ServerAction` or `fetch_from_itsm()`. The web context accumulates that patch and
+returns it to React; unknown field keys are ignored as in `FormScreen`. Calling
+it during validation, payload construction or submit remains an error because
+the browser values have already entered validation/confirmation at that point.
 The original Tkinter entry point remains `python main.py`.
 
 Tkinter-only `CustomButton` callbacks may open dialogs and therefore cannot be

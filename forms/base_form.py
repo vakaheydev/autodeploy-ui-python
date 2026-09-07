@@ -9,7 +9,7 @@ BaseForm — абстрактный базовый класс для всех ф
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as _dc_field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
 
 if TYPE_CHECKING:
     from services.gravitee_service import GraviteeService
@@ -53,6 +53,18 @@ class ServerAction:
     confirmation_text: str = ""
 
 
+@dataclass(frozen=True)
+class FormValidationIssue:
+    """Domain validation message associated with a concrete form field."""
+
+    field: str
+    message: str
+    code: str = "domain_validation"
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class BaseForm(ABC):
     """
     Декларативное описание формы.
@@ -64,6 +76,10 @@ class BaseForm(ABC):
     itsm_service:     Optional["ITSMService"]     = None
     gravitee_service: Optional["GraviteeService"] = None
     screen:           Optional[Any]               = None  # ссылка на FormScreen (tk.Widget)
+    # Текущее окружение задаётся desktop/web runtime перед вызовом формы.
+    # В отличие от старого ``self.screen.app.current_environment.get()`` это
+    # UI-independent строка: ``self.current_environment``.
+    current_environment: str = ""
 
     # Необязательная короткая фраза о назначении формы для веб-каталога.
     # Это обычный атрибут, поэтому старые корпоративные формы могут также
@@ -360,14 +376,55 @@ class BaseForm(ABC):
             i += 1
         return results
 
-    def validate(self, form_data: Dict[str, Any]) -> List[str]:
+    def apply_form_data(self, data: Mapping[str, Any]) -> List[str]:
+        """Предложить значения для текущей формы без зависимости от UI.
+
+        В Tkinter вызов делегируется реальному ``FormScreen``. В web runtime
+        он поддерживается внутри ``ServerAction`` и ``fetch_from_itsm``:
+        накопленные значения возвращаются браузеру обычным JSON patch. Во время
+        validate/build_payload/pre_submit менять уже подтверждённую форму нельзя.
+
+        Для нового server-side кода предпочтительно также явно возвращать
+        ``{"values": {...}}`` из ``ServerAction`` или mapping из
+        ``fetch_from_itsm``; этот метод нужен для плавной миграции старых форм.
+        """
+        if self.screen is None:
+            raise RuntimeError(
+                "apply_form_data доступен только на экране Tkinter, "
+                "в ServerAction или fetch_from_itsm"
+            )
+        return list(self.screen.apply_form_data(data))
+
+    @staticmethod
+    def validation_error(
+        field: str,
+        message: str,
+        code: str = "domain_validation",
+    ) -> FormValidationIssue:
+        """Create an inline validation error for ``field``.
+
+        Plain strings returned by legacy ``validate`` implementations remain
+        supported and are matched to a field by its key or label when possible.
+        Use this helper for cross-field rules whose message does not name the
+        field unambiguously.
+        """
+        return FormValidationIssue(field=field, message=message, code=code)
+
+    def validate(
+        self,
+        form_data: Dict[str, Any],
+    ) -> List[str | FormValidationIssue]:
         """
         Базовая валидация: проверяет обязательные поля.
-        Возвращает список сообщений об ошибках (пустой — если всё ок).
+        Возвращает список сообщений или field-aware ``FormValidationIssue``
+        (пустой список — если всё ок).
 
-        Переопределить для добавления кастомной валидации.
+        Для кастомных правил используйте
+        ``self.validation_error("field_key", "Сообщение")``: web UI покажет
+        такую ошибку непосредственно у нужного поля. Старые строки сохраняют
+        обратную совместимость.
         """
-        errors: List[str] = []
+        errors: List[str | FormValidationIssue] = []
         for field_def in self.fields:
             if not field_def.required:
                 continue

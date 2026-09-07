@@ -815,9 +815,8 @@ class WebAIService:
             properties = raw.get("properties")
             values = properties if isinstance(properties, Mapping) else {}
             if event_type == "client.sse.disconnected":
-                session.emit("agent_event", dataclasses.asdict(ConversationEvent(
-                    "warning", "Поток Researcher переподключается"
-                )))
+                # The OpenCode client reconnects by itself; a transient SSE
+                # disconnect is only useful in server logs, not in the chat.
                 return
             if event_type != "message.part.updated":
                 return
@@ -891,7 +890,9 @@ class WebAIService:
         items: list[dict[str, Any]] = []
         for draft in self._drafts.list_all():
             try:
-                form = self.container.forms.get_form(draft.form_id)
+                form = self.container.forms.get_form(
+                    draft.form_id, draft.environment
+                )
                 title = form.title
                 current_version = form_version(form)
             except Exception:
@@ -1140,7 +1141,9 @@ class WebAIService:
                 job.progress = str(text)
 
         try:
-            form = self.container.forms.get_form(handoff.form_id)
+            form = self.container.forms.get_form(
+                handoff.form_id, job.environment
+            )
             if directive.mode == "fill_only":
                 result = agent.fill_only(
                     form=form,

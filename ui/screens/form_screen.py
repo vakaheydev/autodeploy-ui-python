@@ -152,6 +152,7 @@ class FormScreen(BaseScreen):
         self._form.itsm_service     = self.app.itsm_service
         self._form.gravitee_service = self.app.gravitee_service
         self._form.screen           = self
+        self._form.current_environment = self.app.current_environment.get()
 
         self._add_back_button()
 
@@ -544,6 +545,8 @@ class FormScreen(BaseScreen):
 
     def _on_env_changed(self) -> None:
         """Вызывается при смене окружения. Перезагружает HTTP-справочники."""
+        new_env = self.app.current_environment.get()
+        self._form.current_environment = new_env
         if not self._ready:
             return
         if self._ai_inline_review is not None:
@@ -558,8 +561,6 @@ class FormScreen(BaseScreen):
                 "AI-предложения сброшены: окружение формы изменилось.",
                 "muted",
             )
-        new_env = self.app.current_environment.get()
-
         # Верхнеуровневые HTTP SELECT/MULTISELECT
         direct_http = [
             f for f in self._form.fields
@@ -896,7 +897,11 @@ class FormScreen(BaseScreen):
         errors = self._form.validate(form_data)
         if errors:
             self._set_status(f"✗  {errors[0]}", "error")
-            show_error(self, "Ошибка заполнения", "\n".join(errors))
+            show_error(
+                self,
+                "Ошибка заполнения",
+                "\n".join(str(error) for error in errors),
+            )
             return
 
         # Диалог подтверждения (если форма его требует)
@@ -1013,7 +1018,11 @@ class FormScreen(BaseScreen):
         form_data = self._collect_form_data()
         errors = self._form.validate(form_data)
         if errors:
-            show_warning(self, "Валидация", "\n".join(errors))
+            show_warning(
+                self,
+                "Валидация",
+                "\n".join(str(error) for error in errors),
+            )
             return
         payload = self._form.build_payload(form_data)
         show_text_viewer(self, "Предварительный просмотр JSON",

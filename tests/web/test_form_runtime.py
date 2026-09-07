@@ -133,7 +133,9 @@ def test_legacy_condition_key_access_treats_unfilled_fields_as_none(
             return "https://example.invalid"
 
     monkeypatch.setattr(
-        container.forms, "get_form", lambda _form_id: ConditionalForm()
+        container.forms,
+        "get_form",
+        lambda _form_id, _environment="": ConditionalForm(),
     )
 
     hidden = container.forms.describe("test.legacy-condition", "test_int")
@@ -197,7 +199,7 @@ def test_nested_condition_uses_checkbox_default_on_initial_projection(
     monkeypatch.setattr(
         container.forms,
         "get_form",
-        lambda _form_id: ConditionalBlockForm(),
+        lambda _form_id, _environment="": ConditionalBlockForm(),
     )
 
     initial = container.forms.describe("test.conditional-block", "test_int")
@@ -395,12 +397,93 @@ class _ActionForm(BaseForm):
         return [ServerAction(
             "normalise",
             "Normalise",
-            lambda _environment, values: {
-                "message": "Done",
-                "values": {"name": str(values["name"]).upper()},
-            },
+            self._normalise,
             confirmation_text="Run normalisation?",
         )]
+
+    def _normalise(self, environment, values):
+        assert self.current_environment == environment
+        assert self.screen.current_environment == environment
+        assert self.apply_form_data({
+            "name": str(values["name"]).upper(),
+            "unknown": "ignored like the Tkinter screen",
+        }) == ["name"]
+        return {"message": "Done"}
+
+
+class _TicketPatchForm(BaseForm):
+    form_id = "test.ticket-patch"
+    title = "Ticket patch"
+    category = "other"
+    fields = [
+        FieldDefinition("name", "Name", FieldType.TEXT),
+        FieldDefinition("owner", "Owner", FieldType.TEXT),
+    ]
+    itsm_support = True
+
+    def build_payload(self, form_data):
+        return dict(form_data)
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
+
+    def fetch_from_itsm(self, environment: str, ticket_id: str):
+        assert ticket_id == "REQ-42"
+        assert self.current_environment == environment
+        assert self.screen.current_environment == environment
+        assert self.screen.apply_form_data({"name": "From ITSM"}) == ["name"]
+        assert self.apply_form_data({"owner": "Platform", "ignored": True}) == [
+            "owner"
+        ]
+        return None
+
+
+class _EnvironmentAwareForm(BaseForm):
+    form_id = "test.environment-aware"
+    title = "Environment aware"
+    category = "other"
+    fields = [FieldDefinition("name", "Name", FieldType.TEXT)]
+
+    def validate(self, form_data):
+        if self.current_environment != "prod_ext":
+            return ["Текущее окружение не передано в форму"]
+        return super().validate(form_data)
+
+    def build_payload(self, form_data):
+        return {
+            **form_data,
+            "environment": self.current_environment,
+        }
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
+
+
+class _InlineValidationForm(BaseForm):
+    form_id = "test.inline-validation"
+    title = "Inline validation"
+    category = "other"
+    fields = [
+        FieldDefinition("owner", "Владелец", FieldType.TEXT, required=False),
+        FieldDefinition(
+            "ingresses", "Ингрессы", FieldType.MULTISELECT, required=False
+        ),
+    ]
+
+    def validate(self, form_data):
+        return [
+            'Поле "Владелец" содержит некорректное значение',
+            self.validation_error(
+                "ingresses",
+                "Необходимо выбрать хотя бы один ingress",
+            ),
+        ]
+
+    def build_payload(self, form_data):
+        return dict(form_data)
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
 
 
 class _SubmitHookForm(BaseForm):
@@ -559,6 +642,76 @@ def test_server_action_requires_one_time_confirmation(container: ApplicationCont
             first["confirmation_token"],
         )
         assert repeated["confirmation_required"] is True
+    finally:
+        registry.clear()
+        register_all_forms()
+
+
+def test_ticket_hook_can_apply_a_headless_form_patch(
+    container: ApplicationContainer,
+) -> None:
+    registry = FormRegistry()
+    registry.register(_TicketPatchForm())
+    try:
+        result = container.forms.fetch_ticket(
+            "test.ticket-patch", "regress_ext", "REQ-42"
+        )
+        assert result == {
+            "values": {"name": "From ITSM", "owner": "Platform"},
+            "errors": [],
+            "valid": True,
+        }
+        assert (
+            container.forms.get_form(
+                "test.ticket-patch", "regress_ext"
+            ).current_environment
+            == "regress_ext"
+        )
+    finally:
+        registry.clear()
+        register_all_forms()
+
+
+def test_current_environment_is_available_to_validation_and_payload_hooks(
+    container: ApplicationContainer,
+) -> None:
+    registry = FormRegistry()
+    registry.register(_EnvironmentAwareForm())
+    try:
+        form = container.forms.get_form("test.environment-aware", "prod_ext")
+        preview = container.forms.preview(
+            form.form_id,
+            "prod_ext",
+            {"name": "Orders"},
+            form_version(form),
+        )
+        assert preview["valid"] is True
+        assert preview["payload"] == {
+            "name": "Orders",
+            "environment": "prod_ext",
+        }
+    finally:
+        registry.clear()
+        register_all_forms()
+
+
+def test_domain_validation_errors_are_attached_to_their_fields(
+    container: ApplicationContainer,
+) -> None:
+    registry = FormRegistry()
+    registry.register(_InlineValidationForm())
+    try:
+        form = container.forms.get_form("test.inline-validation", "test_int")
+        validation = container.forms.validate(
+            form.form_id,
+            "test_int",
+            {"owner": "unknown", "ingresses": []},
+            form_version(form),
+        )
+        assert [(item["field"], item["message"]) for item in validation.errors] == [
+            ("owner", 'Поле "Владелец" содержит некорректное значение'),
+            ("ingresses", "Необходимо выбрать хотя бы один ingress"),
+        ]
     finally:
         registry.clear()
         register_all_forms()

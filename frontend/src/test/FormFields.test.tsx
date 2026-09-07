@@ -35,6 +35,24 @@ describe('FormFields', () => {
     expect(onReview).toHaveBeenCalledWith('name', true)
   })
 
+  it('renders validation feedback inside the affected field', () => {
+    render(<FormFields
+      fields={[base({})]}
+      values={{ name: '' }}
+      environment="test_int"
+      formId="api.create"
+      errors={[{ field: 'name', code: 'required', message: 'Введите название' }]}
+      onValuesChange={() => undefined}
+    />)
+
+    const input = screen.getByRole('textbox', { name: /Название/ })
+    const field = input.closest('[data-form-field-path="name"]')
+    expect(field).toHaveClass('invalid')
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription('Введите название')
+    expect(within(field as HTMLElement).getByRole('alert')).toHaveTextContent('Введите название')
+  })
+
   it('renders a multiselect as explicit multiple choices', async () => {
     const user = userEvent.setup()
     const onValuesChange = vi.fn()

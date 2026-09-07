@@ -55,7 +55,7 @@ class SubmitService:
         # 1. Валидация
         errors = form.validate(form_data)
         if errors:
-            return SubmitResult(False, "\n".join(errors))
+            return SubmitResult(False, "\n".join(str(error) for error in errors))
 
         # 2. Endpoint
         endpoint = form.get_submit_endpoint(environment)

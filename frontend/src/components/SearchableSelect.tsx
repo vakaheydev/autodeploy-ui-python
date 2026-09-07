@@ -22,6 +22,8 @@ export function SearchableSelect({
   id,
   compact = false,
   clearable = true,
+  ariaInvalid = false,
+  ariaDescribedBy,
   onOptionContextMenu,
 }: {
   value: string
@@ -37,6 +39,8 @@ export function SearchableSelect({
   id?: string
   compact?: boolean
   clearable?: boolean
+  ariaInvalid?: boolean
+  ariaDescribedBy?: string
   onOptionContextMenu?: (option: SelectOption) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -67,7 +71,7 @@ export function SearchableSelect({
   }
 
   return <div className={`searchable-select ${open ? 'open' : ''} ${compact ? 'compact' : ''}`} ref={root}>
-    <button id={id} type="button" className="select-trigger" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}>
+    <button id={id} type="button" className="select-trigger" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-invalid={ariaInvalid || undefined} aria-describedby={ariaDescribedBy} disabled={disabled} onClick={() => setOpen((current) => !current)}>
       <span className={selected ? '' : 'placeholder'}>{selected?.label ?? (value || placeholder)}</span>
       <ChevronDown size={15} />
     </button>

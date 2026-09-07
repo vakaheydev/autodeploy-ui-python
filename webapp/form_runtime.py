@@ -13,11 +13,11 @@ import logging
 import math
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from config.categories import CATEGORIES
 from config.environments import ENVIRONMENT_MAP
-from forms.base_form import BaseForm
+from forms.base_form import BaseForm, FormValidationIssue
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from forms.registry import FormRegistry
 from opencode_integration.context_builder import is_secret_key
@@ -147,25 +147,72 @@ def _public_item(item: Mapping[str, Any], reference: ReferenceConfig) -> dict[st
 class _WebFormContext:
     """Compatibility replacement for ``FormScreen`` inside server hooks."""
 
-    def __init__(self, selected: Mapping[str, list[dict[str, Any]]]) -> None:
-        self._selected = selected
+    def __init__(
+        self,
+        selected: Optional[Mapping[str, list[dict[str, Any]]]] = None,
+        *,
+        environment: str = "",
+        writable_fields: Optional[Iterable[FieldDefinition]] = None,
+        selected_loader: Optional[
+            Callable[[], Mapping[str, list[dict[str, Any]]]]
+        ] = None,
+    ) -> None:
+        self.current_environment = environment
+        self._selected = dict(selected or {})
+        self._selected_loader = selected_loader
+        self._selection_loaded = selected_loader is None
+        self._writable_fields = (
+            {field.key: field for field in writable_fields}
+            if writable_fields is not None
+            else None
+        )
+        self._applied: dict[str, Any] = {}
+
+    def _selection(self) -> Mapping[str, list[dict[str, Any]]]:
+        if not self._selection_loaded and self._selected_loader is not None:
+            self._selected = dict(self._selected_loader())
+            self._selection_loaded = True
+        return self._selected
 
     def get_field_item(self, key: str) -> Optional[dict[str, Any]]:
-        values = self._selected.get(key, [])
+        values = self._selection().get(key, [])
         return copy.deepcopy(values[0]) if values else None
 
     def get_field_items(self, key: str) -> list[dict[str, Any]]:
-        return copy.deepcopy(self._selected.get(key, []))
+        return copy.deepcopy(self._selection().get(key, []))
 
-    def apply_form_data(self, _data: Mapping[str, Any]) -> list[str]:
-        raise RuntimeError("apply_form_data недоступен во время server-side submit")
+    def apply_form_data(self, data: Mapping[str, Any]) -> list[str]:
+        if self._writable_fields is None:
+            raise RuntimeError(
+                "apply_form_data недоступен во время validate/build_payload/submit"
+            )
+        if not isinstance(data, Mapping):
+            raise TypeError("apply_form_data ожидает mapping field_key -> value")
+        applied: list[str] = []
+        for raw_key, value in data.items():
+            key = str(raw_key)
+            field = self._writable_fields.get(key)
+            if field is None:
+                match = _PLURAL_RE.match(key)
+                if match is not None:
+                    candidate = self._writable_fields.get(match.group(1))
+                    field = candidate if candidate is not None and candidate.plural else None
+            if field is None:
+                continue
+            self._applied[key] = copy.deepcopy(value)
+            applied.append(key)
+        return applied
+
+    @property
+    def applied_values(self) -> dict[str, Any]:
+        return copy.deepcopy(self._applied)
 
 
 class FormRuntime:
     def __init__(self, container: Any) -> None:
         self.container = container
 
-    def get_form(self, form_id: str) -> BaseForm:
+    def get_form(self, form_id: str, environment: str = "") -> BaseForm:
         try:
             source = FormRegistry().get(form_id)
         except KeyError as exc:
@@ -177,6 +224,7 @@ class FormRuntime:
         form.itsm_service = services.itsm
         form.gravitee_service = services.gravitee
         form.screen = None
+        form.current_environment = str(environment)
         return form
 
     def list_forms(self, category: str = "") -> list[dict[str, Any]]:
@@ -225,7 +273,7 @@ class FormRuntime:
         self, form_id: str, environment: str, values: Optional[Mapping[str, Any]] = None
     ) -> dict[str, Any]:
         self._ensure_environment(environment)
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         current = self._with_defaults(form.fields, dict(values or {}))
         fields = [
             self._field_document(
@@ -278,7 +326,7 @@ class FormRuntime:
         confirmation_token: str,
     ) -> dict[str, Any]:
         self._ensure_environment(environment)
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         self._check_version(form, version)
         action = next(
             (item for item in form.get_server_actions() if item.action_id == action_id),
@@ -314,6 +362,18 @@ class FormRuntime:
                 "confirmation_text": action.confirmation_text,
                 "confirmation_token": self.container.confirmations.issue(fingerprint),
             }
+        resolver = self.container.new_reference_resolver()
+        context = _WebFormContext(
+            environment=environment,
+            writable_fields=form.fields,
+            selected_loader=lambda: self._selected_reference_items(
+                form.fields,
+                validation.values,
+                environment,
+                resolver,
+            ),
+        )
+        form.screen = context
         result = action.handler(environment, copy.deepcopy(validation.values))
         if result is None:
             result = {}
@@ -322,10 +382,12 @@ class FormRuntime:
         proposed = result.get("values", {})
         if proposed is not None and not isinstance(proposed, Mapping):
             raise ValueError("Server action values должен быть объектом")
+        applied = context.applied_values
+        applied.update(copy.deepcopy(dict(proposed or {})))
         return {
             "success": True,
             "message": str(result.get("message", "Действие выполнено")),
-            "values": _json_safe(dict(proposed or {})),
+            "values": _json_safe(applied),
             "data": _json_safe(result.get("data")),
         }
 
@@ -406,7 +468,7 @@ class FormRuntime:
     def state(
         self, form_id: str, environment: str, values: Mapping[str, Any], version: str = ""
     ) -> dict[str, Any]:
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         self._check_version(form, version)
         return self.describe(form_id, environment, values)
 
@@ -420,7 +482,7 @@ class FormRuntime:
         validate_references: bool = True,
     ) -> RuntimeValidation:
         self._ensure_environment(environment)
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         self._check_version(form, version)
         raw = self._with_defaults(form.fields, dict(values))
         errors: list[dict[str, Any]] = []
@@ -449,8 +511,16 @@ class FormRuntime:
             })
         else:
             existing_messages = {item["message"] for item in errors}
-            for message in domain_errors:
-                clean = str(message)
+            if isinstance(domain_errors, (str, FormValidationIssue, Mapping)):
+                domain_errors = [domain_errors]
+            for issue in domain_errors or []:
+                field, code, clean = self._domain_validation_issue(
+                    issue,
+                    form.fields,
+                    canonical,
+                )
+                if not clean:
+                    continue
                 required_match = re.fullmatch(
                     r'Поле "(?P<label>.+)" обязательно для заполнения', clean
                 )
@@ -465,8 +535,8 @@ class FormRuntime:
                     continue
                 if clean not in existing_messages:
                     errors.append({
-                        "field": None,
-                        "code": "domain_validation",
+                        "field": field,
+                        "code": code,
                         "message": clean,
                     })
                     existing_messages.add(clean)
@@ -483,7 +553,7 @@ class FormRuntime:
                 "errors": list(validation.errors),
                 "visible_fields": list(validation.visible_fields),
             }
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         payload = form.build_payload(validation.values)
         endpoint = form.get_submit_endpoint(environment)
         if not endpoint:
@@ -535,7 +605,7 @@ class FormRuntime:
                 "validation": asdict(validation),
                 "message": "Форма не прошла валидацию",
             }
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         current_version = form_version(form)
         if form.confirm_submit():
             fingerprint = self.container.fingerprint(
@@ -590,7 +660,7 @@ class FormRuntime:
         state = self.container.submissions.get(submission_id)
         if state is None:
             raise FormNotFoundError("submission")
-        form = self.get_form(state.form_id)
+        form = self.get_form(state.form_id, state.environment)
         if not state.polling:
             return {"polling": False, "status": "stopped"}
         endpoint = form.get_poll_endpoint(state.environment, state.response)
@@ -620,16 +690,25 @@ class FormRuntime:
 
     def fetch_ticket(self, form_id: str, environment: str, ticket_id: str) -> dict[str, Any]:
         self._ensure_environment(environment)
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         if not form.itsm_support:
             raise ValueError("Эта форма не поддерживает прямое заполнение из ITSM")
+        context = _WebFormContext(
+            environment=environment,
+            writable_fields=form.fields,
+        )
+        form.screen = context
         result = form.fetch_from_itsm(environment, ticket_id)
+        if result is None:
+            result = {}
         if not isinstance(result, Mapping):
             raise ValueError("ITSM hook формы должен вернуть объект field_key -> value")
+        values = context.applied_values
+        values.update(copy.deepcopy(dict(result)))
         validation = self.validate(
             form_id,
             environment,
-            dict(result),
+            values,
             form_version(form),
             validate_references=False,
         )
@@ -651,7 +730,7 @@ class FormRuntime:
         refresh: bool,
     ) -> dict[str, Any]:
         self._ensure_environment(environment)
-        form = self.get_form(form_id)
+        form = self.get_form(form_id, environment)
         field, siblings = self._find_field_context(form.fields, field_path)
         if field.reference is None:
             raise ValueError("Поле не связано со справочником")
@@ -1130,6 +1209,100 @@ class FormRuntime:
     @staticmethod
     def _error(field: Optional[str], code: str, message: str) -> dict[str, Any]:
         return {"field": field, "code": code, "message": message}
+
+    @classmethod
+    def _domain_validation_issue(
+        cls,
+        issue: Any,
+        fields: Iterable[FieldDefinition],
+        values: Mapping[str, Any],
+    ) -> tuple[Optional[str], str, str]:
+        """Normalise legacy and field-aware results returned by ``validate``."""
+        explicit_field: Optional[str] = None
+        code = "domain_validation"
+        if isinstance(issue, FormValidationIssue):
+            explicit_field = issue.field
+            code = issue.code or code
+            message = issue.message
+        elif isinstance(issue, Mapping):
+            raw_field = issue.get("field")
+            explicit_field = (
+                str(raw_field) if raw_field is not None and raw_field != "" else None
+            )
+            code = str(issue.get("code") or code)
+            message = issue.get("message", "")
+        else:
+            message = issue
+        clean = str(message).strip()
+        candidates = cls._validation_field_candidates(fields, values)
+        field = cls._match_validation_field(explicit_field, clean, candidates)
+        return field, code, clean
+
+    @classmethod
+    def _validation_field_candidates(
+        cls,
+        fields: Iterable[FieldDefinition],
+        values: Mapping[str, Any],
+        *,
+        prefix: str = "",
+    ) -> list[tuple[str, str, str]]:
+        candidates: list[tuple[str, str, str]] = []
+        for field in fields:
+            instance_keys = [field.key]
+            if field.plural:
+                instance_keys.extend(
+                    key for key in values
+                    if key.startswith(f"{field.key}_")
+                    and key[len(field.key) + 1:].isdigit()
+                )
+            for key in dict.fromkeys(instance_keys):
+                path = f"{prefix}.{key}" if prefix else key
+                candidates.append((path, key, field.label))
+                value = values.get(key)
+                if field.field_type == FieldType.BLOCK and isinstance(value, Mapping):
+                    candidates.extend(cls._validation_field_candidates(
+                        field.block_fields,
+                        value,
+                        prefix=path,
+                    ))
+        return candidates
+
+    @staticmethod
+    def _match_validation_field(
+        explicit_field: Optional[str],
+        message: str,
+        candidates: Iterable[tuple[str, str, str]],
+    ) -> Optional[str]:
+        available = list(candidates)
+        if explicit_field:
+            exact = next(
+                (path for path, _key, _label in available if path == explicit_field),
+                None,
+            )
+            if exact:
+                return exact
+            by_key = [
+                path for path, key, _label in available
+                if key == explicit_field or path.endswith(f".{explicit_field}")
+            ]
+            if by_key:
+                return by_key[0]
+
+        normalized = message.casefold()
+        # Prefer the longest label/key so that, for example, "Тип канала" is
+        # selected before a shorter generic field name.
+        searchable = sorted(
+            available,
+            key=lambda candidate: max(len(candidate[1]), len(candidate[2])),
+            reverse=True,
+        )
+        for path, key, label in searchable:
+            if label and label.casefold() in normalized:
+                return path
+            key_pattern = rf"(?<![\w.]){re.escape(key.casefold())}(?![\w.])"
+            if re.search(key_pattern, normalized):
+                return path
+        return None
 
     @staticmethod
     def _ensure_environment(environment: str) -> None:

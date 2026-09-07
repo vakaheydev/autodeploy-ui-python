@@ -43,6 +43,20 @@ hooks. В `pre_submit()` доступны совместимые
 `self.screen.get_field_item()`/`get_field_items()` с полными объектами выбранных
 элементов справочника.
 
+Для кода, который раньше зависел от `FormScreen`, используйте два
+UI-independent контракта:
+
+```python
+environment = self.current_environment
+self.apply_form_data({"field_key": "value"})
+```
+
+`current_environment` заполняется и desktop-, и web-runtime. Применение данных
+поддерживается в `ServerAction` и `fetch_from_itsm()`; в web-режиме накопленный
+patch автоматически возвращается frontend. Старый прямой вызов
+`self.screen.apply_form_data(...)` в этих двух hook также поддерживается для
+плавной миграции. Доступ к `self.screen.app` намеренно не эмулируется.
+
 Адаптация нужна, если форма:
 
 - открывает Tkinter-диалоги или обращается к конкретным виджетам;
@@ -102,6 +116,25 @@ where = ["src"]
 from forms.base_form import BaseForm, ServerAction
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 ```
+
+Ошибки кастомной валидации, относящиеся к конкретному полю, возвращайте через
+публичный helper. Тогда web-интерфейс покажет сообщение непосредственно под
+полем и переведёт к нему пользователя:
+
+```python
+def validate(self, form_data):
+    errors = super().validate(form_data)
+    if not form_data.get("context_path", "").startswith("/"):
+        errors.append(self.validation_error(
+            "context_path",
+            "Context path должен начинаться с /",
+        ))
+    return errors
+```
+
+Старые строковые ошибки остаются совместимыми: ядро пытается определить поле
+по его `key` или `label`. Для межполевых правил используйте явный helper, чтобы
+не полагаться на текст сообщения.
 
 ## 2. Регистрация форм и AI-описаний
 

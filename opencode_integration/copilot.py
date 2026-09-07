@@ -950,7 +950,8 @@ class UnifiedCopilot:
         props = event.get("properties")
         values = props if isinstance(props, dict) else {}
         if event_type == "client.sse.disconnected":
-            self._emit(ConversationEvent("warning", "Поток событий переподключается"))
+            # EventSource reconnects automatically.  This is transport noise,
+            # not a conversation event, so keep it out of the chat transcript.
             return
         if event_type in {"permission.asked", "permission.updated"}:
             permission_id = str(values.get("id") or values.get("permissionID") or "")

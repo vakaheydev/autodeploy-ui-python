@@ -3,7 +3,7 @@
 """
 from typing import Any, Dict, List
 
-from forms.base_form import BaseForm
+from forms.base_form import BaseForm, FormValidationIssue
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 
 _SUBMIT_URLS: Dict[str, str] = {
@@ -75,13 +75,22 @@ class DisableIngressForm(BaseForm):
             ),
         ]
 
-    def validate(self, form_data: Dict[str, Any]) -> List[str]:
+    def validate(
+        self,
+        form_data: Dict[str, Any],
+    ) -> List[str | FormValidationIssue]:
         errors = super().validate(form_data)
         if form_data.get("ingress_type") == "platformeco":
             if not form_data.get("channel_type"):
-                errors.append('"Тип канала" обязателен для типа ингресса platformeco')
+                errors.append(self.validation_error(
+                    "channel_type",
+                    '"Тип канала" обязателен для типа ингресса platformeco',
+                ))
         if not form_data.get("apps"):
-            errors.append('Необходимо выбрать хотя бы одно приложение')
+            errors.append(self.validation_error(
+                "apps",
+                "Необходимо выбрать хотя бы одно приложение",
+            ))
         return errors
 
     def build_payload(self, form_data: Dict[str, Any]) -> Dict[str, Any]:

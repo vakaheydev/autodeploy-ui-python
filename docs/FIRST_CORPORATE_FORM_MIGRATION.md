@@ -708,7 +708,14 @@ filedialog.askopenfilename(...)
 self.screen.apply_form_data(...)
 ```
 
-перенесите бизнес-логику в отдельный метод:
+`self.screen.app.current_environment.get()` замените на независимую от UI
+строку `self.current_environment`.
+
+Старый `CustomButton` всё равно нужно заменить на `ServerAction`, но внутри его
+server handler можно временно оставить `self.screen.apply_form_data(...)` или
+использовать предпочтительный фасад `self.apply_form_data(...)`. Web-runtime
+превратит такой вызов в patch для браузера. Затем перенесите бизнес-логику в
+отдельный метод:
 
 ```python
 def calculate_api_values(self, environment, form_data):
@@ -736,11 +743,14 @@ def get_server_actions(self):
 
 
 def _calculate_api_action(self, environment, form_data):
-    return {
-        "message": "Параметры рассчитаны",
-        "values": self.calculate_api_values(environment, form_data),
-    }
+    values = self.calculate_api_values(environment, form_data)
+    self.apply_form_data(values)  # совместимо с desktop и web
+    return {"message": "Параметры рассчитаны"}
 ```
+
+Явный `return {"values": values}` также поддерживается и предпочтителен для
+нового server-only кода. Если используются оба варианта, явно возвращённые
+значения имеют приоритет.
 
 Старый `CustomButton` можно пока оставить в старой копии формы.
 

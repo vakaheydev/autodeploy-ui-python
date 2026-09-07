@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { api, post } from '../api'
+import { ApiError, api, post } from '../api'
 import { ArrowLeft, Check, FileJson, LoaderCircle, RefreshCw, Send, Sparkles, X } from '../components/Icons'
 import { ErrorBanner, Modal, Spinner } from '../components/Feedback'
 import { FormFields } from '../components/FormFields'
@@ -13,6 +13,34 @@ interface ExtractionResult { values: Record<string, unknown>; baseline?: Record<
 interface ExtractionState { id: string; draft_id?: string; workflow_id?: string; form_id?: string; environment?: string; status: string; progress: string; result: ExtractionResult | null; error: string }
 interface ReviewEntry { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }
 type AIResource = 'draft' | 'extraction' | null
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+export function validationErrorsFromApi(reason: unknown): ValidationError[] {
+  if (!(reason instanceof ApiError)) return []
+  const payload = asRecord(reason.detail)
+  const detail = asRecord(payload?.detail)
+  const validation = asRecord(detail?.validation)
+  const candidates = [validation?.errors, detail?.errors]
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue
+    const errors = candidate.flatMap((item): ValidationError[] => {
+      const value = asRecord(item)
+      if (!value || typeof value.message !== 'string') return []
+      return [{
+        field: typeof value.field === 'string' ? value.field : null,
+        code: typeof value.code === 'string' ? value.code : 'validation',
+        message: value.message,
+      }]
+    })
+    if (errors.length) return errors
+  }
+  return []
+}
 
 function pathValue(source: Record<string, unknown>, path: string): { present: boolean; value: unknown } {
   const parts = path.split('.').filter(Boolean)
@@ -123,8 +151,54 @@ export function FormPage() {
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(linkedDraftId ? 'saved' : 'idle')
   const [editRevision, setEditRevision] = useState(0)
   const latestValuesRef = useRef(values)
+  const focusedValidationRef = useRef('')
 
   useEffect(() => { latestValuesRef.current = values }, [values])
+
+  useEffect(() => {
+    const first = errors.find((item) => Boolean(item.field))
+    if (!first?.field) {
+      focusedValidationRef.current = ''
+      return
+    }
+    if (busy) return
+    const signature = `${first.field}|${first.code}|${first.message}`
+    if (focusedValidationRef.current === signature) return
+    const timer = window.setTimeout(() => {
+      const fields = [...window.document.querySelectorAll<HTMLElement>('[data-form-field-path]')]
+      const target = fields.find((item) => item.dataset.formFieldPath === first.field)
+        ?? fields.find((item) => item.dataset.formFieldKey === first.field)
+      if (!target) return
+      focusedValidationRef.current = signature
+      target.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      const control = target.querySelector<HTMLElement>(
+        'input:not([type="hidden"]):not([hidden]):not(:disabled), textarea:not(:disabled), select:not(:disabled), button.select-trigger:not(:disabled)',
+      )
+      control?.focus({ preventScroll: true })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [busy, errors])
+
+  const reportFailure = (reason: unknown) => {
+    const inlineErrors = validationErrorsFromApi(reason)
+    if (inlineErrors.length) {
+      setErrors(inlineErrors)
+      setError('')
+      return
+    }
+    setError(reason instanceof Error ? reason.message : String(reason))
+  }
+
+  const clearFieldErrors = (changedPath: string) => {
+    const leaf = changedPath.split('.').pop() ?? changedPath
+    setErrors((current) => current.filter((item) => {
+      if (!item.field) return true
+      return item.field !== changedPath
+        && item.field !== leaf
+        && !item.field.startsWith(`${changedPath}.`)
+        && !changedPath.startsWith(`${item.field}.`)
+    }))
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -332,7 +406,7 @@ export function FormPage() {
       setPreview(value)
       if (mode === 'submit' && !value.confirmation_required) await executeSubmit(value)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -361,7 +435,7 @@ export function FormPage() {
       setReview({})
       navigate(location.pathname, { replace: true })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -381,7 +455,7 @@ export function FormPage() {
       setErrors(response.errors)
       setTicketModal(false)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -433,7 +507,7 @@ export function FormPage() {
       }
       await closeAIResource()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -505,7 +579,7 @@ export function FormPage() {
       }
       await closeAIResource()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -536,8 +610,9 @@ export function FormPage() {
       if (response.confirmation_required && response.confirmation_token) {
         setActionConfirm({ id: actionId, text: response.confirmation_text ?? 'Подтвердите действие', token: response.confirmation_token })
       } else if (!response.success) {
-        setErrors(response.validation?.errors ?? [])
-        setError(response.message ?? 'Действие не выполнено')
+        const actionErrors = response.validation?.errors ?? []
+        setErrors(actionErrors)
+        setError(actionErrors.length ? '' : response.message ?? 'Действие не выполнено')
       } else {
         if (response.values) {
           setValues((current) => ({ ...current, ...response.values }))
@@ -546,7 +621,7 @@ export function FormPage() {
         setActionConfirm(null)
         if (response.message) setResult({ success: true, message: response.message, submission_id: '', status: 'success', title: 'Действие выполнено', content: '', response: null, payload: null, polling: false, poll_interval_ms: null })
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) } finally { setBusy(false) }
+    } catch (reason) { reportFailure(reason) } finally { setBusy(false) }
   }
 
   if (loading) return <Spinner label="Загружаю описание Python-формы…" />
@@ -566,7 +641,6 @@ export function FormPage() {
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {extraction && ['pending', 'running'].includes(extraction.status) && <div className="ai-extraction-banner"><span className="ai-spinner"><Sparkles /></span><div><strong>Copilot обновляет предложения</strong><span>{extraction.progress}</span></div><button className="button ghost small" onClick={() => void stopAI()}>Остановить</button></div>}
       {extraction?.result?.warnings.length ? <div className="alert warning"><div>{extraction.result.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div></div> : null}
-      {errors.some((item) => !item.field) && <div className="alert error"><div>{errors.filter((item) => !item.field).map((item) => <p key={item.message}>{item.message}</p>)}</div></div>}
 
       <section className="form-surface">
         <FormFields
@@ -576,10 +650,12 @@ export function FormPage() {
           formId={formId}
           errors={errors}
           disabled={busy}
-          onValuesChange={(next) => { setValues(next); setEditRevision((current) => current + 1); setErrors((current) => current.filter((item) => !item.field)) }}
+          onValuesChange={(next) => { setValues(next); setEditRevision((current) => current + 1) }}
+          onFieldChange={clearFieldErrors}
           review={review}
           onReview={decideReview}
         />
+        {errors.some((item) => !item.field) && <div className="alert error form-validation-summary" role="alert"><div>{errors.filter((item) => !item.field).map((item) => <p key={`${item.code}-${item.message}`}>{item.message}</p>)}</div></div>}
       </section>
 
       {result && <section className={`result-card ${result.status}`}>

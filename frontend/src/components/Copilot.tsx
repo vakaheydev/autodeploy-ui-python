@@ -53,6 +53,13 @@ export function collapseToolEvents(events: ChatEvent[]): ChatEvent[] {
   return collapsed
 }
 
+export function isReconnectNotice(event: ChatEvent): boolean {
+  if (event.kind !== 'agent_event') return false
+  const title = String(event.payload.title ?? '').trim()
+  return title === 'Поток событий переподключается'
+    || title === 'Поток Researcher переподключается'
+}
+
 export function Copilot() {
   const { environment } = useEnvironment()
   const [session, setSession] = useState<SessionSnapshot | null>(null)
@@ -123,7 +130,6 @@ export function Copilot() {
       window.setTimeout(() => transcript.current?.scrollTo({ top: transcript.current.scrollHeight, behavior: 'smooth' }), 40)
       if (event.kind === 'user' || event.kind === 'assistant' || event.kind === 'idle') void refreshSessions()
     }
-    stream.onerror = () => setProgress((current) => current || 'Переподключаю поток событий…')
     return () => stream.close()
   }, [session?.id])
 
@@ -143,6 +149,8 @@ export function Copilot() {
   const visibleEvents = useMemo(() => {
     const filtered = events.filter((event) => {
       if (['progress', 'idle'].includes(event.kind)) return false
+      // Hide reconnect notices already persisted by older application builds.
+      if (isReconnectNotice(event)) return false
       if (event.kind === 'agent_event') {
         if (event.payload.kind === 'tool') return true
         return ['permission', 'warning', 'error'].includes(String(event.payload.kind))

@@ -134,7 +134,7 @@ class FormDraftStore:
         self._check_cancel(cancel_event)
         if not 1 <= len(proposals) <= 100:
             raise ValueError("Черновик должен содержать от 1 до 100 предложений")
-        form = self.container.forms.get_form(form_id)
+        form = self.container.forms.get_form(form_id, environment)
         actual_version = form_version(form)
         if version != actual_version:
             raise ValueError(
@@ -471,7 +471,7 @@ class FormDraftStore:
         pending_review_fields: Optional[Sequence[str]] = None,
     ) -> FormDraft:
         """Create or update a user-editable draft without submitting anything."""
-        form = self.container.forms.get_form(form_id)
+        form = self.container.forms.get_form(form_id, environment)
         actual_version = form_version(form)
         if version != actual_version:
             raise ValueError("Версия формы устарела; обновите страницу")
@@ -563,7 +563,9 @@ class FormDraftStore:
         result: Mapping[str, Any],
     ) -> FormDraft:
         """Persist the legacy Extractor result in the same durable draft store."""
-        actual_version = form_version(self.container.forms.get_form(form_id))
+        actual_version = form_version(
+            self.container.forms.get_form(form_id, environment)
+        )
         if version != actual_version:
             raise ValueError("Версия формы устарела; повторите заполнение")
         now = time.time()

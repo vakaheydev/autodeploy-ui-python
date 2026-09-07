@@ -131,14 +131,17 @@ p { color: var(--muted); line-height: 1.58; }
 .fields-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 13px; }
 .form-field { min-width: 0; position: relative; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); transition: .15s; }
 .form-field:focus-within { border-color: #8fb8ed; box-shadow: 0 0 0 3px rgb(23 105 224 / 7%); }
-.form-field.invalid { border-color: #ebaab3; background: #fffafa; }
+.form-field.invalid, .block-field.invalid { border-color: #ebaab3; background: color-mix(in srgb, var(--danger-soft) 58%, var(--surface)); }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .field-label { display: block; margin-bottom: 7px; color: var(--text); font-size: 12px; font-weight: 700; }.field-label b { margin-left: 4px; color: var(--danger); }
 .field-hint { margin: -3px 0 8px; color: var(--subtle); font-size: 10px; }
 .form-field input[type='text'], .form-field input[type='number'], .form-field > textarea, .form-field select, .reference-control select, .file-control textarea, .modal input, .modal textarea { width: 100%; min-height: 42px; padding: 9px 11px; outline: none; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface); font-size: 13px; transition: .15s; }
 .form-field textarea, .file-control textarea, .modal textarea { resize: vertical; line-height: 1.48; }
 .form-field input:focus, .form-field textarea:focus, .form-field select:focus, .modal input:focus, .modal textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgb(23 105 224 / 9%); }
-.field-errors { display: grid; gap: 3px; margin-top: 6px; color: var(--danger); font-size: 10px; }
+.field-errors { display: grid; gap: 4px; margin-top: 7px; color: var(--danger); font-size: 10px; }
+.field-errors > span { display: flex; align-items: flex-start; gap: 6px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger-soft) 82%, var(--surface)); font-weight: 650; line-height: 1.4; }
+.field-errors svg { flex: none; margin-top: 1px; }
+.form-validation-summary { margin-top: 13px; }
 .field-load-error { display: block; margin-top: 5px; color: var(--danger); }.muted { color: var(--muted); font-size: 10px; }
 .reference-toolbar { min-height: 34px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-bottom: 6px; }
 .mini-search { flex: 1; height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: var(--surface); }.mini-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; }

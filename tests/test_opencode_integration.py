@@ -2325,6 +2325,18 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(events[0].detail, "попытка 2")
         self.assertEqual(events[1].title, "OpenCode анализирует запрос")
 
+    def test_sse_reconnect_is_not_emitted_into_chat(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events = []
+        copilot._on_event = events.append
+
+        copilot._handle_raw_event({"type": "client.sse.disconnected"})
+
+        self.assertEqual(events, [])
+
     def test_tool_lifecycle_is_rendered_as_one_call(self) -> None:
         copilot = UnifiedCopilot(
             _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
