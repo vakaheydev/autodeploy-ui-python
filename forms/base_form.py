@@ -190,7 +190,7 @@ class BaseForm(ABC):
         """
         Тип авторизации при отправке формы. Возможные значения:
           "gravitee" — Bearer GRAVITEE_TOKEN_<ENV_KEY> (по умолчанию)
-          "tfs"      — Bearer TFS_TOKEN
+          "tfs"      — Basic :TFS_TOKEN (TFS/Azure DevOps PAT)
           "itsm"     — Basic ITSM_LOGIN:ITSM_PASSWORD
           "none"     — без авторизации
 

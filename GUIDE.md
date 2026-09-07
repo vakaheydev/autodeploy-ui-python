@@ -1259,13 +1259,13 @@ def get_submit_headers(self, environment: str) -> Dict[str, str]:
 
 ```python
 def get_auth_type(self) -> str:
-    return "tfs"   # Bearer TFS_TOKEN
+    return "tfs"   # Basic :TFS_TOKEN (PAT, пустой логин)
 ```
 
 | Значение | Авторизация |
 |---|---|
 | `"gravitee"` | Bearer `GRAVITEE_TOKEN_<ENV_KEY>` (по умолчанию) |
-| `"tfs"` | Bearer `TFS_TOKEN` |
+| `"tfs"` | Basic `:TFS_TOKEN` (PAT, пустой логин) |
 | `"itsm"` | Basic `ITSM_LOGIN:ITSM_PASSWORD` |
 | `"none"` | без авторизации |
 
@@ -1966,7 +1966,7 @@ reference=ReferenceConfig(
 | Тип        | Схема                | Ключи в `.env`                        | Когда использовать              |
 |------------|----------------------|---------------------------------------|---------------------------------|
 | `gravitee` | `Bearer <token>`     | `GRAVITEE_TOKEN_<ENV_KEY>`            | Справочники Gravitee API        |
-| `tfs`      | `Bearer <token>`     | `TFS_TOKEN`                           | Справочники TFS/Azure DevOps    |
+| `tfs`      | `Basic <base64>`     | `TFS_TOKEN`                           | Справочники TFS/Azure DevOps    |
 | `itsm`     | `Basic <b64>`        | `ITSM_LOGIN`, `ITSM_PASSWORD`         | Справочники ITSM                |
 | *(нет)*    | без заголовка        | —                                     | Публичные эндпоинты             |
 

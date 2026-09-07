@@ -9,7 +9,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 _log = logging.getLogger(__name__)
 
-from config.environments import ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key
+from config.environments import (
+    ITSM_LOGIN_KEY,
+    ITSM_PASSWORD_KEY,
+    TFS_TOKEN_KEY,
+    gravitee_token_key,
+)
 from config.reference_cache_config import CACHE_TTL
 from core.env_manager import EnvManager
 from core.http_client import HttpClient
@@ -20,7 +25,7 @@ from handlers.base_reference_handler import BaseReferenceHandler
 
 # Тип авторизации для каждого ресурса.
 # "gravitee" → Bearer GRAVITEE_TOKEN_<ENV_KEY> из .env
-# "tfs"      → Bearer TFS_TOKEN из .env
+# "tfs"      → Basic :TFS_TOKEN из .env (PAT, пустой логин)
 # "itsm"     → Basic ITSM_LOGIN:ITSM_PASSWORD из .env
 # Ресурсы без записи запрашиваются без авторизации.
 _AUTH_MAP: Dict[str, str] = {
@@ -174,8 +179,10 @@ class HttpReferenceHandler(BaseReferenceHandler):
             token = self._env_manager.get(gravitee_token_key(environment))
             self._client.set_token(token)
         elif auth_type == "tfs":
-            token = self._env_manager.get(TFS_TOKEN_KEY)
-            self._client.set_token(token)
+            self._client.set_basic_auth(
+                "",
+                self._env_manager.get(TFS_TOKEN_KEY),
+            )
         elif auth_type == "itsm":
             login    = self._env_manager.get(ITSM_LOGIN_KEY)
             password = self._env_manager.get(ITSM_PASSWORD_KEY)

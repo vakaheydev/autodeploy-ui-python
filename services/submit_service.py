@@ -5,7 +5,12 @@ from typing import Any, Dict
 
 from core.env_manager import EnvManager
 from core.http_client import HttpClient, HttpError
-from config.environments import ITSM_LOGIN_KEY, ITSM_PASSWORD_KEY, TFS_TOKEN_KEY, gravitee_token_key
+from config.environments import (
+    ITSM_LOGIN_KEY,
+    ITSM_PASSWORD_KEY,
+    TFS_TOKEN_KEY,
+    gravitee_token_key,
+)
 from forms.base_form import BaseForm
 
 
@@ -117,7 +122,12 @@ class SubmitService:
         if auth_type == "gravitee":
             self._client.set_token(self._env_manager.get(gravitee_token_key(environment)))
         elif auth_type == "tfs":
-            self._client.set_token(self._env_manager.get(TFS_TOKEN_KEY))
+            # TFS PAT is always sent as ``Basic base64(:<PAT>)``.  LOGIN is
+            # deliberately not used for this authentication contract.
+            self._client.set_basic_auth(
+                "",
+                self._env_manager.get(TFS_TOKEN_KEY),
+            )
         elif auth_type == "itsm":
             self._client.set_basic_auth(
                 self._env_manager.get(ITSM_LOGIN_KEY),
