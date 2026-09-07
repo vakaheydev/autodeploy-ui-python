@@ -26,6 +26,7 @@ from opencode_integration.manager import OpenCodeManager, REQUIRED_AGENTS
 from services.submit_service import SubmitService
 from webapp.extensions import (
     extension_reference_handlers,
+    load_search_catalogs,
     load_service_provider,
     register_extension_forms,
 )
@@ -44,6 +45,7 @@ class ApplicationContainer:
         self.confirmations = ConfirmationStore()
         self.submissions = SubmissionStore()
         self.service_provider = load_service_provider(self.env_manager)
+        self.search_catalogs = load_search_catalogs(self.env_manager)
         registry = FormRegistry()
         # The registry is a desktop-compatible singleton.  Reset it at the web
         # composition boundary so repeated app factories/tests cannot retain a

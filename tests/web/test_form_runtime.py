@@ -187,6 +187,52 @@ def test_large_reference_is_searched_server_side_and_keeps_selection(
     assert result["has_more"] is False
 
 
+def test_global_search_uses_extension_catalog_configuration(
+    container: ApplicationContainer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = ReferenceConfig(
+        source="corp_search",
+        resource="authoritative_apis",
+        value_key="uuid",
+        label_key="display_name",
+        search_keys=("route", "display_name"),
+    )
+
+    class Resolver:
+        calls: list[tuple[ReferenceConfig, str]] = []
+
+        def resolve(self, config, environment="", extra_params=None):
+            self.calls.append((config, environment))
+            return [{
+                "uuid": "api-42",
+                "display_name": "Payments",
+                "route": "/payments/v2",
+            }]
+
+    resolver = Resolver()
+    monkeypatch.setattr(container, "search_catalogs", {"api": reference})
+    monkeypatch.setattr(container, "new_reference_resolver", lambda: resolver)
+
+    result = container.forms.search(
+        "api", ["test_int"], "/PAYMENTS", limit=10, refresh=False
+    )
+
+    assert resolver.calls == [(reference, "test_int")]
+    assert result == {
+        "items": [{
+            "environment": "test_int",
+            "label": "Payments",
+            "value": "api-42",
+            "item": {
+                "uuid": "api-42",
+                "display_name": "Payments",
+                "route": "/payments/v2",
+            },
+        }],
+        "truncated": False,
+    }
+
+
 class _ActionForm(BaseForm):
     @property
     def form_id(self) -> str:

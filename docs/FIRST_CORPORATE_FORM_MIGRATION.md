@@ -294,6 +294,7 @@ def form_id(self) -> str:
 AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
 AUTODEPLOY_SERVICE_PROVIDER=
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=
+AUTODEPLOY_SEARCH_CATALOG_FACTORY=
 ```
 
 На этом этапе специально оставляем сервисы и справочники пустыми. Сначала нужно
@@ -598,6 +599,41 @@ corp_autodeploy/reference_data/__init__.py
 ```dotenv
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp_autodeploy.references:create_handlers
 ```
+
+Для глобального поиска API и приложений добавьте:
+
+```python
+# corp_autodeploy/search_catalogs.py
+from forms.fields import ReferenceConfig
+
+
+def create_search_catalogs(env_manager):
+    return {
+        "api": ReferenceConfig(
+            source="corp_http",
+            resource="gravitee_apis",
+            value_key="id",
+            label_key="name",
+            search_keys=("context_path", "name", "id"),
+        ),
+        "application": ReferenceConfig(
+            source="corp_http",
+            resource="gravitee_applications",
+            value_key="id",
+            label_key="name",
+            search_keys=("azp", "name", "id"),
+        ),
+    }
+```
+
+И подключите её:
+
+```dotenv
+AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp_autodeploy.search_catalogs:create_search_catalogs
+```
+
+Это только декларация каталогов. Реальные HTTP-вызовы продолжает выполнять
+`CorporateReferenceHandler`, зарегистрированный предыдущей настройкой.
 
 После перезапуска проверьте options endpoint соответствующего поля:
 

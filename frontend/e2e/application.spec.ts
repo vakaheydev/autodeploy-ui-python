@@ -36,6 +36,19 @@ test('renders on a narrow viewport without losing navigation', async ({ page }) 
   await expect(page.getByRole('navigation', { name: 'Основная навигация' })).toBeVisible()
 })
 
+test('searches APIs automatically after the user stops typing', async ({ page }) => {
+  await page.goto('/search')
+  const response = page.waitForResponse((value) => (
+    value.url().endsWith('/api/v1/search')
+      && value.request().method() === 'POST'
+  ))
+
+  await page.getByPlaceholder('Название, context path или ID API').fill('service103')
+
+  expect((await response).ok()).toBe(true)
+  await expect(page.locator('.search-result').filter({ hasText: 'service103' })).toBeVisible()
+})
+
 test('searches a large API dictionary on the Python server', async ({ page }) => {
   await page.goto('/forms/other.ingress.enable')
   await expect(page.getByRole('heading', { name: 'Включение ингрессов' })).toBeVisible()

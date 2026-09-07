@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from core.env_manager import EnvManager
 from core.http_client import HttpClient
+from forms.fields import ReferenceConfig
 from services.gravitee_service import GraviteeService
 from services.itsm_service import ITSMService
 from services.tfs_service import TfsService
@@ -19,6 +20,9 @@ from services.tfs_service import TfsService
 SERVICE_PROVIDER_KEY = "AUTODEPLOY_SERVICE_PROVIDER"
 FORM_REGISTRAR_KEY = "AUTODEPLOY_FORM_REGISTRAR"
 REFERENCE_HANDLER_FACTORY_KEY = "AUTODEPLOY_REFERENCE_HANDLER_FACTORY"
+SEARCH_CATALOG_FACTORY_KEY = "AUTODEPLOY_SEARCH_CATALOG_FACTORY"
+
+_SEARCH_KINDS = frozenset({"api", "application"})
 
 
 @dataclass(frozen=True)
@@ -83,3 +87,65 @@ def extension_reference_handlers(
     if not isinstance(result, Iterable):
         raise TypeError("Reference handler factory должен вернуть iterable")
     return result
+
+
+def default_search_catalogs() -> dict[str, ReferenceConfig]:
+    """Safe standalone catalogs used when no private search factory is configured."""
+    return {
+        "api": ReferenceConfig(
+            source="local",
+            resource="gravitee_apis.json",
+            value_key="id",
+            label_key="name",
+            search_keys=("name", "context_path", "id"),
+        ),
+        "application": ReferenceConfig(
+            source="http",
+            resource="applications",
+            value_key="id",
+            label_key="name",
+            search_keys=("name", "azp", "id"),
+        ),
+    }
+
+
+def load_search_catalogs(env_manager: EnvManager) -> dict[str, ReferenceConfig]:
+    """Load the complete API/application search catalog map from an extension."""
+    path = env_manager.get(SEARCH_CATALOG_FACTORY_KEY, "").strip()
+    if not path:
+        return default_search_catalogs()
+
+    result = import_callable(path)(env_manager)
+    if not isinstance(result, Mapping):
+        raise TypeError("Search catalog factory должен вернуть mapping")
+
+    keys = {str(key) for key in result}
+    missing = sorted(_SEARCH_KINDS - keys)
+    unexpected = sorted(keys - _SEARCH_KINDS)
+    if missing:
+        raise ValueError(
+            "Search catalog factory не настроил: " + ", ".join(missing)
+        )
+    if unexpected:
+        raise ValueError(
+            "Search catalog factory вернул неизвестные типы: "
+            + ", ".join(unexpected)
+        )
+
+    catalogs: dict[str, ReferenceConfig] = {}
+    for kind in sorted(_SEARCH_KINDS):
+        reference = result[kind]
+        if not isinstance(reference, ReferenceConfig):
+            raise TypeError(
+                f"Справочник поиска {kind!r} должен быть ReferenceConfig"
+            )
+        if not reference.source or not reference.resource:
+            raise ValueError(
+                f"Справочник поиска {kind!r} должен задавать source и resource"
+            )
+        if not reference.search_keys:
+            raise ValueError(
+                f"Справочник поиска {kind!r} должен задавать search_keys"
+            )
+        catalogs[kind] = reference
+    return catalogs

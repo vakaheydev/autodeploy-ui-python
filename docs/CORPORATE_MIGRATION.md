@@ -246,6 +246,38 @@ ReferenceConfig(
 как package data и читать отдельным handler с `source="corp_local"`: встроенный
 `source="local"` ищет файлы только в публичном `config/references`.
 
+Глобальная страница поиска API и приложений не должна знать корпоративные
+ресурсы. Добавьте в тот же закрытый пакет отдельную фабрику каталогов:
+
+```python
+# corp_autodeploy/search_catalogs.py
+from forms.fields import ReferenceConfig
+
+
+def create_search_catalogs(env_manager):
+    return {
+        "api": ReferenceConfig(
+            source="corp_http",
+            resource="gravitee_apis",
+            value_key="id",
+            label_key="name",
+            search_keys=("context_path", "name", "id"),
+        ),
+        "application": ReferenceConfig(
+            source="corp_http",
+            resource="gravitee_applications",
+            value_key="id",
+            label_key="name",
+            search_keys=("azp", "name", "id"),
+        ),
+    }
+```
+
+Фабрика обязана вернуть обе записи (`api` и `application`). Их `source` и
+`resource` обслуживает обычный `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`, поэтому
+загрузка, авторизация и кеш остаются только в корпоративном handler. Публичный
+`FormRuntime` выполняет лишь поиск по объявленным `search_keys`.
+
 ## 5. Подключение расширения
 
 После установки обоих wheel в `.env` задаются только import paths:
@@ -254,6 +286,7 @@ ReferenceConfig(
 AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
 AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp_autodeploy.references:create_handlers
+AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp_autodeploy.search_catalogs:create_search_catalogs
 ```
 
 Для локальной проверки разработчика:

@@ -59,8 +59,9 @@ in the web UI.
   draft; it never submits or performs an external write.
 - `research_repository` — delegates one bounded complex question to an isolated
   read-only JSON Repository Researcher and deletes that session afterwards.
-- `search_gravitee_objects` — API/application search through configured
-  read-only corporate services.
+- `search_gravitee_objects` — API/application search through the catalogs from
+  `AUTODEPLOY_SEARCH_CATALOG_FACTORY` and their configured read-only reference
+  handlers.
 
 Every tool is non-destructive and idempotent. `prepare_form_draft` advertises
 `readOnlyHint=false` because it stores persistent local state; all other tools

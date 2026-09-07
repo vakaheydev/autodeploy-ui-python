@@ -700,23 +700,8 @@ class FormRuntime:
         limit: int,
         refresh: bool,
     ) -> dict[str, Any]:
-        if kind == "api":
-            reference = ReferenceConfig(
-                source="local",
-                resource="gravitee_apis.json",
-                value_key="id",
-                label_key="name",
-                search_keys=("name", "context_path", "id"),
-            )
-        elif kind == "application":
-            reference = ReferenceConfig(
-                source="http",
-                resource="applications",
-                value_key="id",
-                label_key="name",
-                search_keys=("name", "azp", "id"),
-            )
-        else:
+        reference = self.container.search_catalogs.get(kind)
+        if reference is None:
             raise ValueError("Неизвестный тип поиска")
         needle = query.strip().casefold()
         result: list[dict[str, Any]] = []
@@ -733,6 +718,8 @@ class FormRuntime:
                     continue
                 result.append({
                     "environment": environment,
+                    "label": _json_safe(item.get(reference.label_key, "")),
+                    "value": _json_safe(item.get(reference.value_key, "")),
                     "item": _public_item(item, reference),
                 })
                 if len(result) >= limit:

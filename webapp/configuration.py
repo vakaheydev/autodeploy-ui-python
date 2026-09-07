@@ -41,6 +41,7 @@ from opencode_integration.manager import DEFAULT_SERVER_URL, OpenCodeManager
 from webapp.extensions import (
     FORM_REGISTRAR_KEY,
     REFERENCE_HANDLER_FACTORY_KEY,
+    SEARCH_CATALOG_FACTORY_KEY,
     SERVICE_PROVIDER_KEY,
 )
 
@@ -178,6 +179,15 @@ def _specs() -> tuple[SettingSpec, ...]:
         SettingSpec(
             REFERENCE_HANDLER_FACTORY_KEY, "Фабрика справочников", "Расширения", "text", "",
             "package.module:callable", restart_required=True,
+        ),
+        SettingSpec(
+            SEARCH_CATALOG_FACTORY_KEY,
+            "Фабрика каталогов глобального поиска",
+            "Расширения",
+            "text",
+            "",
+            "package.module:callable; задаёт ReferenceConfig для API и приложений",
+            restart_required=True,
         ),
         SettingSpec(
             "AUTODEPLOY_UPDATE_MANIFEST_URL", "TFS manifest URL", "Обновления", "text", "",

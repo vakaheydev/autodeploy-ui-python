@@ -84,6 +84,7 @@ kept in a separate wheel and selected from server-side `.env`:
 - `AUTODEPLOY_SERVICE_PROVIDER=corp.services:create_services`
 - `AUTODEPLOY_FORM_REGISTRAR=corp.forms:register_forms`
 - `AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp.references:create_handlers`
+- `AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp.search:create_search_catalogs`
 
 An extension wheel can be added to a release with
 `scripts/build_release.py --extra-wheel corp_autodeploy.whl`. It is installed
@@ -103,6 +104,30 @@ Example reference factory:
 def create_handlers(env_manager, http_client, cache):
     return [CorporateReferenceHandler(env_manager, http_client, cache)]
 ```
+
+The global API/application search catalogs are declared separately from their
+data handlers:
+
+```python
+from forms.fields import ReferenceConfig
+
+def create_search_catalogs(env_manager):
+    return {
+        "api": ReferenceConfig(
+            source="corp_http", resource="gravitee_apis",
+            value_key="id", label_key="name",
+            search_keys=("context_path", "name", "id"),
+        ),
+        "application": ReferenceConfig(
+            source="corp_http", resource="gravitee_applications",
+            value_key="id", label_key="name",
+            search_keys=("azp", "name", "id"),
+        ),
+    }
+```
+
+This factory selects logical catalogs; the reference handler remains solely
+responsible for private URLs, credentials, loading and caching.
 
 Corporate handlers are checked first. Built-in local/HTTP handlers remain as
 fallbacks, so registering a corporate remote source does not disable small local
