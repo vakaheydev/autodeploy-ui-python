@@ -70,6 +70,9 @@ from opencode_integration.manager import (
     OpenCodeManager,
 )
 from opencode_integration.prompts import (
+    COPILOT_SYSTEM_RULES,
+    MCP_COPILOT_SYSTEM_RULES,
+    build_copilot_environment_context,
     build_copilot_prompt,
     build_copilot_session_context,
     build_extraction_prompt,
@@ -1951,6 +1954,31 @@ class CopilotContractTests(unittest.TestCase):
         self.assertIn("BEGIN_UNTRUSTED_OPERATOR_SELECTED_REFERENCES", prompt)
         self.assertIn('"identifier": "api-42"', prompt)
         self.assertIn("do not call a search tool merely", prompt)
+
+    def test_copilot_never_reuses_entity_ids_across_environments(self) -> None:
+        for rules in (COPILOT_SYSTEM_RULES, MCP_COPILOT_SYSTEM_RULES):
+            self.assertIn("entity/reference IDs are environment-local", rules)
+            self.assertIn("guaranteed to differ", rules)
+            self.assertIn("Form IDs", rules)
+
+        update = build_copilot_environment_context("prod_int")
+        self.assertIn("prod_int", update)
+        self.assertIn("ID learned in another environment is invalid", update)
+        self.assertIn("never transfer their IDs", update)
+        self.assertIn("across\nenvironments", update)
+
+        reference_prompt = build_copilot_prompt(
+            operator_message="Используй выбранный API",
+            operator_references=[{
+                "environment": "test_int",
+                "identifier": "api-test-id",
+            }],
+        )
+        self.assertIn('"environment": "test_int"', reference_prompt)
+        self.assertIn(
+            "Never reuse these identifiers for another environment",
+            reference_prompt,
+        )
 
     def test_fill_only_accepts_select_and_multiselect_semantic_values(self) -> None:
         payload = _copilot_payload("single_form")

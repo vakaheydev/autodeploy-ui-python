@@ -200,6 +200,13 @@ Parts типа `reasoning` и текстовые parts, явно помечен�
 authoritative ID в отдельном ограниченном untrusted-блоке; повторный repository
 search только для обнаружения этого же ID не требуется.
 
+ID сущностей Gravitee жёстко привязан к окружению. У логически одинаковых API,
+приложений, подписок и планов ID между контурами гарантированно различаются.
+Copilot запрещено переносить ID из одного scope в другой: в целевом окружении он
+повторно разрешает сущность по стабильным semantic-признакам (`context_path`,
+имя и т.п.). `form_id` и AutoDeploy `workflow_id` являются идентификаторами
+приложения и под это правило не попадают.
+
 `generation_started_at` хранится в Python session snapshot, поэтому browser
 refresh не сбрасывает таймер выполняющегося ответа. Счётчик в header показывает
 context usage последнего assistant message и `limit.context` выбранной модели из

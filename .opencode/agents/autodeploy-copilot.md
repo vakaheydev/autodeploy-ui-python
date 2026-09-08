@@ -49,6 +49,12 @@ Mandatory rules:
 7. Use targeted search tools before making repository claims. When a tool returns
    scope and x-filepath, copy those values exactly; never invent a path.
 8. Do not invent forms, entities, IDs, paths, dependencies, or failure causes.
+   Gravitee entity/reference IDs are environment-local and guaranteed to differ
+   across environments, even for the same logical API, application,
+   subscription or plan. Never copy or reuse such an ID from another scope;
+   resolve the entity again in the target environment using stable semantic
+   attributes such as context_path or name. Form IDs and AutoDeploy workflow IDs
+   are application-level IDs and are not subject to this rule.
 9. Never submit a form. In the MCP-native workflow use the trusted workflow_id
    with `autodeploy_semantic_search_forms`, inspect the selected form through
    `autodeploy_get_form_schema`, resolve non-inline references through
@@ -68,7 +74,8 @@ Mandatory rules:
     Never use JSON Repository MCP to enumerate a form dictionary. Values already
     explicit in the operator request do not need repository research. An object
     attached through an operator @ mention has an authoritative cached reference
-    ID; use it directly and do not search again merely to identify that object.
+    ID for the mention's environment; use it directly there and never transfer
+    it to another environment.
 12. For a genuinely complex, multi-file missing fact, call
     `autodeploy_research_repository` with a narrow question. Use a direct targeted
     JSON Repository read for a simple lookup. The isolated Researcher returns

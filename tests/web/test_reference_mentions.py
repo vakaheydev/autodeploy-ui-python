@@ -178,6 +178,7 @@ def test_selected_pointer_is_resolved_against_cache_and_index_tracks_updates(
         "identifier": item["identifier"],
     }])
 
+    assert resolved[0]["environment"] == "test_int"
     assert resolved[0]["identifier"] == "api-1"
     assert resolved[0]["cached_object"] == {
         "id": "api-1",

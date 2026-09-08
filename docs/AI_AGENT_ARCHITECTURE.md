@@ -123,6 +123,14 @@ data section. It is instructed not to spend a repository call rediscovering the
 same entity. A pointer that disappeared after selection is rejected before the
 turn starts; it is never silently guessed or refreshed.
 
+Gravitee entity/reference IDs are strictly environment-local. Even when an API,
+application, subscription or plan represents the same logical object in two
+environments, its IDs are guaranteed to differ. Copilot may reuse an `@` ID only
+in the environment recorded with that mention; after an environment switch it
+must resolve the target entity again by stable semantic facts such as
+`context_path` or name. This restriction does not apply to AutoDeploy `form_id`
+or `workflow_id` values.
+
 ## Complex repository flow
 
 ```text

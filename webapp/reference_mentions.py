@@ -114,6 +114,7 @@ class ReferenceMentionService:
                 )
             resolved.append({
                 "catalog": " · ".join(record.catalog.origins),
+                "environment": environment,
                 "resource": record.catalog.reference.resource,
                 "identifier": record.identifier,
                 "label": record.label,
