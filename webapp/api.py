@@ -17,6 +17,7 @@ from webapp.form_runtime import FormNotFoundError, FormVersionConflict, form_ver
 from webapp.models import (
     ActionRequest,
     DraftSaveRequest,
+    EnvironmentActivationRequest,
     ReferenceRequest,
     SearchRequest,
     SearchStatusRequest,
@@ -25,6 +26,7 @@ from webapp.models import (
     TicketRequest,
     ValuesRequest,
 )
+from webapp.extensions import EnvironmentChangeRejected
 from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
 
 
@@ -138,6 +140,22 @@ def catalog(request: Request) -> dict[str, Any]:
         "categories": categories,
         "environments": [dataclasses.asdict(value) for value in ENVIRONMENTS],
     }
+
+
+@router.post("/environments/activate", tags=["environments"])
+def activate_environment(
+    body: EnvironmentActivationRequest, request: Request
+) -> dict[str, object]:
+    """Run the private preparation hook before the client commits a switch."""
+    try:
+        return container(request).environments.activate(
+            body.previous_environment, body.environment
+        ).as_dict()
+    except EnvironmentChangeRejected as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "environment": body.environment},
+        ) from exc
 
 
 @router.get("/forms", tags=["forms"])

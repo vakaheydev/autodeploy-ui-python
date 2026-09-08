@@ -321,7 +321,12 @@ AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
 AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp_autodeploy.references:create_handlers
 AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp_autodeploy.search_catalogs:create_search_catalogs
+AUTODEPLOY_ENVIRONMENT_HOOK=corp_autodeploy.environment:create_environment_hook
 ```
+
+Если при смене контура нужна отдельная корпоративная подготовка, её контракт и
+пошаговое подключение описаны в
+[CORPORATE_ENVIRONMENT_HOOK.md](CORPORATE_ENVIRONMENT_HOOK.md).
 
 Для локальной проверки разработчика:
 

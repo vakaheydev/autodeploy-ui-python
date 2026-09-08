@@ -17,6 +17,10 @@ localhost-порту. Вся схема форм, валидация, payload, �
 отдельный корпоративный wheel описан в
 [docs/CORPORATE_MIGRATION.md](docs/CORPORATE_MIGRATION.md).
 
+Корпоративная подготовка при смене рабочего окружения подключается отдельным
+hook по инструкции
+[docs/CORPORATE_ENVIRONMENT_HOOK.md](docs/CORPORATE_ENVIRONMENT_HOOK.md).
+
 Опциональный same-port MCP и его инструменты описаны в
 [docs/MCP.md](docs/MCP.md).
 

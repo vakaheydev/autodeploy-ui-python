@@ -99,6 +99,32 @@ def test_health_catalog_openapi_and_spa(server: str) -> None:
 
 
 @pytest.mark.integration
+def test_environment_activation_contract(server: str) -> None:
+    status, _, content = request(
+        server,
+        "/api/v1/environments/activate",
+        method="POST",
+        body={"previous_environment": "test_int", "environment": "prod_int"},
+    )
+    assert status == 200
+    assert json.loads(content) == {
+        "previous_environment": "test_int",
+        "environment": "prod_int",
+        "changed": True,
+        "hook_configured": False,
+    }
+
+    status, _, content = request(
+        server,
+        "/api/v1/environments/activate",
+        method="POST",
+        body={"previous_environment": "test_int", "environment": "unknown"},
+    )
+    assert status == 422
+    assert "Неизвестное окружение" in json.loads(content)["detail"]["message"]
+
+
+@pytest.mark.integration
 def test_form_validation_contract(server: str) -> None:
     status, _, content = request(server, "/api/v1/forms/api.create?environment=test_int")
     document = json.loads(content)

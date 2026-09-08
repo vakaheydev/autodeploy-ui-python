@@ -30,6 +30,7 @@ from webapp.extensions import (
     load_service_provider,
     register_extension_forms,
 )
+from webapp.environment_runtime import EnvironmentRuntime
 from webapp.form_runtime import FormRuntime
 from webapp.security import ConfirmationStore, SubmissionStore, request_fingerprint
 from webapp.settings import WebSettings
@@ -40,6 +41,7 @@ class ApplicationContainer:
         self.settings = settings
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.env_manager = EnvManager(settings.env_file)
+        self.environments = EnvironmentRuntime(self.env_manager)
         self.reference_cache = ReferenceCache(settings.data_dir / "cache")
         self.run_storage = RunStorage(settings.data_dir / "runs.json")
         self.confirmations = ConfirmationStore()

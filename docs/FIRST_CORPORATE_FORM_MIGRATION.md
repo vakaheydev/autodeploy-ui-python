@@ -295,6 +295,7 @@ AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
 AUTODEPLOY_SERVICE_PROVIDER=
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=
 AUTODEPLOY_SEARCH_CATALOG_FACTORY=
+AUTODEPLOY_ENVIRONMENT_HOOK=
 ```
 
 На этом этапе специально оставляем сервисы и справочники пустыми. Сначала нужно

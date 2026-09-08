@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Boxes, History, Home, Moon, Search, Settings, Sparkles, Sun } from './Icons'
+import { Boxes, CircleAlert, History, Home, LoaderCircle, Moon, Search, Settings, Sparkles, Sun, X } from './Icons'
 import { useEnvironment } from '../environment'
 import { useTheme } from '../theme'
 import { SearchableSelect } from './SearchableSelect'
@@ -13,7 +13,14 @@ const links = [
 ]
 
 export function Shell() {
-  const { environments, environment, setEnvironment } = useEnvironment()
+  const {
+    environments,
+    environment,
+    environmentSwitching,
+    environmentError,
+    setEnvironment,
+    dismissEnvironmentError,
+  } = useEnvironment()
   const { theme, toggleTheme } = useTheme()
   return (
     <div className="app-shell">
@@ -38,9 +45,13 @@ export function Shell() {
       </aside>
       <main className="main-area">
         <header className="topbar">
-          <div>
+          <div className="environment-switcher">
             <span className="eyebrow">Рабочее окружение</span>
-            <SearchableSelect ariaLabel="Окружение" compact clearable={false} value={environment} onChange={setEnvironment} options={environments.map((item) => ({ value: item.key, label: item.label }))} searchPlaceholder="Найти окружение…" />
+            <div className="environment-select-row">
+              <SearchableSelect ariaLabel="Окружение" compact clearable={false} value={environment} onChange={(value) => void setEnvironment(value)} disabled={environmentSwitching} loading={environmentSwitching} options={environments.map((item) => ({ value: item.key, label: item.label }))} searchPlaceholder="Найти окружение…" />
+              {environmentSwitching && <span className="environment-switch-progress" role="status"><LoaderCircle className="spin" size={15} /> Переключаю…</span>}
+            </div>
+            {environmentError && <div className="environment-switch-error" role="alert"><CircleAlert size={15} /><span>{environmentError}</span><button type="button" onClick={dismissEnvironmentError} aria-label="Закрыть ошибку"><X size={14} /></button></div>}
           </div>
           <div className="topbar-actions">
             <button className="icon-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'light' ? 'Включить тёмную тему' : 'Включить светлую тему'} title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button>

@@ -268,7 +268,9 @@ export function FormPage() {
         if (next.form_id && next.form_id !== formId) throw new Error('Черновик относится к другой форме')
         if (next.environment && next.environment !== environment) {
           draftStarted.current = ''
-          setEnvironment(next.environment)
+          void setEnvironment(next.environment).then((activated) => {
+            if (!activated) setBusy(false)
+          })
           return
         }
         setAIResource('draft')

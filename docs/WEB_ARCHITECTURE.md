@@ -99,6 +99,11 @@ kept in a separate wheel and selected from server-side `.env`:
 - `AUTODEPLOY_FORM_REGISTRAR=corp.forms:register_forms`
 - `AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp.references:create_handlers`
 - `AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp.search:create_search_catalogs`
+- `AUTODEPLOY_ENVIRONMENT_HOOK=corp.environment:create_environment_hook`
+
+Последняя граница выполняет корпоративную подготовку до фиксации выбранного
+окружения в браузере; подробный контракт приведён в
+[CORPORATE_ENVIRONMENT_HOOK.md](CORPORATE_ENVIRONMENT_HOOK.md).
 
 An extension wheel can be added to a release with
 `scripts/build_release.py --extra-wheel corp_autodeploy.whl`. It is installed

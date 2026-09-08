@@ -39,6 +39,7 @@ from config.environments import (
 from core.env_manager import EnvManager
 from opencode_integration.manager import DEFAULT_SERVER_URL, OpenCodeManager
 from webapp.extensions import (
+    ENVIRONMENT_HOOK_KEY,
     FORM_REGISTRAR_KEY,
     REFERENCE_HANDLER_FACTORY_KEY,
     SEARCH_CATALOG_FACTORY_KEY,
@@ -195,6 +196,15 @@ def _specs() -> tuple[SettingSpec, ...]:
             "text",
             "",
             "package.module:callable; задаёт ReferenceConfig для API и приложений",
+            restart_required=True,
+        ),
+        SettingSpec(
+            ENVIRONMENT_HOOK_KEY,
+            "Фабрика hook переключения окружения",
+            "Расширения",
+            "text",
+            "",
+            "package.module:callable; factory(env_manager) возвращает hook(previous, current)",
             restart_required=True,
         ),
         SettingSpec(

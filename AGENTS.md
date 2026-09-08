@@ -18,8 +18,8 @@ Read this file before changing the project.
   ITSM/TFS/Gravitee implementations to this repository.
 - Corporate forms and services belong in a separate private Python package.
   Connect that package only through `AUTODEPLOY_FORM_REGISTRAR`,
-  `AUTODEPLOY_SERVICE_PROVIDER`, `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`, and
-  `AUTODEPLOY_SEARCH_CATALOG_FACTORY`.
+  `AUTODEPLOY_SERVICE_PROVIDER`, `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`,
+  `AUTODEPLOY_SEARCH_CATALOG_FACTORY`, and `AUTODEPLOY_ENVIRONMENT_HOOK`.
   Keep these boundaries stable.
 - Frontend and API are served by one localhost-only Python process on one port.
   The production wheel includes prebuilt `webapp/static`; end users do not need

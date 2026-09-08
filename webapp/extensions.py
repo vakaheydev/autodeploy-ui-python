@@ -21,6 +21,7 @@ SERVICE_PROVIDER_KEY = "AUTODEPLOY_SERVICE_PROVIDER"
 FORM_REGISTRAR_KEY = "AUTODEPLOY_FORM_REGISTRAR"
 REFERENCE_HANDLER_FACTORY_KEY = "AUTODEPLOY_REFERENCE_HANDLER_FACTORY"
 SEARCH_CATALOG_FACTORY_KEY = "AUTODEPLOY_SEARCH_CATALOG_FACTORY"
+ENVIRONMENT_HOOK_KEY = "AUTODEPLOY_ENVIRONMENT_HOOK"
 
 _SEARCH_KINDS = frozenset({"api", "application"})
 
@@ -37,6 +38,19 @@ class ServiceProvider(Protocol):
         self, env_manager: EnvManager, http_client: HttpClient
     ) -> RuntimeServices:
         ...
+
+
+class EnvironmentHook(Protocol):
+    """Private callback executed before the browser commits an environment."""
+
+    def __call__(
+        self, previous_environment: str | None, environment: str
+    ) -> None:
+        ...
+
+
+class EnvironmentChangeRejected(ValueError):
+    """A safe, user-facing reason why a corporate hook rejected a switch."""
 
 
 def default_services(
@@ -63,6 +77,19 @@ def import_callable(import_path: str) -> Callable[..., Any]:
 def load_service_provider(env_manager: EnvManager) -> ServiceProvider:
     path = env_manager.get(SERVICE_PROVIDER_KEY, "").strip()
     return import_callable(path) if path else default_services
+
+
+def load_environment_hook(env_manager: EnvManager) -> EnvironmentHook | None:
+    """Load ``factory(env_manager) -> hook(previous, current)`` from ``.env``."""
+    path = env_manager.get(ENVIRONMENT_HOOK_KEY, "").strip()
+    if not path:
+        return None
+    hook = import_callable(path)(env_manager)
+    if not callable(hook):
+        raise TypeError(
+            "Фабрика hook переключения окружения должна вернуть callable"
+        )
+    return hook
 
 
 def register_extension_forms(env_manager: EnvManager, registry: Any) -> None:

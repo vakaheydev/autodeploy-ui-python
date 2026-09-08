@@ -47,6 +47,41 @@ def test_search_catalog_factory_replaces_public_defaults(
     assert extensions.load_search_catalogs(env) == expected
 
 
+def test_environment_hook_factory_receives_env_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = EnvManager(tmp_path / ".env")
+    env.save({
+        extensions.ENVIRONMENT_HOOK_KEY:
+            "corp_autodeploy.environment:create_environment_hook",
+    })
+    calls: list[tuple[str | None, str]] = []
+
+    def factory(received_env: EnvManager):
+        assert received_env is env
+        return lambda previous, current: calls.append((previous, current))
+
+    monkeypatch.setattr(extensions, "import_callable", lambda _path: factory)
+
+    hook = extensions.load_environment_hook(env)
+    assert hook is not None
+    hook("test_int", "prod_int")
+    assert calls == [("test_int", "prod_int")]
+
+
+def test_environment_hook_factory_must_return_callable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = EnvManager(tmp_path / ".env")
+    env.save({extensions.ENVIRONMENT_HOOK_KEY: "corp.environment:create"})
+    monkeypatch.setattr(
+        extensions, "import_callable", lambda _path: lambda _env: object()
+    )
+
+    with pytest.raises(TypeError, match="вернуть callable"):
+        extensions.load_environment_hook(env)
+
+
 @pytest.mark.parametrize(
     ("configured", "message"),
     [

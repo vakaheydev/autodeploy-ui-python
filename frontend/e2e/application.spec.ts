@@ -40,6 +40,41 @@ test('renders on a narrow viewport without losing navigation', async ({ page }) 
   await expect(page.getByRole('navigation', { name: 'Основная навигация' })).toBeVisible()
 })
 
+test('commits an environment only after server activation succeeds', async ({ page }) => {
+  await page.goto('/')
+  const selector = page.getByRole('button', { name: 'Окружение' })
+  await expect(selector).toContainText('Test Internal')
+
+  const activation = page.waitForRequest((request) => (
+    request.url().endsWith('/api/v1/environments/activate')
+      && request.method() === 'POST'
+  ))
+  await selector.click()
+  await page.getByRole('option', { name: 'Prod Internal' }).click()
+
+  expect((await activation).postDataJSON()).toEqual({
+    previous_environment: 'test_int',
+    environment: 'prod_int',
+  })
+  await expect(selector).toContainText('Prod Internal')
+})
+
+test('shows a corporate environment rejection beside the selector', async ({ page }) => {
+  await page.route('**/api/v1/environments/activate', (route) => route.fulfill({
+    status: 422,
+    contentType: 'application/json',
+    body: JSON.stringify({ detail: { message: 'Контур временно недоступен' } }),
+  }))
+  await page.goto('/')
+  const selector = page.getByRole('button', { name: 'Окружение' })
+
+  await selector.click()
+  await page.getByRole('option', { name: 'Prod Internal' }).click()
+
+  await expect(page.getByRole('alert')).toContainText('Контур временно недоступен')
+  await expect(selector).toContainText('Test Internal')
+})
+
 test('searches APIs automatically after the user stops typing', async ({ page }) => {
   await page.goto('/search')
   await expect(page.getByRole('button', { name: 'TEST' })).toHaveAttribute('aria-pressed', 'true')

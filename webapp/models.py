@@ -68,6 +68,11 @@ class SearchStatusRequest(StrictModel):
         return list(dict.fromkeys(value))
 
 
+class EnvironmentActivationRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    previous_environment: Optional[str] = Field(default=None, max_length=80)
+
+
 class ErrorItem(StrictModel):
     field: Optional[str] = None
     code: str
