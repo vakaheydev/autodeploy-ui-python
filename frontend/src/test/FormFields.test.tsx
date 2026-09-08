@@ -112,7 +112,7 @@ describe('FormFields', () => {
   })
 
   it('loads a large reference from the server once and renders the result', async () => {
-    const fetch = vi.fn(async () => new Response(JSON.stringify({
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
       items: [{ id: 'api-103', name: 'service103', context_path: '/api/v1/users/service103' }],
       total: 1,
       has_more: false,
@@ -211,6 +211,74 @@ describe('FormFields', () => {
 
     await user.click(screen.getByRole('button', { name: 'Принять Название плана' }))
     expect(onReview).toHaveBeenCalledWith('plan_2.name', true)
+  })
+
+  it('uses server-computed conditional fields for each repeated block instance', () => {
+    const baseFields = [base({
+      key: 'jwt_secret', path: 'plan.jwt_secret', label: 'JWT secret',
+      visible: true, dynamic: true, required: false,
+    })]
+    const block = base({
+      key: 'plan', path: 'plan', label: 'План', type: 'block', plural: true,
+      fields: baseFields,
+      instances: {
+        plan_2: [base({
+          key: 'api_key', path: 'plan_2.api_key', label: 'API key',
+          visible: true, dynamic: true, required: false,
+        })],
+      },
+    })
+
+    render(<FormFields
+      fields={[block]}
+      values={{
+        plan: { jwt_secret: 'secret' },
+        plan_2: { api_key: 'key' },
+      }}
+      environment="test_int"
+      formId="x"
+      errors={[]}
+      onValuesChange={() => undefined}
+    />)
+
+    expect(screen.getByRole('textbox', { name: 'JWT secret' })).toHaveValue('secret')
+    expect(screen.getByRole('textbox', { name: 'API key' })).toHaveValue('key')
+    expect(screen.getAllByRole('textbox')).toHaveLength(2)
+  })
+
+  it('sends complete form values when loading a reference in a repeated block', async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      items: [{ id: 'jwt', name: 'JWT' }],
+      total: 1,
+      has_more: false,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetch)
+    const hiddenReference = base({
+      key: 'type', path: 'plan.type', label: 'Тип', type: 'select', visible: false,
+      reference: { source: 'http', resource: 'types', value_key: 'id', label_key: 'name', search_keys: ['name'], detail_keys: [], required_params: [], endpoint: '/api/v1/forms/x/fields/plan.type/options' },
+    })
+    const visibleReference = {
+      ...hiddenReference,
+      path: 'plan_2.type',
+      visible: true,
+      reference: { ...hiddenReference.reference!, endpoint: '/api/v1/forms/x/fields/plan_2.type/options' },
+    }
+    const block = base({
+      key: 'plan', path: 'plan', label: 'План', type: 'block', plural: true,
+      fields: [hiddenReference],
+      instances: { plan_2: [visibleReference] },
+    })
+    const values = {
+      owner: 'team-a',
+      plan: {},
+      plan_2: { type: 'jwt' },
+    }
+
+    render(<FormFields fields={[block]} values={values} environment="test_int" formId="x" errors={[]} onValuesChange={() => undefined} />)
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    const request = fetch.mock.calls[0]?.[1]
+    expect(JSON.parse(String(request?.body))).toMatchObject({ values })
   })
 
   it('can review a whole block from an older persisted AI draft', async () => {

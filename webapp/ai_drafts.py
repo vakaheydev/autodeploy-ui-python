@@ -27,6 +27,7 @@ from webapp.form_runtime import form_version
 
 CONFIDENCE_VALUES = {"high", "medium", "low", "unknown"}
 _PLURAL_SEGMENT_RE = re.compile(r"^(?P<base>[A-Za-z_][A-Za-z0-9_-]*?)_(?P<index>\d+)$")
+_BRACKET_INDEX_RE = re.compile(r"\[(?P<index>\d+)\]")
 _log = logging.getLogger("web.drafts")
 
 
@@ -771,9 +772,10 @@ class FormDraftStore:
                 raise ValueError(
                     "Неизвестные свойства предложения: " + ", ".join(sorted(unknown))
                 )
-            path = str(raw.get("field_path", "")).strip()
-            if not path:
+            raw_path = str(raw.get("field_path", "")).strip()
+            if not raw_path:
                 raise ValueError("Пути предложений должны быть непустыми и уникальными")
+            path = cls._normalize_proposal_path(definitions, raw_path)
             field_def = cls._definition_for_path(definitions, path)
             confidence = str(raw.get("confidence", "unknown")).strip().casefold()
             if confidence not in CONFIDENCE_VALUES:
@@ -811,23 +813,57 @@ class FormDraftStore:
         field_def: FieldDefinition,
         value: Any,
     ) -> list[tuple[str, Any]]:
-        """Turn an object-valued block proposal into reviewable leaf paths.
+        """Turn object/array-valued block proposals into reviewable leaf paths.
 
-        OpenCode may conveniently propose a complete repeated block such as
-        ``plan_2``.  The UI reviews individual values, so persist its known
-        children as ``plan_2.name``, ``plan_2.type`` and so on.  Empty or
-        non-object block values stay addressable at block level for backwards
-        compatibility and useful validation errors.
+        OpenCode may conveniently propose every repeated instance as an array
+        at ``plan`` or one complete object at ``plan_2``. The UI reviews
+        individual values, so persist known children as ``plan_2.name``,
+        ``plan_2.type`` and so on. Empty or non-object block values stay
+        addressable at block level for backwards compatibility and useful
+        validation errors.
         """
+        if field_def.field_type != FieldType.BLOCK:
+            return [(path, value)]
         if (
-            field_def.field_type != FieldType.BLOCK
-            or not isinstance(value, Mapping)
-            or not value
+            field_def.plural
+            and isinstance(value, Sequence)
+            and not isinstance(value, (str, bytes, bytearray, Mapping))
         ):
+            instances = list(value)
+            if not instances:
+                raise ValueError(
+                    f"Массив повторяемого блока {path} не должен быть пустым"
+                )
+            if path.rsplit(".", 1)[-1] != field_def.key:
+                raise ValueError(
+                    f"Массив допустим только для базового пути блока {field_def.key}"
+                )
+            if (
+                field_def.plural_max is not None
+                and len(instances) > field_def.plural_max
+            ):
+                raise ValueError(f"Превышено число значений поля {path}")
+            result: list[tuple[str, Any]] = []
+            for position, instance in enumerate(instances, start=1):
+                if not isinstance(instance, Mapping):
+                    raise ValueError(
+                        f"Каждый элемент повторяемого блока {path} должен быть объектом"
+                    )
+                instance_path = cls._plural_instance_path(path, position)
+                result.extend(cls._expand_block_proposal(
+                    definitions,
+                    instance_path,
+                    field_def,
+                    instance,
+                ))
+            return result
+        if not isinstance(value, Mapping) or not value:
             return [(path, value)]
         result: list[tuple[str, Any]] = []
         for child_key, child_value in value.items():
-            child_path = f"{path}.{child_key}"
+            child_path = cls._normalize_proposal_path(
+                definitions, f"{path}.{child_key}"
+            )
             child_def = cls._definition_for_path(definitions, child_path)
             result.extend(cls._expand_block_proposal(
                 definitions,
@@ -836,6 +872,59 @@ class FormDraftStore:
                 child_value,
             ))
         return result
+
+    @classmethod
+    def _normalize_proposal_path(
+        cls,
+        definitions: Mapping[str, FieldDefinition],
+        path: str,
+    ) -> str:
+        """Accept common zero-based AI index syntax for repeated fields.
+
+        The legacy form model stores the first instance at ``plan`` and later
+        instances at ``plan_2``, ``plan_3``. Models naturally emit
+        ``plan[0]`` or ``plan.0``. Normalize both at the MCP boundary so a weak
+        model does not need to reproduce the storage convention perfectly.
+        """
+        dotted = _BRACKET_INDEX_RE.sub(lambda match: f".{match.group('index')}", path)
+        if "[" in dotted or "]" in dotted:
+            raise ValueError(f"Неизвестное поле формы: {path}")
+        segments = dotted.split(".")
+        concrete: list[str] = []
+        indexed_previous = False
+        for segment in segments:
+            if not segment:
+                raise ValueError(f"Неизвестное поле формы: {path}")
+            if segment.isdigit():
+                if not concrete or indexed_previous:
+                    raise ValueError(f"Неизвестное поле формы: {path}")
+                current_path = ".".join(concrete)
+                current_def = cls._definition_for_path(definitions, current_path)
+                if not current_def.plural:
+                    raise ValueError(f"Поле {current_path} не является повторяемым")
+                position = int(segment) + 1
+                if (
+                    current_def.plural_max is not None
+                    and position > current_def.plural_max
+                ):
+                    raise ValueError(f"Превышено число значений поля {current_path}")
+                if position > 1:
+                    concrete[-1] = f"{concrete[-1]}_{position}"
+                indexed_previous = True
+                continue
+            concrete.append(segment)
+            indexed_previous = False
+        normalized = ".".join(concrete)
+        cls._definition_for_path(definitions, normalized)
+        return normalized
+
+    @staticmethod
+    def _plural_instance_path(path: str, position: int) -> str:
+        if position <= 1:
+            return path
+        parent, separator, key = path.rpartition(".")
+        instance = f"{key}_{position}"
+        return f"{parent}{separator}{instance}" if separator else instance
 
     @classmethod
     def _definition_for_path(

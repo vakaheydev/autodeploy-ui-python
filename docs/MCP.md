@@ -35,6 +35,9 @@ session, its lazy form-search session and its persistent drafts.
 4. Call `calculate_form_state` after changing a controlling/dependent field.
 5. Call `prepare_form_draft` with evidenced values, source and confidence.
    Python resolves references and performs authoritative validation.
+   A repeated `BLOCK` can be sent as one array-valued proposal at its base path;
+   Python expands it to canonical instances (`plan`, `plan_2`, `plan_3`). Exact
+   leaf paths and common zero-based forms such as `plan[0].name` are also accepted.
 6. Explain any returned validation gaps and send the user to the draft link.
 7. The user reviews values in the web form. Normal preview/confirmation/submit
    remains separate and human-controlled.

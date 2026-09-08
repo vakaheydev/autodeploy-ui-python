@@ -288,6 +288,11 @@ def test_streamable_http_mcp_lists_and_calls_documented_tools(server: str) -> No
         "idempotentHint": True,
         "openWorldHint": False,
     }
+    draft_tool = next(
+        tool for tool in tools if tool["name"] == "prepare_form_draft"
+    )
+    assert "array of objects" in draft_tool["description"]
+    assert "plan_2.name" in draft_tool["description"]
 
     status, _, content = request(
         server, "/api/mcp", method="POST",

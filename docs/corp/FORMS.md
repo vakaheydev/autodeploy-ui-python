@@ -117,6 +117,10 @@ methods = self.collect_plural(form_data, "method")
 Plural `BLOCK` хранит отдельный dict в каждом instance. Не разбирайте suffixes
 вручную, если достаточно `collect_plural`.
 
+Web runtime вычисляет `condition`, nested references и видимость отдельно для
+каждого instance. Корпоративная форма должна описывать эти правила только в
+Python; переносить их в React или вручную синхронизировать блоки не требуется.
+
 ## Валидация
 
 Generic runtime сначала приводит типы, отбрасывает неизвестные/скрытые поля,

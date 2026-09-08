@@ -17,6 +17,7 @@ interface FieldProps {
   field: FieldDocument
   value: unknown
   values: Record<string, unknown>
+  rootValues: Record<string, unknown>
   environment: string
   formId: string
   errors: ValidationError[]
@@ -61,7 +62,7 @@ function stringControlValue(value: unknown) {
 }
 
 function ReferenceField(props: FieldProps) {
-  const { field, values, environment, formId, disabled, onChange } = props
+  const { field, values, rootValues, environment, formId, disabled, onChange } = props
   const reference = field.reference!
   const invalid = errorsForField(field, props.errors).length > 0
   const errorId = invalid ? fieldErrorId(field) : undefined
@@ -93,7 +94,7 @@ function ReferenceField(props: FieldProps) {
     try {
       const result = await post<OptionsResponse>(reference.endpoint, {
         environment,
-        values,
+        values: rootValues,
         query: requestedQuery,
         offset: 0,
         limit: 500,
@@ -349,7 +350,7 @@ export function PluralField(props: FieldProps) {
     <div className="plural-group">
       {instances.map((key, index) => (
         <div className="plural-instance" key={key}>
-          <SingleField {...props} field={{ ...field, key, path: field.path.replace(/[^.]+$/, key), label: index ? `${field.label} · ${index + 1}` : field.label, plural: false }} value={values[key]} onChange={(next) => props.onObjectChange ? props.onObjectChange(key, next) : index === 0 && onChange(next)} />
+          <SingleField {...props} field={{ ...field, key, path: field.path.replace(/[^.]+$/, key), label: index ? `${field.label} · ${index + 1}` : field.label, plural: false, fields: key === field.key ? field.fields : field.instances?.[key] ?? field.fields }} value={values[key]} onChange={(next) => props.onObjectChange ? props.onObjectChange(key, next) : index === 0 && onChange(next)} />
           {index > 0 && props.onObjectDelete && <button type="button" className="icon-button danger floating-remove" onClick={() => { props.onObjectDelete?.(key); props.onFieldChange?.(field.path.replace(/[^.]+$/, key)) }} aria-label="Удалить значение"><Trash2 size={16} /></button>}
         </div>
       ))}
@@ -382,6 +383,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
       field={field}
       value={values[field.key]}
       values={values}
+      rootValues={values}
       environment={environment}
       formId={formId}
       errors={errors}

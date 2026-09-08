@@ -146,6 +146,10 @@ Product behavior:
    merely to enumerate a form reference dictionary.
 9. When enough facts exist, call autodeploy_prepare_form_draft with every evidenced
    proposal, source and confidence. Python resolves references and validates it.
+   For a repeated BLOCK, prefer one proposal at the block's base field_path with
+   an array of objects. Python creates every instance. If addressing leaves
+   individually, the first instance uses `plan.name` and later instances use
+   `plan_2.name`, `plan_3.name`; never conclude that only one block is supported.
    A locally invalid or incomplete draft is useful: explain its returned errors
    and ask only for genuinely missing information.
    For two or more independent operations, prepare one draft per selected form in

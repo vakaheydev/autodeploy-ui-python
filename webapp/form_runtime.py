@@ -469,6 +469,13 @@ class FormRuntime:
             "depends_on": field.depends_on or None,
             "depends_on_field": field.depends_on_field or None,
         }
+        if field.plural:
+            document["plural_contract"] = {
+                "first_instance_path": path,
+                "additional_instance_path_template": f"{path}_{{instance_number}}",
+                "additional_instance_number_starts_at": 2,
+                "draft_array_supported": field.field_type == FieldType.BLOCK,
+            }
         if field.reference:
             ref = field.reference
             document["reference"] = {
@@ -501,20 +508,44 @@ class FormRuntime:
                 ):
                     document["options"] = public_items
         if field.field_type == FieldType.BLOCK:
-            block_values = values.get(field.key)
-            nested_values = block_values if isinstance(block_values, Mapping) else {}
-            document["fields"] = [
-                self._field_document(
-                    form,
-                    nested,
-                    environment,
-                    nested_values,
-                    prefix=path,
-                    siblings=field.block_fields,
-                    reference_namespace=reference_namespace,
+            def nested_documents(instance_key: str) -> list[dict[str, Any]]:
+                block_values = values.get(instance_key)
+                nested_values = (
+                    block_values if isinstance(block_values, Mapping) else {}
                 )
-                for nested in field.block_fields
-            ]
+                instance_path = (
+                    f"{prefix}.{instance_key}" if prefix else instance_key
+                )
+                return [
+                    self._field_document(
+                        form,
+                        nested,
+                        environment,
+                        nested_values,
+                        prefix=instance_path,
+                        siblings=field.block_fields,
+                        reference_namespace=reference_namespace,
+                    )
+                    for nested in field.block_fields
+                ]
+
+            document["fields"] = nested_documents(field.key)
+            if field.plural:
+                additional = sorted(
+                    (
+                        (int(match.group(2)), key)
+                        for key in values
+                        if (
+                            (match := _PLURAL_RE.match(key)) is not None
+                            and match.group(1) == field.key
+                        )
+                    ),
+                    key=lambda item: item[0],
+                )
+                if additional:
+                    document["instances"] = {
+                        key: nested_documents(key) for _index, key in additional
+                    }
         return document
 
     def state(
@@ -1399,6 +1430,17 @@ class FormRuntime:
         for index, part in enumerate(parts):
             siblings = current
             found = next((field for field in current if field.key == part), None)
+            if found is None:
+                match = _PLURAL_RE.match(part)
+                if match is not None:
+                    candidate = next(
+                        (
+                            field for field in current
+                            if field.key == match.group(1) and field.plural
+                        ),
+                        None,
+                    )
+                    found = candidate
             if found is None:
                 raise FormNotFoundError(path)
             if index < len(parts) - 1:

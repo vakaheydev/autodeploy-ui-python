@@ -41,11 +41,18 @@ export interface FieldDocument {
   width: number
   plural: boolean
   plural_max: number | null
+  plural_contract?: {
+    first_instance_path: string
+    additional_instance_path_template: string
+    additional_instance_number_starts_at: number
+    draft_array_supported: boolean
+  }
   depends_on: string | null
   depends_on_field: string | null
   reference?: ReferenceDescriptor
   options?: ReferenceItem[]
   fields?: FieldDocument[]
+  instances?: Record<string, FieldDocument[]>
 }
 
 export interface FormSummary {

@@ -76,6 +76,9 @@ ticket examples, private URLs и secrets.
 4. Для remote/non-inline SELECT или MULTISELECT используется
    `search_reference_options`.
 5. `prepare_form_draft` передаёт exact field paths, values, source и confidence.
+   Для повторяемого `BLOCK` предпочтителен один proposal с массивом объектов по
+   базовому пути. Python разложит его в `plan`, `plan_2`, `plan_3`; индексные
+   пути `plan[0].field` и `plan.0.field` также нормализуются.
 6. Python проверяет path/type, преобразует reference label в authoritative ID,
    вычисляет visibility, выполняет validation и сохраняет persistent draft.
 7. Пользователь открывает draft, принимает/отклоняет каждое предложение и только

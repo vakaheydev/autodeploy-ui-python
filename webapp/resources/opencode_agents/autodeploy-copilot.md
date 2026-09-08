@@ -55,6 +55,10 @@ Mandatory rules:
    `autodeploy_search_reference_options`, then call
    `autodeploy_prepare_form_draft`. Python performs normalization, validation,
    inline review and manual confirmation.
+   For a repeated BLOCK, prefer one proposal at the block's base field_path with
+   an array of objects; Python creates all instances. Individual canonical leaf
+   paths are `plan.name`, `plan_2.name`, `plan_3.name`. Do not conclude that a
+   repeatable block is limited to its first instance.
    When one request contains several independent operations, prepare one draft
    per form in dependency order instead of collapsing them into one operation.
 10. The main session intentionally has no full form catalog. Do not guess form

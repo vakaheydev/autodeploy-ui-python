@@ -225,6 +225,76 @@ def test_nested_condition_uses_checkbox_default_on_initial_projection(
     assert toggled_catalog["visible"] is False
 
 
+def test_repeated_blocks_project_conditions_for_each_instance(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RepeatedConditionalBlockForm(BaseForm):
+        form_id = "test.repeated-conditional-block"
+        title = "Repeated conditional block"
+        category = "other"
+        fields = [FieldDefinition(
+            "plan",
+            "План",
+            FieldType.BLOCK,
+            required=False,
+            plural=True,
+            plural_max=3,
+            block_fields=[
+                FieldDefinition("type", "Тип", FieldType.TEXT),
+                FieldDefinition(
+                    "jwt_secret",
+                    "JWT secret",
+                    FieldType.TEXT,
+                    required=False,
+                    condition=lambda values: values.get("type") == "JWT",
+                ),
+                FieldDefinition(
+                    "api_key",
+                    "API key",
+                    FieldType.TEXT,
+                    required=False,
+                    condition=lambda values: values.get("type") == "API_KEY",
+                ),
+            ],
+        )]
+
+        def build_payload(self, form_data):
+            return dict(form_data)
+
+        def get_submit_endpoint(self, environment: str) -> str:
+            return "https://example.invalid"
+
+    monkeypatch.setattr(
+        container.forms,
+        "get_form",
+        lambda _form_id, _environment="": RepeatedConditionalBlockForm(),
+    )
+
+    document = container.forms.describe(
+        "test.repeated-conditional-block",
+        "test_int",
+        {
+            "plan": {"type": "JWT", "jwt_secret": "first"},
+            "plan_2": {"type": "API_KEY", "api_key": "second"},
+        },
+    )
+    block = document["fields"][0]
+    first = {field["key"]: field for field in block["fields"]}
+    second = {field["key"]: field for field in block["instances"]["plan_2"]}
+
+    assert first["jwt_secret"]["visible"] is True
+    assert first["api_key"]["visible"] is False
+    assert second["jwt_secret"]["visible"] is False
+    assert second["api_key"]["visible"] is True
+    assert second["api_key"]["path"] == "plan_2.api_key"
+    resolved, _siblings = container.forms._find_field_context(
+        RepeatedConditionalBlockForm.fields,
+        "plan_2.api_key",
+    )
+    assert resolved.key == "api_key"
+
+
 def test_large_reference_is_searched_server_side_and_keeps_selection(
     container: ApplicationContainer,
 ) -> None:

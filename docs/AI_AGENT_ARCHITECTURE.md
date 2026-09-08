@@ -132,6 +132,8 @@ form version and one or more proposals with exact field path, value, confidence
 and source. It:
 
 - rejects stale forms, unknown paths/properties and invalid confidence values;
+- expands an array-valued repeated block into canonical `block`, `block_2`,
+  `block_3` instances and normalizes `block[0]`/`block.0` leaf notation;
 - distinguishes SELECT scalars from MULTISELECT arrays through the Python form;
 - resolves semantic labels against the authoritative reference handler and
   stores only accepted identifiers;

@@ -62,20 +62,15 @@ def test_block_proposals_are_expanded_to_reviewable_repeated_leaf_paths() -> Non
     )]
     definitions = FormDraftStore._field_definitions(fields)
 
-    proposals = FormDraftStore._parse_proposals([
-        {
-            "field_path": "plan",
-            "value": {"name": "Основной", "enabled": True},
-            "confidence": "high",
-            "source": "OPERATOR",
-        },
-        {
-            "field_path": "plan_2",
-            "value": {"name": "Резервный", "enabled": False},
-            "confidence": "medium",
-            "source": "OPERATOR",
-        },
-    ], definitions)
+    proposals = FormDraftStore._parse_proposals([{
+        "field_path": "plan",
+        "value": [
+            {"name": "Основной", "enabled": True},
+            {"name": "Резервный", "enabled": False},
+        ],
+        "confidence": "high",
+        "source": "OPERATOR",
+    }], definitions)
 
     assert [(item.field_path, item.value) for item in proposals] == [
         ("plan.name", "Основной"),
@@ -86,6 +81,45 @@ def test_block_proposals_are_expanded_to_reviewable_repeated_leaf_paths() -> Non
     assert FormDraftStore._definition_for_path(
         definitions, "plan_2.name"
     ).label == "Название"
+
+
+def test_common_zero_based_plural_paths_are_normalized() -> None:
+    fields = [FieldDefinition(
+        "plan",
+        "План",
+        FieldType.BLOCK,
+        plural=True,
+        plural_max=3,
+        block_fields=[FieldDefinition("name", "Название", FieldType.TEXT)],
+    )]
+    definitions = FormDraftStore._field_definitions(fields)
+
+    proposals = FormDraftStore._parse_proposals([
+        {
+            "field_path": "plan[0].name",
+            "value": "Основной",
+            "confidence": "high",
+            "source": "OPERATOR",
+        },
+        {
+            "field_path": "plan.1.name",
+            "value": "Резервный",
+            "confidence": "high",
+            "source": "OPERATOR",
+        },
+        {
+            "field_path": "plan[2].name",
+            "value": "Аварийный",
+            "confidence": "high",
+            "source": "OPERATOR",
+        },
+    ], definitions)
+
+    assert [item.field_path for item in proposals] == [
+        "plan.name",
+        "plan_2.name",
+        "plan_3.name",
+    ]
 
 
 def test_prepared_ai_draft_exposes_each_repeated_block_value_for_review(
@@ -135,6 +169,12 @@ def test_prepared_ai_draft_exposes_each_repeated_block_value_for_review(
         lambda _form_id, _environment="": form,
     )
     document = container.forms.describe(form.form_id, "test_int")
+    assert document["fields"][0]["plural_contract"] == {
+        "first_instance_path": "plan",
+        "additional_instance_path_template": "plan_{instance_number}",
+        "additional_instance_number_starts_at": 2,
+        "draft_array_supported": True,
+    }
 
     draft = FormDraftStore(container).prepare(
         workflow_id="workflow-dynamic-block-review",
@@ -142,17 +182,27 @@ def test_prepared_ai_draft_exposes_each_repeated_block_value_for_review(
         environment="test_int",
         version=document["version"],
         proposals=[{
-            "field_path": "plan_2",
-            "value": {"name": "Резервный", "enabled": True},
+            "field_path": "plan",
+            "value": [
+                {"name": "Основной", "enabled": True},
+                {"name": "Резервный", "enabled": False},
+                {"name": "Аварийный", "enabled": True},
+            ],
             "confidence": "high",
             "source": "OPERATOR",
         }],
     )
 
-    assert draft.values["plan_2"] == {"name": "Резервный", "enabled": True}
+    assert draft.values["plan"] == {"name": "Основной", "enabled": True}
+    assert draft.values["plan_2"] == {"name": "Резервный", "enabled": False}
+    assert draft.values["plan_3"] == {"name": "Аварийный", "enabled": True}
     assert [item["key"] for item in draft.fields] == [
+        "plan.name",
+        "plan.enabled",
         "plan_2.name",
         "plan_2.enabled",
+        "plan_3.name",
+        "plan_3.enabled",
     ]
 
 

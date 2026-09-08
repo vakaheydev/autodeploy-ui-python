@@ -48,7 +48,7 @@ _WORKFLOW = {
     "description": "Opaque workflow id supplied in the trusted Copilot session context.",
 }
 _JSON_VALUE = {
-    "description": "JSON value matching the selected field type.",
+    "description": "JSON value matching the selected field type. For a repeated BLOCK base path, prefer an array whose items are complete block objects.",
     "anyOf": [
         {"type": "string", "maxLength": 100000},
         {"type": "number"},
@@ -122,7 +122,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "prepare_form_draft",
-        "description": "Create or revise a persistent local form draft after get_form_schema. Pass only evidenced field proposals, using exact field paths and the live form version. Python resolves references, recalculates state and validates. The draft remains available until successful submission or explicit deletion. This never submits or calls an external write. Use draft_id only when revising an existing draft.",
+        "description": "Create or revise a persistent local form draft after get_form_schema. Pass only evidenced field proposals and the live form version. For a repeated BLOCK, prefer one proposal at its base path with an array of objects; Python expands it to every instance. Canonical individual paths use the base name for the first instance and _2, _3 for later instances (for example plan.name, plan_2.name, plan_3.name). Zero-based plan[0].name and plan.0.name are also normalized. Python resolves references, recalculates state and validates. The draft remains available until successful submission or explicit deletion. This never submits or calls an external write. Use draft_id only when revising an existing draft.",
         "inputSchema": _object_schema({
             "workflow_id": _WORKFLOW,
             "form_id": _FORM,
@@ -134,7 +134,12 @@ TOOLS: tuple[dict[str, Any], ...] = (
                 "minItems": 1,
                 "maxItems": 100,
                 "items": _object_schema({
-                    "field_path": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "field_path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Path from get_form_schema. For repeated blocks, prefer the base block path with an array value; canonical later instances use _2, _3 suffixes.",
+                    },
                     "value": _JSON_VALUE,
                     "confidence": {"type": "string", "enum": ["high", "medium", "low", "unknown"]},
                     "source": {"type": "string", "minLength": 1, "maxLength": 500},
