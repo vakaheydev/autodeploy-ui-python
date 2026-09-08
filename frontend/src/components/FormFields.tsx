@@ -5,6 +5,14 @@ import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
 import { SearchableSelect } from './SearchableSelect'
 import { ReferenceDetailsModal } from './ReferenceDetailsModal'
 
+interface ReviewEntry {
+  confidence: string
+  proposedValue: unknown
+  source?: string | null
+  reason?: string | null
+  conflict?: string | null
+}
+
 interface FieldProps {
   field: FieldDocument
   value: unknown
@@ -17,7 +25,7 @@ interface FieldProps {
   onObjectChange?: (key: string, value: unknown) => void
   onObjectDelete?: (key: string) => void
   onFieldChange?: (path: string) => void
-  review?: Record<string, { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }>
+  review?: Record<string, ReviewEntry>
   onReview?: (key: string, accept: boolean) => void
 }
 
@@ -247,17 +255,39 @@ function BasicField(props: FieldProps) {
   return <input id={field.path} type="text" value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
 }
 
+function ReviewControls({ fieldLabel, reviewKey, review, onReview }: {
+  fieldLabel: string
+  reviewKey: string
+  review: ReviewEntry
+  onReview?: FieldProps['onReview']
+}) {
+  return (
+    <div className="field-review-controls">
+      <span className="confidence-badge" title={[review.source, review.reason, review.conflict].filter(Boolean).join('\n')}>{review.confidence}</span>
+      <button type="button" className="review-accept" aria-label={`Принять ${fieldLabel}`} onClick={() => onReview?.(reviewKey, true)}>✓</button>
+      <button type="button" className="review-reject" aria-label={`Отклонить ${fieldLabel}`} onClick={() => onReview?.(reviewKey, false)}>×</button>
+    </div>
+  )
+}
+
 function SingleField(props: FieldProps) {
   const { field, value, errors, onChange } = props
-  const reviewKey = props.review?.[field.path] ? field.path : field.key
-  const fieldReview = props.review?.[reviewKey]
+  // Review decisions are path-addressed. Falling back to a leaf key for a
+  // nested field could accidentally attach a top-level proposal with the same
+  // name to every repeated block instance.
+  const reviewKey = props.review?.[field.path]
+    ? field.path
+    : field.path === field.key && props.review?.[field.key]
+      ? field.key
+      : ''
+  const fieldReview = reviewKey ? props.review?.[reviewKey] : undefined
   const invalid = errorsForField(field, errors).length > 0
   if (!field.visible) return null
   if (field.type === 'block') {
     const block = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
     return (
-      <fieldset className={`block-field ${invalid ? 'invalid' : ''}`} data-form-field-path={field.path} data-form-field-key={field.key}>
-        <legend><FileJson size={17} /> {field.label}{field.required && <b>*</b>}</legend>
+      <fieldset className={`block-field ${invalid ? 'invalid' : ''} ${fieldReview ? `ai-review confidence-${fieldReview.confidence}` : ''}`} data-form-field-path={field.path} data-form-field-key={field.key}>
+        <legend><span className="block-legend-label"><FileJson size={17} /> {field.label}{field.required && <b>*</b>}</span>{fieldReview && <ReviewControls fieldLabel={field.label} reviewKey={reviewKey} review={fieldReview} onReview={props.onReview} />}</legend>
         {field.hint && <p className="field-hint">{field.hint}</p>}
         <div className="block-fields">
           {(field.fields ?? []).map((nested) => {
@@ -286,7 +316,7 @@ function SingleField(props: FieldProps) {
   }
   return (
     <div className={`form-field ${invalid ? 'invalid' : ''} ${fieldReview ? `ai-review confidence-${fieldReview.confidence}` : ''}`} data-form-field-path={field.path} data-form-field-key={field.key}>
-      <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <div className="field-review-controls"><span className="confidence-badge" title={[fieldReview.source, fieldReview.reason, fieldReview.conflict].filter(Boolean).join('\n')}>{fieldReview.confidence}</span><button type="button" className="review-accept" aria-label={`Принять ${field.label}`} onClick={() => props.onReview?.(reviewKey, true)}>✓</button><button type="button" className="review-reject" aria-label={`Отклонить ${field.label}`} onClick={() => props.onReview?.(reviewKey, false)}>×</button></div>}</div>
+      <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <ReviewControls fieldLabel={field.label} reviewKey={reviewKey} review={fieldReview} onReview={props.onReview} />}</div>
       {field.hint && <p className="field-hint">{field.hint}</p>}
       <BasicField {...props} />
       <FieldError field={field} errors={errors} />

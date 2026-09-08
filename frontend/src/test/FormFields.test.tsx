@@ -190,6 +190,51 @@ describe('FormFields', () => {
     expect(onReview).toHaveBeenCalledWith('proxy.host', true)
   })
 
+  it('addresses AI review controls inside a repeated block by its instance path', async () => {
+    const user = userEvent.setup()
+    const onReview = vi.fn()
+    const nested = base({ key: 'name', path: 'plan.name', label: 'Название плана' })
+    const block = base({
+      key: 'plan', path: 'plan', label: 'План', type: 'block', plural: true,
+      fields: [nested],
+    })
+    render(<FormFields
+      fields={[block]}
+      values={{ plan: { name: 'Основной' }, plan_2: { name: 'Резервный' } }}
+      environment="test_int"
+      formId="x"
+      errors={[]}
+      onValuesChange={() => undefined}
+      review={{ 'plan_2.name': { proposedValue: 'Резервный', confidence: 'high' } }}
+      onReview={onReview}
+    />)
+
+    await user.click(screen.getByRole('button', { name: 'Принять Название плана' }))
+    expect(onReview).toHaveBeenCalledWith('plan_2.name', true)
+  })
+
+  it('can review a whole block from an older persisted AI draft', async () => {
+    const user = userEvent.setup()
+    const onReview = vi.fn()
+    const block = base({
+      key: 'proxy', path: 'proxy', label: 'Proxy', type: 'block',
+      fields: [base({ key: 'host', path: 'proxy.host', label: 'Backend host' })],
+    })
+    render(<FormFields
+      fields={[block]}
+      values={{ proxy: { host: 'backend.internal' } }}
+      environment="test_int"
+      formId="x"
+      errors={[]}
+      onValuesChange={() => undefined}
+      review={{ proxy: { proposedValue: { host: 'backend.internal' }, confidence: 'medium' } }}
+      onReview={onReview}
+    />)
+
+    await user.click(screen.getByRole('button', { name: 'Отклонить Proxy' }))
+    expect(onReview).toHaveBeenCalledWith('proxy', false)
+  })
+
   it('reuses a free plural slot after an instance was removed', async () => {
     const user = userEvent.setup()
     const onValuesChange = vi.fn()

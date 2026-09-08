@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from forms.base_form import BaseForm
+from forms.fields import FieldDefinition, FieldType
 from webapp.ai_drafts import FormDraftStore
 from webapp.api import submit_form
 from webapp.container import ApplicationContainer
@@ -43,6 +45,114 @@ def _proposals(context_path: str = "/orders/v1"):
         {"field_path": "category", "value": "Внутреннее АПИ", "confidence": "medium", "source": "OPERATOR"},
         {"field_path": "context_path", "value": context_path, "confidence": "high", "source": "OPERATOR"},
         {"field_path": "endpoint_type", "value": "REST", "confidence": "high", "source": "OPERATOR"},
+    ]
+
+
+def test_block_proposals_are_expanded_to_reviewable_repeated_leaf_paths() -> None:
+    fields = [FieldDefinition(
+        "plan",
+        "План",
+        FieldType.BLOCK,
+        plural=True,
+        plural_max=3,
+        block_fields=[
+            FieldDefinition("name", "Название", FieldType.TEXT),
+            FieldDefinition("enabled", "Включён", FieldType.CHECKBOX),
+        ],
+    )]
+    definitions = FormDraftStore._field_definitions(fields)
+
+    proposals = FormDraftStore._parse_proposals([
+        {
+            "field_path": "plan",
+            "value": {"name": "Основной", "enabled": True},
+            "confidence": "high",
+            "source": "OPERATOR",
+        },
+        {
+            "field_path": "plan_2",
+            "value": {"name": "Резервный", "enabled": False},
+            "confidence": "medium",
+            "source": "OPERATOR",
+        },
+    ], definitions)
+
+    assert [(item.field_path, item.value) for item in proposals] == [
+        ("plan.name", "Основной"),
+        ("plan.enabled", True),
+        ("plan_2.name", "Резервный"),
+        ("plan_2.enabled", False),
+    ]
+    assert FormDraftStore._definition_for_path(
+        definitions, "plan_2.name"
+    ).label == "Название"
+
+
+def test_prepared_ai_draft_exposes_each_repeated_block_value_for_review(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DynamicBlockForm(BaseForm):
+        @property
+        def form_id(self) -> str:
+            return "test.dynamic-block-review"
+
+        @property
+        def title(self) -> str:
+            return "Dynamic block review"
+
+        @property
+        def category(self) -> str:
+            return "other"
+
+        @property
+        def fields(self) -> list[FieldDefinition]:
+            return [FieldDefinition(
+                "plan",
+                "План",
+                FieldType.BLOCK,
+                required=False,
+                plural=True,
+                plural_max=3,
+                block_fields=[
+                    FieldDefinition("name", "Название", FieldType.TEXT),
+                    FieldDefinition(
+                        "enabled", "Включён", FieldType.CHECKBOX, required=False
+                    ),
+                ],
+            )]
+
+        def build_payload(self, form_data):
+            return dict(form_data)
+
+        def get_submit_endpoint(self, environment: str) -> str:
+            return "https://example.invalid"
+
+    form = DynamicBlockForm()
+    monkeypatch.setattr(
+        container.forms,
+        "get_form",
+        lambda _form_id, _environment="": form,
+    )
+    document = container.forms.describe(form.form_id, "test_int")
+
+    draft = FormDraftStore(container).prepare(
+        workflow_id="workflow-dynamic-block-review",
+        form_id=form.form_id,
+        environment="test_int",
+        version=document["version"],
+        proposals=[{
+            "field_path": "plan_2",
+            "value": {"name": "Резервный", "enabled": True},
+            "confidence": "high",
+            "source": "OPERATOR",
+        }],
+    )
+
+    assert draft.values["plan_2"] == {"name": "Резервный", "enabled": True}
+    assert [item["key"] for item in draft.fields] == [
+        "plan_2.name",
+        "plan_2.enabled",
     ]
 
 

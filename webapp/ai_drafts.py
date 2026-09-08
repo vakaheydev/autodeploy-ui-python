@@ -26,7 +26,7 @@ from webapp.form_runtime import form_version
 
 
 CONFIDENCE_VALUES = {"high", "medium", "low", "unknown"}
-_PLURAL_PATH_RE = re.compile(r"^(?P<base>[A-Za-z_][A-Za-z0-9_.-]*?)_(?P<index>\d+)$")
+_PLURAL_SEGMENT_RE = re.compile(r"^(?P<base>[A-Za-z_][A-Za-z0-9_-]*?)_(?P<index>\d+)$")
 _log = logging.getLogger("web.drafts")
 
 
@@ -772,25 +772,70 @@ class FormDraftStore:
                     "Неизвестные свойства предложения: " + ", ".join(sorted(unknown))
                 )
             path = str(raw.get("field_path", "")).strip()
-            if not path or path in seen:
+            if not path:
                 raise ValueError("Пути предложений должны быть непустыми и уникальными")
-            cls._definition_for_path(definitions, path)
+            field_def = cls._definition_for_path(definitions, path)
             confidence = str(raw.get("confidence", "unknown")).strip().casefold()
             if confidence not in CONFIDENCE_VALUES:
                 raise ValueError(f"Некорректная уверенность для поля {path}")
             source = str(raw.get("source", "")).strip()
             if not source:
                 raise ValueError(f"Для поля {path} требуется источник")
-            result.append(DraftProposal(
-                field_path=path,
-                value=copy.deepcopy(raw.get("value")),
-                confidence=confidence,
-                source=source[:500],
-                reason=str(raw.get("reason", "")).strip()[:1000],
-                conflict=str(raw.get("conflict", "")).strip()[:1000],
-            ))
-            seen.add(path)
+            expanded = cls._expand_block_proposal(
+                definitions,
+                path,
+                field_def,
+                raw.get("value"),
+            )
+            for expanded_path, expanded_value in expanded:
+                if expanded_path in seen:
+                    raise ValueError(
+                        "Пути предложений должны быть непустыми и уникальными"
+                    )
+                result.append(DraftProposal(
+                    field_path=expanded_path,
+                    value=copy.deepcopy(expanded_value),
+                    confidence=confidence,
+                    source=source[:500],
+                    reason=str(raw.get("reason", "")).strip()[:1000],
+                    conflict=str(raw.get("conflict", "")).strip()[:1000],
+                ))
+                seen.add(expanded_path)
         return tuple(result)
+
+    @classmethod
+    def _expand_block_proposal(
+        cls,
+        definitions: Mapping[str, FieldDefinition],
+        path: str,
+        field_def: FieldDefinition,
+        value: Any,
+    ) -> list[tuple[str, Any]]:
+        """Turn an object-valued block proposal into reviewable leaf paths.
+
+        OpenCode may conveniently propose a complete repeated block such as
+        ``plan_2``.  The UI reviews individual values, so persist its known
+        children as ``plan_2.name``, ``plan_2.type`` and so on.  Empty or
+        non-object block values stay addressable at block level for backwards
+        compatibility and useful validation errors.
+        """
+        if (
+            field_def.field_type != FieldType.BLOCK
+            or not isinstance(value, Mapping)
+            or not value
+        ):
+            return [(path, value)]
+        result: list[tuple[str, Any]] = []
+        for child_key, child_value in value.items():
+            child_path = f"{path}.{child_key}"
+            child_def = cls._definition_for_path(definitions, child_path)
+            result.extend(cls._expand_block_proposal(
+                definitions,
+                child_path,
+                child_def,
+                child_value,
+            ))
+        return result
 
     @classmethod
     def _definition_for_path(
@@ -801,14 +846,26 @@ class FormDraftStore:
         direct = definitions.get(path)
         if direct is not None:
             return direct
-        match = _PLURAL_PATH_RE.fullmatch(path)
-        if match:
-            base = definitions.get(match.group("base"))
-            if base is not None and base.plural:
-                maximum = base.plural_max
-                if maximum is not None and int(match.group("index")) > maximum:
-                    raise ValueError(f"Превышено число значений поля {match.group('base')}")
-                return base
+        canonical: list[str] = []
+        for segment in path.split("."):
+            candidate = ".".join((*canonical, segment))
+            if candidate in definitions:
+                canonical.append(segment)
+                continue
+            match = _PLURAL_SEGMENT_RE.fullmatch(segment)
+            if match is None:
+                raise ValueError(f"Неизвестное поле формы: {path}")
+            base_path = ".".join((*canonical, match.group("base")))
+            base = definitions.get(base_path)
+            if base is None or not base.plural:
+                raise ValueError(f"Неизвестное поле формы: {path}")
+            maximum = base.plural_max
+            if maximum is not None and int(match.group("index")) > maximum:
+                raise ValueError(f"Превышено число значений поля {base_path}")
+            canonical.append(match.group("base"))
+        resolved = definitions.get(".".join(canonical))
+        if resolved is not None:
+            return resolved
         raise ValueError(f"Неизвестное поле формы: {path}")
 
     @classmethod
