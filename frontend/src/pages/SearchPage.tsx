@@ -220,7 +220,7 @@ export function SearchPage() {
         onClick={() => setDetailResult(result)}
         onContextMenu={(event) => { event.preventDefault(); setDetailResult(result) }}
         onKeyDown={(event) => openResultFromKeyboard(event, result)}
-      ><div><h3>{resultLabel(result)}</h3><p>{String(result.item.description ?? result.item.context_path ?? result.item.azp ?? '')}</p><code>{String(result.value ?? result.item.id ?? '')}</code><small className="search-result-hint"><FileJson size={13} /> Открыть карточку</small></div><span className="environment-chip">{result.environment.replace('_', ' ').toUpperCase()}</span></article>)}</section>}
+      ><div><div className="search-result-title"><h3>{resultLabel(result)}</h3><span className="environment-chip">{result.environment.replace('_', ' ').toUpperCase()}</span></div><p>{String(result.item.description ?? result.item.context_path ?? result.item.azp ?? '')}</p><code>{String(result.value ?? result.item.id ?? '')}</code><small className="search-result-hint"><FileJson size={13} /> Открыть карточку</small></div></article>)}</section>}
       {detailResult && <ReferenceDetailsModal item={detailResult.item} title={resultLabel(detailResult)} onClose={() => setDetailResult(null)} />}
       {refreshOpen && <Modal
         title="Обновление данных поиска"

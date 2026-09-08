@@ -50,6 +50,9 @@ describe('SearchPage', () => {
     })
     expect(screen.getByText('Orders API')).toBeVisible()
     expect(screen.getByText('api-42')).toBeVisible()
+    const title = screen.getByRole('heading', { name: 'Orders API' }).closest('.search-result-title')
+    expect(title).not.toBeNull()
+    expect(within(title as HTMLElement).getByText('TEST INT')).toBeVisible()
   })
 
   it('searches immediately on Enter without repeating the debounced request', async () => {
