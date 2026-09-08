@@ -73,6 +73,7 @@ from opencode_integration.prompts import (
     COPILOT_SYSTEM_RULES,
     MCP_COPILOT_SYSTEM_RULES,
     build_copilot_environment_context,
+    build_mcp_copilot_prompt,
     build_copilot_prompt,
     build_copilot_session_context,
     build_extraction_prompt,
@@ -1940,6 +1941,28 @@ class CopilotContractTests(unittest.TestCase):
         self.assertNotIn("TRUSTED_FORM_CATALOG", prompt)
         self.assertNotIn("BEGIN_UNTRUSTED_ITSM_DATA", prompt)
         self.assertNotIn("BEGIN_UNTRUSTED_ADO_DATA", prompt)
+
+    def test_itsm_form_turn_locks_the_existing_form_and_draft(self) -> None:
+        prompt = build_mcp_copilot_prompt(
+            operator_message="Заполни форму",
+            draft_context={
+                "operation": "initial_ticket_fill",
+                "form_id": "api.create",
+                "environment": "test_int",
+                "form_version": "version-1",
+                "draft_id": "draft-1",
+                "ticket_id": "REQ-42",
+                "source_context": {"summary": "Create an API"},
+            },
+        )
+
+        self.assertIn("TRUSTED EXACT FORM TARGET", prompt)
+        self.assertIn('form_id: "api.create"', prompt)
+        self.assertIn('existing draft_id: "draft-1"', prompt)
+        self.assertIn("Do not run semantic form", prompt)
+        self.assertIn("BEGIN_UNTRUSTED_ITSM_FORM_CONTEXT", prompt)
+        self.assertIn('"summary": "Create an API"', prompt)
+        self.assertNotIn("This is a refinement request", prompt)
 
     def test_turn_prompt_marks_operator_reference_id_as_selected_cache_data(self) -> None:
         prompt = build_copilot_prompt(

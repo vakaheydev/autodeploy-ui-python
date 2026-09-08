@@ -68,12 +68,19 @@ Every request-scoped form also receives the selected environment as the plain
 string `self.current_environment`; use it instead of
 `self.screen.app.current_environment.get()`.
 
+`fetch_from_itsm()` returns `ITSMFetchResult`: `deterministic(values)` applies an
+exact Python patch, while `ai(context)` starts the main MCP-native Copilot for
+the already selected form and creates a persistent inline-review draft. A plain
+mapping remains a deterministic compatibility result. AI source context is
+sanitized server-side and never returned to React.
+
 For gradual migration, `self.apply_form_data({...})` and the legacy
 `self.screen.apply_form_data({...})` are supported while executing a
-`ServerAction` or `fetch_from_itsm()`. The web context accumulates that patch and
-returns it to React; unknown field keys are ignored as in `FormScreen`. Calling
-it during validation, payload construction or submit remains an error because
-the browser values have already entered validation/confirmation at that point.
+`ServerAction` or deterministic `fetch_from_itsm()`. The web context accumulates
+that patch and returns it to React; unknown field keys are ignored as in
+`FormScreen`. Calling it in AI mode, during validation, payload construction or
+submit remains an error because the browser values have already entered the
+relevant lifecycle.
 The original Tkinter entry point remains `python main.py`.
 
 Tkinter-only `CustomButton` callbacks may open dialogs and therefore cannot be

@@ -650,7 +650,42 @@ def build_mcp_copilot_prompt(
     """One MCP-native conversational turn; structured actions are tool calls."""
     draft_section = ""
     if draft_context is not None:
-        draft_section = f"""
+        initial_ticket_fill = (
+            isinstance(draft_context, Mapping)
+            and draft_context.get("operation") == "initial_ticket_fill"
+        )
+        if initial_ticket_fill:
+            form_id = str(draft_context.get("form_id") or "")
+            environment = str(draft_context.get("environment") or "")
+            form_version = str(draft_context.get("form_version") or "")
+            draft_id = str(draft_context.get("draft_id") or "")
+            untrusted_context = {
+                "ticket_id": draft_context.get("ticket_id"),
+                "current_values": draft_context.get("current_values", {}),
+                "source_context": draft_context.get("source_context", {}),
+                "form_instruction": draft_context.get("form_instruction", ""),
+            }
+            draft_section = f"""
+
+TRUSTED EXACT FORM TARGET
+- form_id: {json.dumps(form_id, ensure_ascii=False)}
+- environment: {json.dumps(environment, ensure_ascii=False)}
+- form_version: {json.dumps(form_version, ensure_ascii=False)}
+- existing draft_id: {json.dumps(draft_id, ensure_ascii=False)}
+
+The application has already selected this form. Do not run semantic form
+search, do not choose another form and do not fetch this ticket through a
+generic ITSM integration. Call get_form_schema for the exact target, map the
+provided facts to its live fields and call prepare_form_draft with the exact
+existing draft_id. Current values are the operator's baseline: preserve them
+unless the supplied ticket facts support a replacement.
+
+BEGIN_UNTRUSTED_ITSM_FORM_CONTEXT
+{_render_untrusted(untrusted_context)}
+END_UNTRUSTED_ITSM_FORM_CONTEXT
+"""
+        else:
+            draft_section = f"""
 
 BEGIN_UNTRUSTED_CURRENT_DRAFT_DATA
 {_render_untrusted(draft_context)}

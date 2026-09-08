@@ -17,10 +17,15 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 
 from config.categories import CATEGORIES
 from config.environments import ENVIRONMENT_MAP
-from forms.base_form import BaseForm, FormValidationIssue
+from forms.base_form import (
+    BaseForm,
+    FormValidationIssue,
+    ITSMFetchMode,
+    ITSMFetchResult,
+)
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from forms.registry import FormRegistry
-from opencode_integration.context_builder import is_secret_key
+from opencode_integration.context_builder import is_secret_key, redact_text, sanitize
 
 
 _log = logging.getLogger("web.forms")
@@ -40,6 +45,10 @@ class FormNotFoundError(KeyError):
 
 
 class FormVersionConflict(ValueError):
+    pass
+
+
+class FormAIUnavailableError(RuntimeError):
     pass
 
 
@@ -771,9 +780,17 @@ class FormRuntime:
             ),
         }
 
-    def fetch_ticket(self, form_id: str, environment: str, ticket_id: str) -> dict[str, Any]:
+    def fetch_ticket(
+        self,
+        form_id: str,
+        environment: str,
+        ticket_id: str,
+        current_values: Optional[Mapping[str, Any]] = None,
+        version: str = "",
+    ) -> dict[str, Any]:
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
+        self._check_version(form, version)
         if not form.itsm_support:
             raise ValueError("Эта форма не поддерживает прямое заполнение из ITSM")
         context = _WebFormContext(
@@ -781,13 +798,57 @@ class FormRuntime:
             writable_fields=form.fields,
         )
         form.screen = context
-        result = form.fetch_from_itsm(environment, ticket_id)
-        if result is None:
-            result = {}
-        if not isinstance(result, Mapping):
-            raise ValueError("ITSM hook формы должен вернуть объект field_key -> value")
-        values = context.applied_values
-        values.update(copy.deepcopy(dict(result)))
+        raw_result = form.fetch_from_itsm(environment, ticket_id)
+        if isinstance(raw_result, ITSMFetchResult):
+            result = raw_result
+        elif raw_result is None or isinstance(raw_result, Mapping):
+            # Public compatibility contract: every pre-refactor mapping is an
+            # exact deterministic field patch.
+            result = ITSMFetchResult.deterministic(raw_result or {})
+        else:
+            raise ValueError(
+                "fetch_from_itsm должен вернуть ITSMFetchResult "
+                "или legacy mapping field_key -> value"
+            )
+        _log.info(
+            "ITSM form hook completed form=%s environment=%s mode=%s",
+            form_id,
+            environment,
+            result.mode.value,
+        )
+
+        if result.mode is ITSMFetchMode.AI:
+            if context.applied_values:
+                raise ValueError(
+                    "В режиме ai не вызывайте apply_form_data: "
+                    "верните исходные данные в ITSMFetchResult.ai(context)"
+                )
+            if self.container.ai is None:
+                raise FormAIUnavailableError(
+                    "AI-сервис формы не инициализирован"
+                )
+            safe_context = sanitize(dict(result.context or {}))
+            if not isinstance(safe_context, Mapping):
+                raise ValueError("ITSM AI context должен быть JSON-объектом")
+            try:
+                return self.container.ai.start_form_ticket_fill(
+                    form_id=form_id,
+                    environment=environment,
+                    form_version=form_version(form),
+                    ticket_id=ticket_id,
+                    source_context=safe_context,
+                    instruction=redact_text(result.instruction),
+                    current_values=current_values or {},
+                )
+            except RuntimeError as exc:
+                raise FormAIUnavailableError(str(exc)) from exc
+
+        # Reuse the headless FormScreen compatibility filter so a legacy hook's
+        # extra metadata never becomes an unknown form field.
+        context.apply_form_data(result.values)
+        patch = context.applied_values
+        values = copy.deepcopy(dict(current_values or {}))
+        values.update(patch)
         validation = self.validate(
             form_id,
             environment,
@@ -796,6 +857,7 @@ class FormRuntime:
             validate_references=False,
         )
         return {
+            "mode": ITSMFetchMode.DETERMINISTIC.value,
             "values": validation.values,
             "errors": list(validation.errors),
             "valid": validation.valid,

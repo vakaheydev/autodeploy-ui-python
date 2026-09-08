@@ -262,3 +262,88 @@ def test_manual_chat_title_is_persisted_in_opencode(
     assert result == {"title": "Новый короткий чат"}
     assert session.title_custom is True
     assert client.updated == ("ses-1", "Новый короткий чат")
+
+
+def test_form_ticket_fill_reuses_exact_draft_and_skips_generic_ticket_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WebAIService(SimpleNamespace(
+        settings=SimpleNamespace(mcp_enabled=True),
+        env_manager=SimpleNamespace(load=lambda: {}),
+    ))
+    now = time.time()
+    pending = FormDraft(
+        id="draft-ticket",
+        workflow_id="workflow-ticket",
+        form_id="api.create",
+        environment="test_int",
+        form_version="version-1",
+        baseline={},
+        values={},
+        fields=[],
+        warnings=[],
+        errors=[],
+        valid=False,
+        created_at=now,
+        updated_at=now,
+        expires_at=0,
+        status="running",
+        progress="Copilot анализирует…",
+    )
+    session = SimpleNamespace(provider_id="corp", model_id="qwen")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        service,
+        "create_session",
+        lambda: {"id": "workflow-ticket"},
+    )
+    monkeypatch.setattr(service, "_session", lambda _workflow_id: session)
+    monkeypatch.setattr(service._drafts, "begin_ai_fill", lambda **_kwargs: pending)
+
+    def start_message(_workflow_id: str, **kwargs):
+        captured.update(kwargs)
+        return {"job_id": "job-ticket"}
+
+    monkeypatch.setattr(service, "start_message", start_message)
+
+    result = service.start_form_ticket_fill(
+        form_id="api.create",
+        environment="test_int",
+        form_version="version-1",
+        ticket_id="REQ-42",
+        source_context={"summary": "Create API"},
+        current_values={"name": ""},
+    )
+
+    assert result["draft_id"] == "draft-ticket"
+    assert captured["ticket_id"] is None
+    assert captured["ticket_context_provided"] is True
+    assert captured["refining_draft_id"] == "draft-ticket"
+    assert captured["draft_context"] == {
+        "operation": "initial_ticket_fill",
+        "draft_id": "draft-ticket",
+        "form_id": "api.create",
+        "environment": "test_int",
+        "form_version": "version-1",
+        "ticket_id": "REQ-42",
+        "current_values": {"name": ""},
+        "source_context": {"summary": "Create API"},
+        "form_instruction": "",
+    }
+
+
+def test_form_ticket_fill_requires_autodeploy_mcp() -> None:
+    service = WebAIService(SimpleNamespace(
+        settings=SimpleNamespace(mcp_enabled=False),
+    ))
+
+    with pytest.raises(RuntimeError, match="AUTODEPLOY_MCP_ENABLED=true"):
+        service.start_form_ticket_fill(
+            form_id="api.create",
+            environment="test_int",
+            form_version="version-1",
+            ticket_id="REQ-42",
+            source_context={"summary": "Create API"},
+            current_values={},
+        )

@@ -70,6 +70,9 @@ Mandatory rules:
 10. The main session intentionally has no full form catalog. Do not guess form
     IDs. Call semantic form search only when the current operator request actually
     concerns a form; greetings and ordinary conversation need no tool.
+    When the application supplies a trusted exact form target plus an existing
+    draft ID for an ITSM fill, skip semantic search and generic ITSM loading:
+    inspect that form and update that exact draft from the attached context.
 11. SELECT values are scalar IDs and MULTISELECT values are arrays of unique IDs.
     Never use JSON Repository MCP to enumerate a form dictionary. Values already
     explicit in the operator request do not need repository research. An object

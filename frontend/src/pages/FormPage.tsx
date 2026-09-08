@@ -12,6 +12,17 @@ interface AIFieldResult { key: string; proposed_value: unknown; confidence: stri
 interface ExtractionResult { values: Record<string, unknown>; baseline?: Record<string, unknown>; fields: AIFieldResult[]; warnings: string[]; errors?: ValidationError[]; valid?: boolean }
 interface ExtractionState { id: string; draft_id?: string; workflow_id?: string; form_id?: string; environment?: string; status: string; progress: string; result: ExtractionResult | null; error: string }
 interface ReviewEntry { confidence: string; proposedValue: unknown; source?: string | null; reason?: string | null; conflict?: string | null }
+interface TicketFetchResponse {
+  mode: 'deterministic' | 'ai'
+  values?: Record<string, unknown>
+  errors?: ValidationError[]
+  valid?: boolean
+  draft_id?: string
+  workflow_id?: string
+  job_id?: string
+  status?: string
+  progress?: string
+}
 type AIResource = 'draft' | 'extraction' | null
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -135,6 +146,7 @@ export function FormPage() {
   const [submitError, setSubmitError] = useState('')
   const [ticketModal, setTicketModal] = useState(false)
   const [ticketId, setTicketId] = useState('')
+  const [ticketError, setTicketError] = useState('')
   const [result, setResult] = useState<SubmitResult | null>(null)
   const stateSequence = useRef(0)
   const handoffStarted = useRef('')
@@ -482,22 +494,54 @@ export function FormPage() {
   }
 
   const fetchTicket = async () => {
-    if (!document || !ticketId.trim()) return
+    if (!document || !ticketId.trim() || busy) return
+    let aiStarted = false
     setBusy(true)
     setError('')
+    setTicketError('')
     try {
-      const response = await post<{ values: Record<string, unknown>; errors: ValidationError[] }>(`/api/v1/forms/${encodeURIComponent(formId)}/ticket`, {
+      const response = await post<TicketFetchResponse>(`/api/v1/forms/${encodeURIComponent(formId)}/ticket`, {
         environment,
         ticket_id: ticketId.trim(),
+        values,
+        form_version: document.version,
       })
-      setValues((current) => ({ ...current, ...response.values }))
+      if (response.mode === 'ai') {
+        if (!response.draft_id || !response.workflow_id) {
+          throw new Error('Сервер не вернул идентификатор AI-черновика')
+        }
+        aiStarted = true
+        const draftId = response.draft_id
+        activeDraftIdRef.current = draftId
+        setActiveDraftId(draftId)
+        setDraftSaveState('saved')
+        setAIResource('draft')
+        setExtraction({
+          id: draftId,
+          draft_id: draftId,
+          workflow_id: response.workflow_id,
+          form_id: formId,
+          environment,
+          status: response.status ?? 'running',
+          progress: response.progress ?? 'Copilot анализирует данные заявки…',
+          result: null,
+          error: '',
+        })
+        draftStarted.current = `${draftId}|${formId}|${environment}`
+        setTicketModal(false)
+        setTicketId('')
+        navigate(`${location.pathname}?draft=${encodeURIComponent(draftId)}`, { replace: true })
+        return
+      }
+      setValues(response.values ?? values)
       setEditRevision((current) => current + 1)
-      setErrors(response.errors)
+      setErrors(response.errors ?? [])
       setTicketModal(false)
+      setTicketId('')
     } catch (reason) {
-      reportFailure(reason)
+      setTicketError(reason instanceof Error ? reason.message : String(reason))
     } finally {
-      setBusy(false)
+      if (!aiStarted) setBusy(false)
     }
   }
 
@@ -707,7 +751,7 @@ export function FormPage() {
         {Object.keys(review).length ? <><div className="review-summary"><Sparkles size={18} /><span><strong>Проверьте AI-предложения</strong><small>{Object.keys(review).length} ожидают решения</small></span></div><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => setRefineModal(true)}><Sparkles size={17} /> Уточнить</button><button className="button danger" disabled={busy} onClick={() => void finishReview(false)}><X size={17} /> Отклонить всё</button><button className="button success" disabled={busy} onClick={() => void finishReview(true)}><Check size={17} /> Принять всё</button></div></> : <>
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
-          {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => setTicketModal(true)}><Sparkles size={17} /> Подтянуть заявку</button>}
+          {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => { setTicketError(''); setTicketModal(true) }}><Sparkles size={17} /> Подтянуть заявку</button>}
           {document.custom_actions.map((action) => <button className={`button ${action.style.toLowerCase() === 'primary' ? 'primary' : 'secondary'}`} disabled={!action.available || busy} title={action.reason} onClick={() => void runAction(action.id)} key={action.id}>{action.label}</button>)}
           <button className="button ghost" disabled={busy} onClick={() => { setValues(document.initial_values); setEditRevision((current) => current + 1); setErrors([]); setResult(null) }}><RefreshCw size={16} /> Сбросить</button>
         </div>
@@ -727,8 +771,9 @@ export function FormPage() {
         {submitError && !submitting && <div className="submit-error" role="alert"><span className="submit-feedback-icon"><X size={21} /></span><span><strong>Не удалось отправить форму</strong><small>{submitError}</small></span></div>}
       </Modal>}
 
-      {ticketModal && <Modal title="Подтянуть данные из заявки" onClose={() => setTicketModal(false)} footer={<><button className="button secondary" onClick={() => setTicketModal(false)}>Отмена</button><button className="button primary" disabled={busy || !ticketId.trim()} onClick={() => void fetchTicket()}><Sparkles size={17} /> Получить данные</button></>}>
+      {ticketModal && <Modal title="Подтянуть данные из заявки" onClose={() => !busy && setTicketModal(false)} closeDisabled={busy} footer={<><button className="button secondary" disabled={busy} onClick={() => setTicketModal(false)}>Отмена</button><button className="button primary" disabled={busy || !ticketId.trim()} onClick={() => void fetchTicket()}>{busy ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />} {busy ? 'Получаю…' : 'Получить данные'}</button></>}>
         <label className="form-field"><span className="field-label">Номер заявки</span><input autoFocus value={ticketId} onChange={(event) => setTicketId(event.target.value)} placeholder="REQ-123456" onKeyDown={(event) => event.key === 'Enter' && void fetchTicket()} /></label>
+        {ticketError && <div className="submit-error" role="alert"><span className="submit-feedback-icon"><X size={21} /></span><span><strong>Не удалось получить заявку</strong><small>{ticketError}</small></span></div>}
       </Modal>}
       {refineModal && <Modal title="Уточнить AI-предложения" onClose={() => setRefineModal(false)} footer={<><button className="button secondary" onClick={() => setRefineModal(false)}>Отмена</button><button className="button primary" disabled={!guidance.trim()} onClick={() => void refine()}><Sparkles size={17} /> Отправить агенту</button></>}><label className="form-field"><span className="field-label">Что нужно изменить?</span><textarea rows={6} autoFocus value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Например: оставь текущего владельца, а context path замени на /payments/v2" /></label></Modal>}
       {actionConfirm && <Modal title="Подтвердите дополнительное действие" onClose={() => setActionConfirm(null)} footer={<><button className="button secondary" onClick={() => setActionConfirm(null)}>Отмена</button><button className="button primary" disabled={busy} onClick={() => void runAction(actionConfirm.id, actionConfirm.token)}><Check size={17} /> Подтвердить</button></>}><p>{actionConfirm.text}</p></Modal>}

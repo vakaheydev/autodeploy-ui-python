@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from forms.base_form import BaseForm, ServerAction
+from forms.base_form import (
+    BaseForm,
+    ITSMFetchMode,
+    ITSMFetchResult,
+    ServerAction,
+)
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from forms.loader import register_all_forms
 from forms.registry import FormRegistry
@@ -549,6 +554,29 @@ class _TicketPatchForm(BaseForm):
         return None
 
 
+class _AITicketForm(BaseForm):
+    form_id = "test.ticket-ai"
+    title = "Ticket AI"
+    category = "other"
+    fields = [FieldDefinition("name", "Name", FieldType.TEXT)]
+    itsm_support = True
+
+    def build_payload(self, form_data):
+        return dict(form_data)
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
+
+    def fetch_from_itsm(self, environment: str, ticket_id: str):
+        return ITSMFetchResult.ai(
+            {
+                "summary": f"Create from {ticket_id}",
+                "access_token": "must-not-reach-opencode",
+            },
+            instruction="Use the request summary",
+        )
+
+
 class _EnvironmentAwareForm(BaseForm):
     form_id = "test.environment-aware"
     title = "Environment aware"
@@ -827,6 +855,7 @@ def test_ticket_hook_can_apply_a_headless_form_patch(
             "test.ticket-patch", "regress_ext", "REQ-42"
         )
         assert result == {
+            "mode": "deterministic",
             "values": {"name": "From ITSM", "owner": "Platform"},
             "errors": [],
             "valid": True,
@@ -838,6 +867,73 @@ def test_ticket_hook_can_apply_a_headless_form_patch(
             == "regress_ext"
         )
     finally:
+        registry.clear()
+        register_all_forms()
+
+
+def test_typed_itsm_result_enforces_mode_specific_payloads() -> None:
+    deterministic = ITSMFetchResult.deterministic({"name": "Payments"})
+    assert deterministic.mode is ITSMFetchMode.DETERMINISTIC
+    assert deterministic.values == {"name": "Payments"}
+
+    ai = ITSMFetchResult.ai({"summary": "Create API"}, instruction="Map fields")
+    assert ai.mode is ITSMFetchMode.AI
+    assert ai.context == {"summary": "Create API"}
+
+    with pytest.raises(ValueError, match="context"):
+        ITSMFetchResult(mode=ITSMFetchMode.AI)
+    with pytest.raises(ValueError, match="values"):
+        ITSMFetchResult(
+            mode=ITSMFetchMode.AI,
+            values={"name": "mixed"},
+            context={"summary": "mixed"},
+        )
+
+
+def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
+    container: ApplicationContainer,
+) -> None:
+    class FakeAI:
+        def __init__(self) -> None:
+            self.arguments = None
+
+        def start_form_ticket_fill(self, **kwargs):
+            self.arguments = kwargs
+            return {
+                "mode": "ai",
+                "draft_id": "draft-1",
+                "workflow_id": "workflow-1",
+                "job_id": "job-1",
+                "status": "running",
+                "progress": "Copilot анализирует…",
+            }
+
+    registry = FormRegistry()
+    registry.register(_AITicketForm())
+    fake_ai = FakeAI()
+    container.ai = fake_ai
+    try:
+        version = form_version(container.forms.get_form("test.ticket-ai", "test_int"))
+        result = container.forms.fetch_ticket(
+            "test.ticket-ai",
+            "test_int",
+            "REQ-42",
+            {"name": "Existing"},
+            version,
+        )
+
+        assert result["mode"] == "ai"
+        assert result["draft_id"] == "draft-1"
+        assert fake_ai.arguments is not None
+        assert fake_ai.arguments["form_id"] == "test.ticket-ai"
+        assert fake_ai.arguments["environment"] == "test_int"
+        assert fake_ai.arguments["current_values"] == {"name": "Existing"}
+        assert fake_ai.arguments["source_context"] == {
+            "summary": "Create from REQ-42",
+            "access_token": "[REDACTED]",
+        }
+    finally:
+        container.ai = None
         registry.clear()
         register_all_forms()
 

@@ -28,6 +28,9 @@
 - Секреты читаются только server-side из пользовательского `.env`. Они не
   хранятся в исходниках, wheel, fixture, snapshot, exception для пользователя,
   AI context или логах.
+- `fetch_from_itsm` сам выбирает `ITSMFetchResult.deterministic` или
+  `ITSMFetchResult.ai`; перед его изменением читайте
+  `docs/ITSM_FORM_FILLING.md`.
 - AI может подготовить persistent draft, но не может submit/deploy. Любой
   внешний side effect проходит через обычный Python form lifecycle и явное
   подтверждение пользователя.

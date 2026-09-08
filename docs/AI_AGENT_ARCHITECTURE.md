@@ -99,6 +99,25 @@ operator message
     -> existing Python form lifecycle
 ```
 
+## Exact-form ITSM hook flow
+
+A form can return `ITSMFetchResult.ai(context)` from `fetch_from_itsm`. Unlike a
+free chat request, the Python runtime has already selected the form and creates
+its persistent pending draft before starting Copilot:
+
+```text
+form hook -> sanitized source context -> exact form/draft prompt
+          -> get_form_schema (no semantic form search)
+          -> prepare_form_draft(existing draft_id)
+          -> the same inline field-review and submit lifecycle
+```
+
+The generated turn suppresses generic ticket detection, so Copilot never fetches
+the same request a second time through `ContextBuilder`. The hook context remains
+untrusted data and is not returned to the browser. A typed
+`ITSMFetchResult.deterministic(values)` bypasses Copilot and applies the exact
+Python-produced patch; legacy mappings retain that deterministic meaning.
+
 For ordinary conversation Copilot answers without loading the form catalog or
 calling form/repository tools. A request can create more than one draft; the
 chat returns a link for every form and labels the outcome as an execution plan.

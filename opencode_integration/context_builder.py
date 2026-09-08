@@ -147,6 +147,12 @@ def _fit_to_budget(value: Any, max_chars: int) -> Any:
     }
 
 
+def fit_context_to_budget(value: Any, max_chars: int) -> Any:
+    """Bound already-sanitized JSON context without exposing private helpers."""
+    limit = min(HARD_MAX_CONTEXT_CHARS, max(1_000, int(max_chars)))
+    return _fit_to_budget(value, limit)
+
+
 def _walk(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], Any]]:
     if isinstance(value, dict):
         for key, child in value.items():

@@ -43,6 +43,8 @@ class DraftSaveRequest(ValuesRequest):
 class TicketRequest(StrictModel):
     environment: str = Field(min_length=1, max_length=80)
     ticket_id: str = Field(min_length=1, max_length=200)
+    values: Dict[str, Any] = Field(default_factory=dict)
+    form_version: str = Field(default="", max_length=128)
 
 
 class SearchRequest(StrictModel):

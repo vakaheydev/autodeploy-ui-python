@@ -238,6 +238,40 @@ def test_python_draft_resolves_references_validates_and_is_idempotent(
     assert draft.snapshot()["result"]["baseline"] == document["initial_values"]
 
 
+def test_pending_ticket_draft_is_filled_in_place_for_inline_review(
+    container: ApplicationContainer,
+) -> None:
+    store = FormDraftStore(container)
+    document = container.forms.describe("api.create", "test_int")
+    current = {**document["initial_values"], "name": "Operator value"}
+    pending = store.begin_ai_fill(
+        workflow_id="workflow-ticket-fill",
+        form_id="api.create",
+        environment="test_int",
+        version=document["version"],
+        current_values=current,
+    )
+
+    assert pending.status == "running"
+    assert pending.values["name"] == "Operator value"
+
+    completed = store.prepare(
+        workflow_id="workflow-ticket-fill",
+        form_id="api.create",
+        environment="test_int",
+        version=document["version"],
+        draft_id=pending.id,
+        proposals=_proposals(),
+    )
+
+    assert completed is pending
+    assert completed.status == "complete"
+    assert completed.progress == "Черновик Copilot готов"
+    assert completed.revision == 2
+    assert completed.baseline["name"] == "Operator value"
+    assert completed.values["name"] == "Orders API"
+
+
 def test_draft_refinement_preserves_id_and_rejects_unknown_fields(
     container: ApplicationContainer,
 ) -> None:

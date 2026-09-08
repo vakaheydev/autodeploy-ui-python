@@ -13,7 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from config.categories import CATEGORIES, CATEGORY_ORDER
 from config.environments import ENVIRONMENTS
 from forms.registry import FormRegistry
-from webapp.form_runtime import FormNotFoundError, FormVersionConflict, form_version
+from webapp.form_runtime import (
+    FormAIUnavailableError,
+    FormNotFoundError,
+    FormVersionConflict,
+    form_version,
+)
 from webapp.models import (
     ActionRequest,
     DraftSaveRequest,
@@ -431,8 +436,16 @@ def reference_options(
 def fetch_ticket(form_id: str, body: TicketRequest, request: Request):
     try:
         return container(request).forms.fetch_ticket(
-            form_id, body.environment, body.ticket_id
+            form_id,
+            body.environment,
+            body.ticket_id,
+            body.values,
+            body.form_version,
         )
+    except FormAIUnavailableError as exc:
+        # Connection/configuration failures are an actionable operation conflict,
+        # not an opaque internal-server error.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         _raise_runtime_error(exc)
 

@@ -120,6 +120,55 @@ class FormDraftStore:
         self._path = configured_path.resolve() if configured_path is not None else None
         self._load()
 
+    def begin_ai_fill(
+        self,
+        *,
+        workflow_id: str,
+        form_id: str,
+        environment: str,
+        version: str,
+        current_values: Mapping[str, Any],
+    ) -> FormDraft:
+        """Create the durable draft that Copilot will fill asynchronously."""
+        if not workflow_id:
+            raise ValueError("AI-черновик требует workflow_id")
+        form = self.container.forms.get_form(form_id, environment)
+        actual_version = form_version(form)
+        if version != actual_version:
+            raise ValueError("Версия формы устарела; обновите страницу")
+        validation = self.container.forms.validate(
+            form_id,
+            environment,
+            current_values,
+            actual_version,
+            validate_references=False,
+        )
+        now = time.time()
+        draft = FormDraft(
+            id=secrets.token_urlsafe(24),
+            workflow_id=workflow_id,
+            form_id=form_id,
+            environment=environment,
+            form_version=actual_version,
+            baseline=copy.deepcopy(validation.values),
+            values=copy.deepcopy(validation.values),
+            fields=[],
+            warnings=[],
+            errors=[dict(item) for item in validation.errors],
+            valid=validation.valid,
+            created_at=now,
+            updated_at=now,
+            expires_at=self._expires_at(now),
+            source="ai",
+            status="running",
+            progress="Copilot анализирует данные заявки…",
+        )
+        with self._lock:
+            self._prune_locked(now)
+            self._drafts[draft.id] = draft
+            self._persist_locked()
+        return draft
+
     def prepare(
         self,
         *,
@@ -143,6 +192,12 @@ class FormDraftStore:
             )
         document = self.container.forms.describe(form_id, environment)
         existing = self.get(draft_id) if draft_id else None
+        initial_ai_fill = bool(
+            existing is not None
+            and existing.status == "running"
+            and not existing.fields
+            and existing.pending_baseline is None
+        )
         if existing is not None:
             if existing.workflow_id != workflow_id:
                 raise PermissionError("Черновик относится к другой AI-сессии")
@@ -375,7 +430,11 @@ class FormDraftStore:
             existing.expires_at = self._expires_at(now)
             existing.revision += 1
             existing.status = "complete"
-            existing.progress = "Уточнённый черновик готов"
+            existing.progress = (
+                "Черновик Copilot готов"
+                if initial_ai_fill
+                else "Уточнённый черновик готов"
+            )
             existing.error = ""
             existing.request_fingerprint = fingerprint
             existing.pending_baseline = None
@@ -437,7 +496,7 @@ class FormDraftStore:
             return
         with draft.lock:
             draft.status = "error"
-            draft.progress = "Уточнение не применено"
+            draft.progress = "Copilot не подготовил черновик"
             draft.error = str(message)[:2000]
             draft.updated_at = time.time()
             draft.pending_baseline = None
@@ -629,8 +688,9 @@ class FormDraftStore:
                 if not draft_id or not form_id or not environment:
                     continue
                 status = str(raw.get("status") or "complete")
-                if status == "running":
-                    status = "complete"
+                interrupted = status == "running"
+                if interrupted:
+                    status = "error"
                 draft = FormDraft(
                     id=draft_id,
                     workflow_id=str(raw.get("workflow_id") or ""),
@@ -649,8 +709,16 @@ class FormDraftStore:
                     source=str(raw.get("source") or "ai"),
                     revision=max(1, int(raw.get("revision") or 1)),
                     status=status,
-                    progress=str(raw.get("progress") or "Черновик сохранён"),
-                    error=str(raw.get("error") or ""),
+                    progress=(
+                        "AI-операция была прервана перезапуском"
+                        if interrupted
+                        else str(raw.get("progress") or "Черновик сохранён")
+                    ),
+                    error=(
+                        "Сервер был перезапущен до завершения Copilot"
+                        if interrupted
+                        else str(raw.get("error") or "")
+                    ),
                     request_fingerprint=str(raw.get("request_fingerprint") or ""),
                 )
                 loaded[draft.id] = draft

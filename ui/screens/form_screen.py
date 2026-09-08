@@ -13,7 +13,7 @@ from tkinter import ttk
 from typing import Any, Dict, List, Optional
 
 import ui.theme as theme
-from forms.base_form import BaseForm
+from forms.base_form import BaseForm, ITSMFetchMode, ITSMFetchResult
 from forms.fields import FieldDefinition, FieldType
 from forms.registry import FormRegistry
 from config.environments import (
@@ -2133,6 +2133,17 @@ class FormScreen(BaseScreen):
             return self._form.fetch_from_itsm(environment, ticket_id)
 
         def _done(data) -> None:
+            if isinstance(data, ITSMFetchResult):
+                if data.mode is ITSMFetchMode.AI:
+                    show_error(
+                        self,
+                        "AI-режим недоступен",
+                        "ITSMFetchResult.ai выполняется через web-сервер "
+                        "и Copilot draft. В desktop-режиме верните "
+                        "ITSMFetchResult.deterministic(values).",
+                    )
+                    return
+                data = data.values
             filled = self.apply_form_data(data or {})
             if filled:
                 fields_text = "\n".join(f"  • {k}" for k in filled)

@@ -582,6 +582,7 @@ class UnifiedCopilot:
         on_session: Optional[Callable[[Optional[str]], None]] = None,
         draft_context: Any = None,
         operator_references: Any = None,
+        detect_ticket_references: bool = True,
     ) -> CopilotOutcome:
         with self._operation_lock:
             text = redact_text(str(message).strip())
@@ -617,7 +618,9 @@ class UnifiedCopilot:
                         tuple(item for item in raw_parts if isinstance(item, Mapping))
                     )
 
-            requested_ticket = ticket_id or detect_ticket_reference(text)
+            requested_ticket = ticket_id or (
+                detect_ticket_reference(text) if detect_ticket_references else None
+            )
             if requested_ticket and (
                 self._context is None or self._context.ticket_id != requested_ticket
             ):

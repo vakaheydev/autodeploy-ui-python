@@ -35,7 +35,14 @@ from opencode_integration.copilot import (
     detect_ticket_reference,
     visible_assistant_text,
 )
-from opencode_integration.context_builder import BuiltContext, redact_text
+from opencode_integration.context_builder import (
+    DEFAULT_MAX_CONTEXT_CHARS,
+    HARD_MAX_CONTEXT_CHARS,
+    BuiltContext,
+    fit_context_to_budget,
+    redact_text,
+    sanitize,
+)
 from opencode_integration.form_search import SemanticFormSearchSession
 from opencode_integration.researcher import RepositoryResearcher
 from opencode_integration.thinking import decide_copilot_thinking, decide_extractor_thinking
@@ -710,6 +717,7 @@ class WebAIService:
         mentions: Sequence[Mapping[str, Any]] = (),
         draft_context: Any = None,
         refining_draft_id: str = "",
+        ticket_context_provided: bool = False,
     ) -> dict[str, Any]:
         if environment not in ENVIRONMENT_MAP:
             raise ValueError("Неизвестное окружение")
@@ -726,7 +734,11 @@ class WebAIService:
             actual_thinking, thinking_reason = self._resolve_copilot_thinking(
                 thinking,
                 variants,
-                bool(ticket_id or detect_ticket_reference(message)),
+                bool(
+                    ticket_context_provided
+                    or ticket_id
+                    or detect_ticket_reference(message)
+                ),
             )
             session.provider_id = selected_provider
             session.model_id = selected_model
@@ -816,6 +828,7 @@ class WebAIService:
                     on_event=conversation,
                     draft_context=draft_context,
                     operator_references=resolved_mentions,
+                    detect_ticket_references=not ticket_context_provided,
                 )
                 session.tokens_used = max(0, int(outcome.tokens_used))
                 self._sync_session_title(session)
@@ -1177,6 +1190,101 @@ class WebAIService:
             clear_review=clear_review,
             pending_review_fields=pending_review_fields,
         ).snapshot()
+
+    def start_form_ticket_fill(
+        self,
+        *,
+        form_id: str,
+        environment: str,
+        form_version: str,
+        ticket_id: str,
+        source_context: Mapping[str, Any],
+        current_values: Mapping[str, Any],
+        instruction: str = "",
+    ) -> dict[str, Any]:
+        """Start an exact-form Copilot fill from a corporate ITSM hook."""
+        if not self.container.settings.mcp_enabled:
+            raise RuntimeError(
+                "AI-режим fetch_from_itsm требует включённый "
+                "AutoDeploy MCP (AUTODEPLOY_MCP_ENABLED=true)"
+            )
+        session_snapshot = self.create_session()
+        workflow_id = str(session_snapshot["id"])
+        session = self._session(workflow_id)
+        draft = None
+        try:
+            draft = self._drafts.begin_ai_fill(
+                workflow_id=workflow_id,
+                form_id=form_id,
+                environment=environment,
+                version=form_version,
+                current_values=current_values,
+            )
+            configured_limit = self._integer(
+                self.container.env_manager.load().get(
+                    OPENCODE_MAX_CONTEXT_CHARS_KEY, DEFAULT_MAX_CONTEXT_CHARS
+                ),
+                DEFAULT_MAX_CONTEXT_CHARS,
+            )
+            context_limit = min(HARD_MAX_CONTEXT_CHARS, configured_limit)
+            prompt_context = {
+                "operation": "initial_ticket_fill",
+                "draft_id": draft.id,
+                "form_id": form_id,
+                "environment": environment,
+                "form_version": form_version,
+                "ticket_id": str(ticket_id),
+                "current_values": copy_json(fit_context_to_budget(
+                    sanitize(dict(current_values)),
+                    max(1_000, int(context_limit * 0.20)),
+                )),
+                "source_context": copy_json(fit_context_to_budget(
+                    sanitize(dict(source_context)),
+                    max(1_000, int(context_limit * 0.75)),
+                )),
+                "form_instruction": redact_text(str(instruction).strip()),
+            }
+            started = self.start_message(
+                workflow_id,
+                message=(
+                    "Заполни уже выбранную форму по прикреплённому "
+                    "очищенному контексту заявки. Создай черновик "
+                    "для проверки оператором."
+                ),
+                environment=environment,
+                ticket_id=None,
+                provider_id=session.provider_id,
+                model_id=session.model_id,
+                thinking="auto",
+                draft_context=prompt_context,
+                refining_draft_id=draft.id,
+                ticket_context_provided=True,
+            )
+            _log.info(
+                "ITSM Copilot fill started workflow=%s draft=%s form=%s environment=%s",
+                workflow_id,
+                draft.id,
+                form_id,
+                environment,
+            )
+        except Exception:
+            try:
+                if draft is not None:
+                    self._drafts.delete(draft.id, workflow_id=workflow_id)
+            finally:
+                self.delete(workflow_id)
+            raise
+        return {
+            "mode": "ai",
+            "draft_id": draft.id,
+            "workflow_id": workflow_id,
+            "job_id": started["job_id"],
+            # The worker can finish between start_message() and this return.
+            # Keep the transport state running so the browser always performs
+            # at least one authoritative draft GET and cannot miss that race.
+            "status": "running",
+            "progress": "Copilot анализирует данные заявки…",
+        }
 
     def delete_draft(self, draft_id: str) -> None:
         self._drafts.delete(draft_id)

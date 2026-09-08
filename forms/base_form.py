@@ -9,7 +9,8 @@ BaseForm — абстрактный базовый класс для всех ф
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as _dc_field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
 
 if TYPE_CHECKING:
     from services.gravitee_service import GraviteeService
@@ -63,6 +64,74 @@ class FormValidationIssue:
 
     def __str__(self) -> str:
         return self.message
+
+
+class ITSMFetchMode(str, Enum):
+    """How the server should handle data returned by ``fetch_from_itsm``."""
+
+    DETERMINISTIC = "deterministic"
+    AI = "ai"
+
+
+@dataclass(frozen=True)
+class ITSMFetchResult:
+    """Typed result of a form's ITSM hook.
+
+    ``deterministic`` contains an exact form patch produced by corporate Python
+    code. ``ai`` contains sanitized source context for the main Copilot, which
+    creates a persistent draft of this exact form for operator review.
+
+    Prefer the named constructors: they keep mode-specific fields explicit and
+    make an invalid mixed result impossible to return accidentally.
+    """
+
+    mode: ITSMFetchMode
+    values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    context: Optional[Mapping[str, Any]] = None
+    instruction: str = ""
+
+    def __post_init__(self) -> None:
+        try:
+            mode = ITSMFetchMode(self.mode)
+        except ValueError as exc:
+            raise ValueError(f"Неизвестный режим ITSM: {self.mode!r}") from exc
+        object.__setattr__(self, "mode", mode)
+        if not isinstance(self.values, Mapping):
+            raise TypeError("ITSM deterministic values должен быть объектом")
+        if self.context is not None and not isinstance(self.context, Mapping):
+            raise TypeError("ITSM AI context должен быть JSON-объектом")
+        if mode is ITSMFetchMode.DETERMINISTIC:
+            if self.context is not None or self.instruction:
+                raise ValueError(
+                    "Режим deterministic принимает только values"
+                )
+            return
+        if self.context is None:
+            raise ValueError("Режим ai требует context")
+        if self.values:
+            raise ValueError("Режим ai принимает context, но не values")
+
+    @classmethod
+    def deterministic(cls, values: Mapping[str, Any]) -> "ITSMFetchResult":
+        """Apply an exact Python-produced patch without invoking AI."""
+        return cls(mode=ITSMFetchMode.DETERMINISTIC, values=values)
+
+    @classmethod
+    def ai(
+        cls,
+        context: Mapping[str, Any],
+        *,
+        instruction: str = "",
+    ) -> "ITSMFetchResult":
+        """Give source context to Copilot and create a reviewable form draft."""
+        return cls(
+            mode=ITSMFetchMode.AI,
+            context=context,
+            instruction=str(instruction).strip(),
+        )
+
+
+ITSMFetchReturn = Union[ITSMFetchResult, Mapping[str, Any], None]
 
 
 class BaseForm(ABC):
@@ -480,20 +549,31 @@ class BaseForm(ABC):
         """
         return False
 
-    def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
+    def fetch_from_itsm(
+        self, environment: str, ticket_id: str
+    ) -> ITSMFetchReturn:
         """
-        Получает данные из ITSM-заявки и возвращает словарь {field_key: value}.
+        Получает данные ITSM-заявки и сам выбирает режим обработки.
         Вызывается в фоновом потоке при нажатии кнопки «Подтянуть из заявки».
 
         ticket_id — номер заявки, введённый пользователем в диалоговом окне.
 
-        Ключи словаря должны совпадать с ключами полей формы (field.key).
-        Если ключ не найден среди полей — он игнорируется.
+        * ITSMFetchResult.deterministic(values) — точный patch формы.
+        * ITSMFetchResult.ai(context, instruction=...) — JSON-контекст
+          для Copilot. Он заполняет черновик этой же формы; оператор
+          проверяет каждое поле до submit.
+
+        Обычный mapping сохранён для обратной совместимости и
+        трактуется как deterministic values.
 
         Переопределить в конкретной форме:
-            def fetch_from_itsm(self, environment: str, ticket_id: str) -> Dict[str, Any]:
+            def fetch_from_itsm(self, environment: str, ticket_id: str):
                 response = self.itsm_service.get_ticket(ticket_id, environment)
-                return {"app_name": response["appName"], "env": response["targetEnv"]}
+                if response["request_type"] == "simple":
+                    return ITSMFetchResult.deterministic({
+                        "app_name": response["appName"],
+                    })
+                return ITSMFetchResult.ai({"ticket": response})
         """
         raise NotImplementedError("fetch_from_itsm не реализован для этой формы")
 

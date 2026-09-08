@@ -62,6 +62,72 @@ describe('FormPage custom actions', () => {
     expect(screen.queryByText('Python runtime')).not.toBeInTheDocument()
   })
 
+  it('opens the existing inline review when the ITSM hook selects AI mode', async () => {
+    const user = userEvent.setup()
+    let ticketBody: Record<string, unknown> | undefined
+    const fieldDocument: FormDocument = {
+      ...document,
+      custom_actions: [],
+      fields: [{
+        key: 'name', path: 'name', label: 'Название API', type: 'text', required: true,
+        visible: true, dynamic: false, placeholder: '', default: '', hint: '',
+        file_type: '', width: 1, plural: false, plural_max: null,
+        depends_on: null, depends_on_field: null,
+      }],
+      initial_values: { name: 'Existing' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/ticket')) {
+        ticketBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+          mode: 'ai', draft_id: 'draft-ticket', workflow_id: 'workflow-ticket',
+          job_id: 'job-ticket', status: 'running', progress: 'Copilot анализирует…',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/api/v1/ai/drafts/draft-ticket')) {
+        return new Response(JSON.stringify({
+          id: 'draft-ticket', draft_id: 'draft-ticket', workflow_id: 'workflow-ticket',
+          form_id: 'api.create', environment: 'test_int', status: 'complete',
+          progress: 'Черновик Copilot готов', error: '',
+          result: {
+            values: { name: 'From AI' }, baseline: { name: 'Existing' },
+            fields: [{ key: 'name', proposed_value: 'From AI', confidence: 'high', source: 'ITSM.summary' }],
+            warnings: [], errors: [], valid: true,
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(fieldDocument), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }))
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes>
+            <Route path="/forms/:formId" element={<FormPage />} />
+          </Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Подтянуть заявку/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Подтянуть данные из заявки' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Номер заявки' }), 'REQ-42')
+    await user.click(within(dialog).getByRole('button', { name: 'Получить данные' }))
+
+    expect(ticketBody).toMatchObject({
+      environment: 'test_int',
+      ticket_id: 'REQ-42',
+      values: { name: 'Existing' },
+      form_version: 'version-1',
+    })
+    expect(await screen.findByDisplayValue('From AI', {}, { timeout: 2500 })).toBeInTheDocument()
+    expect(screen.getByText('Проверьте AI-предложения')).toBeInTheDocument()
+  })
+
   it('extracts field errors from a rejected submit response', () => {
     const reason = new ApiError(422, 'Форма не прошла валидацию', {
       detail: {

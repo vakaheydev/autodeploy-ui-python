@@ -182,24 +182,28 @@ Legacy `CustomButton` остаётся только для Tkinter. Он ото�
 
 ## Загрузка заявки
 
-Чтобы показать общую кнопку заявки:
+Чтобы показать общую кнопку заявки, форма включает hook и сама
+возвращает типизированный режим:
 
 ```python
+from forms.base_form import ITSMFetchResult
+
 @property
 def itsm_support(self) -> bool:
     return True
 
 def fetch_from_itsm(self, environment: str, ticket_id: str):
     ticket = self.itsm_service.get_ticket(ticket_id, environment)
-    return {
+    return ITSMFetchResult.deterministic({
         "name": ticket.get("service_name", ""),
         "description": ticket.get("summary", ""),
-    }
+    })
 ```
 
-Метод должен вернуть patch `{field_key: value}`. Неизвестные keys игнорируются.
-Ошибку получения заявки нужно выбросить: frontend покажет её в окне операции,
-не меняя форму частично.
+Для неоднозначной заявки хук возвращает
+`ITSMFetchResult.ai(context={...})`; Copilot создаёт постоянный черновик
+этой же формы. Полный контракт, flow, пример смешанного выбора и
+тесты описаны в [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md).
 
 ## Submit lifecycle
 
