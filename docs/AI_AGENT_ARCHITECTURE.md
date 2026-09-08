@@ -107,10 +107,12 @@ chat returns a link for every form and labels the outcome as an execution plan.
 
 Typing `@` in the web composer opens a cross-catalog picker for the current
 environment. `POST /api/v1/ai/reference-mentions/search` reads only persistent
-`ReferenceCache` snapshots already produced by form, plugin or global-search
-reference handlers. It never calls a resolver, performs HTTP, refreshes a
-resource or applies TTL; an expired entry remains selectable until an explicit
-application action replaces or invalidates it. Search uses each registered
+`ReferenceCache` snapshots for the API/application catalogs configured for the
+global Search page. Form-field and plugin-field references are intentionally not
+included, so the same API is not repeated for every form that uses it. Mention
+lookup never calls a resolver, performs HTTP, refreshes a resource or applies
+TTL; an expired entry remains selectable until an explicit application action
+replaces or invalidates it. Search uses each Search-page
 `ReferenceConfig.search_keys` in declaration order.
 
 The visible message contains the selected label and identifier. The client also

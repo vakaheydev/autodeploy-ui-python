@@ -168,13 +168,15 @@ resource + environment + отсортированные dependency params
 обещать поддержку refresh.
 
 Этот же shared cache обслуживает быстрые `@`-ссылки в AI-чате. Поиск упоминаний
-собирает зарегистрированные `ReferenceConfig` из форм, plugin pages и global
-search catalogs текущего окружения и проверяет только объявленные
-`search_keys`. Он принципиально не вызывает handler, resolver, HTTP endpoint или
-refresh: просроченный snapshot разрешён, а при отсутствии cache результат просто
-пуст. Поэтому corporate handler, если справочник должен быть доступен через
-`@`, обязан сохранять успешный ответ именно в переданный factory экземпляр
-`ReferenceCache` с корректными `resource`, `environment` и dependency params.
+использует ровно API/application `ReferenceConfig`, возвращённые
+`AUTODEPLOY_SEARCH_CATALOG_FACTORY`, и проверяет только объявленные
+`search_keys`. Справочники отдельных полей форм и плагинов сюда не добавляются:
+это исключает дубли одного API по всем формам, где он встречается. Lookup
+принципиально не вызывает handler, resolver, HTTP endpoint или refresh:
+просроченный snapshot разрешён, а при отсутствии cache результат просто пуст.
+Поэтому corporate handler search-каталога обязан сохранять успешный ответ именно
+в переданный factory экземпляр `ReferenceCache` с корректными `resource` и
+`environment`.
 Перед отправкой в модель выбранный browser pointer повторно разрешается по
 текущему snapshot; доверять присланным browser label/полям нельзя.
 

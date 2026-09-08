@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.reference_cache import ReferenceCache
-from forms.fields import ReferenceConfig
+from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from forms.registry import FormRegistry
 from webapp.reference_mentions import ReferenceMentionService
 
@@ -96,6 +96,45 @@ def test_mention_search_does_not_implicitly_add_label_or_identifier(
     assert service.search("test_int", "visible-azp")["items"]
     assert service.search("test_int", "Hidden label")["items"] == []
     assert service.search("test_int", "app-hidden-id")["items"] == []
+
+
+def test_mentions_use_only_the_same_catalogs_as_the_search_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = ReferenceCache(tmp_path / "cache")
+    cache.set("gravitee_apis", "test_int", [{
+        "id": "api-1", "name": "Orders", "context_path": "/orders",
+    }])
+    cache.set("ingress_types", "test_int", [{
+        "id": "internal", "name": "Internal ingress",
+    }])
+    service = _service(cache, monkeypatch)
+    extra_reference = ReferenceConfig(
+        source="corp_http",
+        resource="ingress_types",
+        value_key="id",
+        label_key="name",
+        search_keys=("name", "id"),
+    )
+    fake_owner = SimpleNamespace(
+        title="Включение ingress",
+        fields=(FieldDefinition(
+            key="ingress",
+            label="Ingress",
+            field_type=FieldType.SELECT,
+            reference=extra_reference,
+        ),),
+    )
+    monkeypatch.setattr(FormRegistry, "all_forms", lambda _self: [fake_owner])
+    service.container.plugin_registry = SimpleNamespace(
+        all_plugins=lambda: [fake_owner]
+    )
+
+    assert [item["identifier"] for item in service.search(
+        "test_int", "orders"
+    )["items"]] == ["api-1"]
+    assert service.search("test_int", "internal")["items"] == []
 
 
 def test_expired_disk_entry_is_read_without_refresh_or_deletion(

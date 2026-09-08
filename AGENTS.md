@@ -59,10 +59,11 @@ search from `search_keys`. A select returns one identifier; a multiselect return
 an array. Do not load entire large dictionaries into the AI context or browser.
 Use the options endpoint and respect Python validation.
 
-Chat `@` references are a cache-only convenience. Discover only registered
-`ReferenceConfig` contracts, search only their declared `search_keys`, and read
-only the shared `ReferenceCache` snapshot for the current environment. Never
-invoke a handler, resolver, HTTP request or refresh from mention lookup, even
+Chat `@` references are a cache-only convenience. Use only the API/application
+`ReferenceConfig` contracts registered for the global Search page, search only
+their declared `search_keys`, and read only the shared `ReferenceCache` snapshot
+for the current environment. Never invoke a handler, resolver, HTTP request or
+refresh from mention lookup, even
 when a cached entry is stale. Re-resolve every client-supplied mention pointer
 against that snapshot in Python before adding its authoritative identifier to
 the bounded, untrusted AI context.

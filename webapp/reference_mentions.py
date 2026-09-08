@@ -5,11 +5,10 @@ import hashlib
 import json
 import threading
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from core.reference_cache import CachedReferenceEntry
-from forms.fields import FieldDefinition, ReferenceConfig
-from forms.registry import FormRegistry
+from forms.fields import ReferenceConfig
 from opencode_integration.context_builder import is_secret_key, sanitize
 
 
@@ -139,37 +138,18 @@ class ReferenceMentionService:
         return records
 
     def _catalogs(self) -> tuple[_MentionCatalog, ...]:
-        collected: dict[tuple[Any, ...], tuple[ReferenceConfig, set[str]]] = {}
-
-        def add(reference: ReferenceConfig, origin: str) -> None:
-            if is_secret_key(reference.value_key) or is_secret_key(reference.label_key):
-                return
-            identity = self._reference_identity(reference)
-            if identity not in collected:
-                collected[identity] = (reference, set())
-            collected[identity][1].add(origin)
-
-        def walk(fields: Iterable[FieldDefinition], owner: str) -> None:
-            for field in fields:
-                if field.reference is not None:
-                    add(field.reference, f"{owner}: {field.label}")
-                if field.block_fields:
-                    walk(field.block_fields, owner)
-
+        result: list[_MentionCatalog] = []
         for kind, reference in sorted(self.container.search_catalogs.items()):
-            add(reference, {"api": "API", "application": "Приложения"}.get(kind, kind))
-        for form in FormRegistry().all_forms():
-            walk(form.fields, form.title)
-        for plugin in self.container.plugin_registry.all_plugins():
-            walk(plugin.fields, plugin.title)
-
-        result = []
-        for identity, (reference, origins) in collected.items():
-            encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+            if is_secret_key(reference.value_key) or is_secret_key(reference.label_key):
+                continue
+            identity = self._reference_identity(reference)
+            encoded = json.dumps(
+                (kind, identity), ensure_ascii=False, separators=(",", ":")
+            )
             result.append(_MentionCatalog(
                 id=hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20],
                 reference=reference,
-                origins=tuple(sorted(origins, key=str.casefold)),
+                origins=({"api": "API", "application": "Приложения"}.get(kind, kind),),
             ))
         return tuple(sorted(result, key=lambda item: item.id))
 
