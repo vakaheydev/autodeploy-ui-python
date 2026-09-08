@@ -22,6 +22,7 @@ FORM_REGISTRAR_KEY = "AUTODEPLOY_FORM_REGISTRAR"
 REFERENCE_HANDLER_FACTORY_KEY = "AUTODEPLOY_REFERENCE_HANDLER_FACTORY"
 SEARCH_CATALOG_FACTORY_KEY = "AUTODEPLOY_SEARCH_CATALOG_FACTORY"
 ENVIRONMENT_HOOK_KEY = "AUTODEPLOY_ENVIRONMENT_HOOK"
+PLUGIN_REGISTRAR_KEY = "AUTODEPLOY_PLUGIN_REGISTRAR"
 
 _SEARCH_KINDS = frozenset({"api", "application"})
 
@@ -95,6 +96,13 @@ def load_environment_hook(env_manager: EnvManager) -> EnvironmentHook | None:
 def register_extension_forms(env_manager: EnvManager, registry: Any) -> None:
     """Let a private package register/replace forms without editing public core."""
     path = env_manager.get(FORM_REGISTRAR_KEY, "").strip()
+    if path:
+        import_callable(path)(registry)
+
+
+def register_extension_plugins(env_manager: EnvManager, registry: Any) -> None:
+    """Let a private package register custom pages without patching the core."""
+    path = env_manager.get(PLUGIN_REGISTRAR_KEY, "").strip()
     if path:
         import_callable(path)(registry)
 

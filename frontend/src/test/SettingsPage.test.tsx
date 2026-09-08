@@ -90,4 +90,58 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Подключиться' })).toBeVisible()
     expect(screen.getByLabelText(/Адрес сервера/)).toHaveValue('http://127.0.0.1:4096')
   })
+
+  it('saves fail-closed AI visibility and an explicit policy per plugin operation', async () => {
+    const policy = {
+      ai_visible: false,
+      requires_new_session: true,
+      plugins: [{
+        id: 'reports.capacity', title: 'Capacity report', description: 'Отчёт по нагрузке',
+        visible: false,
+        operations: [{
+          id: 'recalculate', label: 'Пересчитать', description: 'Обновить отчёт',
+          policy: 'deny', tool_name: 'plugin_reports_capacity_recalculate_8cded0a1',
+        }],
+      }],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/opencode/mcp')) return new Response(JSON.stringify({ connected: false, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/plugins/ai-policy')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          return new Response(JSON.stringify({
+            ...policy,
+            ai_visible: body.ai_visible,
+            plugins: policy.plugins.map((plugin) => ({
+              ...plugin,
+              visible: body.plugins[0].visible,
+              operations: plugin.operations.map((operation) => ({
+                ...operation, policy: body.plugins[0].operations[operation.id],
+              })),
+            })),
+          }), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response(JSON.stringify(policy), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(settings), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/settings?section=Плагины']}><SettingsPage /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('checkbox', { name: 'ИИ видит плагины' }))
+    await user.click(screen.getByRole('checkbox', { name: 'ИИ видит плагин Capacity report' }))
+    await user.click(screen.getByRole('button', { name: 'Политика Пересчитать' }))
+    await user.click(screen.getByRole('option', { name: /Manual approve/ }))
+    await user.click(screen.getByRole('button', { name: 'Сохранить AI-политику' }))
+
+    const request = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/plugins/ai-policy') && init?.method === 'PUT')
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      ai_visible: true,
+      plugins: [{ id: 'reports.capacity', visible: true, operations: { recalculate: 'manual' } }],
+    })
+    expect(await screen.findByText(/Создайте новый AI-чат/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Сохранить AI-политику' })).not.toBeInTheDocument()
+  })
 })

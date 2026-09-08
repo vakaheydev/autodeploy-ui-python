@@ -32,6 +32,11 @@ AUTODEPLOY_OPENCODE_AUTO_CONNECT=false .venv/bin/python -m webapp
 разработчиков и AI-агентов находится только в [docs/corp/](docs/corp/README.md).
 Эту папку можно целиком скопировать в закрытый репозиторий.
 
+Раздел **Плагины** позволяет private package добавлять полноценные server-driven
+custom pages с общими полями/справочниками форм, динамическими графиками и
+картинками, Python-операциями и отдельной fail-closed AI policy. Контракт и
+готовый шаблон находятся в [docs/corp/PLUGINS.md](docs/corp/PLUGINS.md).
+
 Tkinter entry point `python main.py` сохранён только для совместимости. Новые
 возможности и корпоративные интеграции следует развивать через Python server и
 web UI.

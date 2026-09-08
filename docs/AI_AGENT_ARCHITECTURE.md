@@ -48,6 +48,7 @@ web workflow (opaque workflow_id)
 |   +-- conversation history            retained across turns
 |   +-- AutoDeploy MCP                  exact allowlist
 |   +-- JSON Repository MCP             exact read-only allowlist
+|   +-- visible plugin operations       exact allow/ask rules, optional
 |   `-- complete form catalog           NOT present
 |
 +-- semantic form-search session        created on first semantic_search_forms
@@ -176,6 +177,10 @@ OpenCode session.
   are untrusted data.
 - All agent files deny files, shell, edit, web, skills and subagents by default.
 - Main Copilot gets only the exact configured MCP allowlists.
+- Corporate plugins are invisible by default. Each visible plugin operation has
+  an independent `deny`, `manual` or `allow` policy. `manual` maps to OpenCode
+  `ask` on every invocation; MCP dispatch rechecks a later `deny` even for a
+  stale session.
 - JSON Repository read tools can run without approval; their calls remain
   visible. Main-session `git_pull` is `ask` per invocation when enabled.
 - Form search gets no tools. Researcher gets repository reads only and cannot
@@ -189,6 +194,11 @@ Its registrar must register a `FormRoutingDescription` for every form. Lazy
 catalog creation means a missing description affects form search when first
 used, not ordinary chat startup. The copyable corporate agent handbook is in
 [corp/](corp/README.md).
+
+Corporate custom pages use a separate `AUTODEPLOY_PLUGIN_REGISTRAR` and do not
+enter form routing. They share form field/reference contracts, receive private
+services server-side and expose operations only through the operator-controlled
+plugin policy. Authoring details are in [corp/PLUGINS.md](corp/PLUGINS.md).
 
 ## Compatibility and removal plan
 

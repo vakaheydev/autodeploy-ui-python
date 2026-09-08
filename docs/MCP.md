@@ -63,7 +63,7 @@ in the web UI.
   `AUTODEPLOY_SEARCH_CATALOG_FACTORY` and their configured read-only reference
   handlers.
 
-Every tool is non-destructive and idempotent. `prepare_form_draft` advertises
+Every built-in workflow tool is non-destructive and idempotent. `prepare_form_draft` advertises
 `readOnlyHint=false` because it stores persistent local state; all other tools
 are read-only. The endpoint never exposes the settings API or stored secret
 values and contains no submit/deploy tool.
@@ -72,6 +72,32 @@ values and contains no submit/deploy tool.
 absent from the web Copilot session allowlist. Therefore an unknown form in the
 chat can only be selected through the workflow-owned `semantic_search_forms`
 session.
+
+## Corporate plugin tools
+
+Corporate custom pages use an independent, fail-closed tool surface. Nothing is
+published until the operator enables global AI visibility and the specific
+plugin in **Настройки -> Плагины**. Then:
+
+- `list_plugins` lists only visible plugins;
+- `get_plugin_page` returns live safe fields/widgets and non-denied operations;
+- `calculate_plugin_state` recalculates conditional fields and dynamic widgets;
+- `search_plugin_reference_options` resolves `SELECT/MULTISELECT` values lazily;
+- `validate_plugin_values` runs authoritative Python validation;
+- each operation configured as `allow` or `manual` receives its own stable MCP
+  tool name and JSON input schema.
+
+`allow` becomes an exact OpenCode allow rule. `manual` becomes an exact ask rule
+and requires approval on every call. `deny` removes the tool and is checked once
+more during dispatch, protecting an old session after revocation. Tool
+annotations (`readOnlyHint`, `idempotentHint`, `openWorldHint`) describe behavior
+but never grant authority.
+
+Plugin operations may be external writes when a corporate author defines them;
+therefore the non-destructive guarantee for built-in workflow tools does not
+apply to dynamic plugin tools. Their authority is always explicit and per
+operation. Full private authoring guidance is in
+[corp/PLUGINS.md](corp/PLUGINS.md).
 
 ## Minimal JSON-RPC check
 

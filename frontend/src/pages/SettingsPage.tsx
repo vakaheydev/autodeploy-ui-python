@@ -5,6 +5,7 @@ import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
 import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
 import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
+import { PluginAISettings } from '../components/PluginAISettings'
 import type { SettingField, SettingsDocument } from '../types'
 
 function draftFrom(document: SettingsDocument): Record<string, string | boolean> {
@@ -85,7 +86,7 @@ export function SettingsPage() {
     setVisibleSecrets(new Set())
     setActiveGroup((current) => {
       if (current && next.groups.some((group) => group.name === current)) return current
-      return requestedGroup && next.groups.some((group) => group.name === requestedGroup) ? requestedGroup : next.groups[0]?.name ?? ''
+      return requestedGroup && (requestedGroup === 'Плагины' || next.groups.some((group) => group.name === requestedGroup)) ? requestedGroup : next.groups[0]?.name ?? ''
     })
   }
 
@@ -114,7 +115,7 @@ export function SettingsPage() {
   }, [])
 
   useEffect(() => {
-    if (requestedGroup && document?.groups.some((group) => group.name === requestedGroup)) setActiveGroup(requestedGroup)
+    if (requestedGroup && (requestedGroup === 'Плагины' || document?.groups.some((group) => group.name === requestedGroup))) setActiveGroup(requestedGroup)
   }, [document, requestedGroup])
 
   const fields = useMemo(() => document?.groups.flatMap((group) => group.fields) ?? [], [document])
@@ -217,7 +218,9 @@ export function SettingsPage() {
       <div className="settings-security-note"><KeyRound size={22} /><div><strong>Сохранённые секреты не отправляются в браузер</strong><p>Пустое поле оставляет секрет без изменений. Для удаления используйте «Очистить».</p></div></div>
       <nav className="settings-tabs" aria-label="Разделы настроек">
         {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => { setActiveGroup(group.name); setSearchParams({ section: group.name }, { replace: true }) }}>{group.name}<span>{group.fields.length}</span></button>)}
+        <button type="button" className={activeGroup === 'Плагины' ? 'active' : ''} onClick={() => { setActiveGroup('Плагины'); setSearchParams({ section: 'Плагины' }, { replace: true }) }}>Плагины</button>
       </nav>
+      {activeGroup === 'Плагины' && <PluginAISettings />}
       {activeGroup === 'OpenCode' && <OpenCodeServerPanel />}
       {activeGroup === 'OpenCode' && <div className="settings-source-status"><span className={`status-dot ${mcpConnected ? 'online' : ''}`} /> <span>{mcpConnected ? `${mcpItems.length} MCP получено от OpenCode` : 'OpenCode не подключён — сохранённые значения останутся доступны'}</span><button type="button" className="icon-button" title="Обновить MCP" disabled={mcpLoading} onClick={() => void loadMcp()}><RefreshCw size={15} className={mcpLoading ? 'spin' : ''} /></button></div>}
       {visibleGroups.map((group) => (

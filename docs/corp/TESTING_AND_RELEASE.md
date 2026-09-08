@@ -49,6 +49,7 @@ PyPI: он уже установлен из соседнего checkout. Это 
 Private tests без сети проверяют:
 
 - `build_payload`, `validate`, endpoints и routing descriptions;
+- plugin render/validate, operation handlers и безопасную сериализацию widgets;
 - parsing/mapping ITSM, TFS, Gravitee responses;
 - reference handler transformation, params и redaction;
 - environment/update factories;
@@ -63,12 +64,16 @@ Private tests без сети проверяют:
 
 - все import paths из `.env` загружаются;
 - registrar не оставляет missing/unknown form routing;
+- plugin registrar возвращает уникальные definitions, а страницы и операции
+  соответствуют публичному contract;
 - form documents JSON-serializable;
 - initial `/state`, every condition branch, `/validate` и `/preview`;
 - reference options, selected-first behavior и dependencies;
 - environment hook 422 contract;
 - secrets остаются write-only в `/settings`;
-- AutoDeploy MCP tools видят private forms/references при enabled flag.
+- AutoDeploy MCP tools видят private forms/references при enabled flag;
+- plugin AI policy по умолчанию закрыта; `allow`, `manual` и последующий `deny`
+  дают ожидаемый набор MCP tools и fail-closed dispatch.
 
 Contract tests должны падать при несовместимом обновлении public core до выпуска
 release.
@@ -82,6 +87,8 @@ release.
 - submit error остаётся в modal и повторная попытка работает;
 - polling завершается ожидаемым status;
 - AI semantic routing, reference resolution и persistent draft;
+- plugin catalog, shared fields/references/widgets, browser confirmation и
+  operation в светлой и тёмной теме;
 - light/dark UI только через public frontend E2E, без private frontend fork.
 
 ## Обязательный pre-release gate
@@ -92,7 +99,8 @@ release.
 4. Собрать offline archive с private wheels.
 5. Установить archive в пустой temp directory.
 6. Запустить server из установленной version и проверить health, SPA, catalog,
-   одну representative preview и private package import.
+   одну representative preview, одну representative plugin page и private
+   package import.
 7. Проверить rollback.
 8. Опубликовать immutable archive.
 9. Проверить его SHA-256.
@@ -215,6 +223,11 @@ launcher payload. Если такой packaging не настроен, испо�
 `python install.py`). Launcher создаёт version-specific `.venv`; global Python
 packages не используются. Mutable `config/.env`, `data/` и `logs/` находятся
 вне version folder и переживают update.
+
+`data/plugin-ai-policy.json` относится к mutable operator state: release archive
+не должен включать или перезаписывать его. При первом запуске либо появлении
+новой операции policy автоматически остаётся `deny`, пока оператор явно не
+изменит её в UI.
 
 Activation — atomic pointer на installed version. Если новый server не проходит
 health check, launcher один раз возвращается на предыдущую version. Ручной

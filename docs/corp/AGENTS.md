@@ -19,10 +19,10 @@
   validation, references, payload, endpoint, auth, actions, submit и polling.
 - React — generic renderer. Корпоративный package не содержит fork frontend и
   не передаёт браузеру URL, credentials или callable.
-- Private code подключается только через публичные import contracts и пять
-  runtime extension points: registrar, services, reference handlers, search
-  catalogs и environment hook. Update provider является отдельной launcher
-  границей.
+- Private code подключается только через публичные import contracts и шесть
+  runtime extension points: form registrar, plugin registrar, services,
+  reference handlers, search catalogs и environment hook. Update provider
+  является отдельной launcher границей.
 - Реальные ITSM/TFS/Gravitee реализации, справочники и формы находятся только в
   private package. Публичное ядро не редактируется из корпоративной задачи.
 - Секреты читаются только server-side из пользовательского `.env`. Они не
@@ -34,6 +34,11 @@
 - Новая web-функциональность не должна зависеть от `self.screen`, Tkinter widget
   или dialog. Для кнопок используйте `ServerAction`; для окружения —
   `self.current_environment` или аргумент hook.
+- Corporate custom pages объявляются через `PluginDefinition`. Не добавляйте
+  private React/HTML: поля, виджеты и операции возвращаются публичному generic
+  renderer, а интеграции доступны только через `PluginContext.services`.
+- Plugin AI policy закрыта по умолчанию. Агент не должен сам включать видимость
+  или менять `deny/manual/allow`; это операторская настройка.
 
 ## Владение файлами
 
@@ -45,6 +50,7 @@
 |---|---|
 | Регистрация и AI routing | `corp_autodeploy.registrar` |
 | Формы | `corp_autodeploy.forms.*` |
+| Custom page плагины | `corp_autodeploy.plugins.*` |
 | ITSM/TFS/Gravitee adapters | `corp_autodeploy.services` или `integrations/` |
 | Справочники | `corp_autodeploy.references` + private package data |
 | Глобальный поиск | `corp_autodeploy.search_catalogs` |
@@ -67,6 +73,8 @@
   отдавать пользователю безопасный текст без auth headers и raw secrets.
 - Долгие и повторяемые операции делайте идемпотентными. Environment hook и
   reference handler могут вызываться несколькими вкладками.
+- Plugin `render` вызывается при открытии и изменении полей: он read-only и
+  быстрый. Side effects и долгие расчёты оформляйте как `PluginOperation`.
 
 ## Проверка результата
 
@@ -79,6 +87,9 @@
 5. проверка redaction в исключениях и логах;
 6. сборка private wheel и установка его в чистое virtual environment;
 7. smoke test итогового offline release, если менялась поставка.
+
+Для plugin change дополнительно проверьте dynamic widgets, operation
+confirmation и все три AI policy (`deny`, `manual`, `allow`).
 
 Не заявляйте готовность только по импорту модуля. Для form change сравните
 ожидаемый payload, auth type и endpoint; для AI routing проверьте хотя бы один

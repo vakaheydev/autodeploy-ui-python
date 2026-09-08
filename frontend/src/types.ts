@@ -163,3 +163,81 @@ export interface SettingsDocument {
   restart_required?: boolean
   reconnect_opencode?: boolean
 }
+
+export interface PluginSummary {
+  id: string
+  title: string
+  description: string
+  category: string
+  icon: string
+  keywords: string[]
+  operation_count: number
+}
+
+export interface PluginOperationDocument {
+  id: string
+  label: string
+  description: string
+  style: 'primary' | 'secondary' | 'success' | 'danger' | string
+  confirmation_required: boolean
+  requires_valid_fields: boolean
+}
+
+export interface PluginChartSeries {
+  name: string
+  values: number[]
+  color: string
+}
+
+export type PluginWidget =
+  | { id: string; kind: 'text'; title?: string; text: string; tone?: string }
+  | { id: string; kind: 'metric'; label: string; value: unknown; detail?: string; tone?: string }
+  | { id: string; kind: 'image'; title?: string; src: string; alt: string; caption?: string }
+  | { id: string; kind: 'chart'; title?: string; chart_type: 'line' | 'area' | 'bar' | 'pie' | 'doughnut'; labels: string[]; series: PluginChartSeries[]; y_label?: string }
+  | { id: string; kind: 'table'; title?: string; columns: string[]; rows: unknown[][] }
+
+export interface PluginDocument {
+  id: string
+  title: string
+  description: string
+  category: string
+  icon: string
+  version: string
+  fields: FieldDocument[]
+  initial_values: Record<string, unknown>
+  operations: PluginOperationDocument[]
+  widgets: PluginWidget[]
+}
+
+export interface PluginActionResponse {
+  success: boolean
+  message: string
+  values?: Record<string, unknown>
+  fields?: FieldDocument[]
+  widgets?: PluginWidget[]
+  data?: unknown
+  validation?: ValidationResult
+  confirmation_required?: boolean
+  confirmation_text?: string
+  confirmation_token?: string
+}
+
+export type PluginAIOperationPolicy = 'deny' | 'allow' | 'manual'
+
+export interface PluginAIPolicyDocument {
+  ai_visible: boolean
+  requires_new_session: boolean
+  plugins: Array<{
+    id: string
+    title: string
+    description: string
+    visible: boolean
+    operations: Array<{
+      id: string
+      label: string
+      description: string
+      policy: PluginAIOperationPolicy
+      tool_name: string
+    }>
+  }>
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { Boxes, History, Search, ServerCog, Sparkles } from '../components/Icons'
+import { Boxes, History, Puzzle, Search, ServerCog, Sparkles } from '../components/Icons'
 import { Copilot } from '../components/Copilot'
 
 interface Status { state: string; address: string; message: string }
@@ -9,6 +9,7 @@ interface Status { state: string; address: string; message: string }
 const modules = [
   { to: '/search', icon: Search, title: 'Поиск', text: 'Найдите API и приложения во всех окружениях.', accent: 'blue' },
   { to: '/forms', icon: Boxes, title: 'AutoDeploy', text: 'Создавайте и изменяйте сущности через управляемые формы.', accent: 'violet' },
+  { to: '/plugins', icon: Puzzle, title: 'Плагины', text: 'Открывайте корпоративные рабочие страницы и инструменты.', accent: 'teal' },
   { to: '/runs', icon: History, title: 'История', text: 'Возвращайтесь к предыдущим операциям и их результатам.', accent: 'amber' },
   { to: '/settings?section=OpenCode', icon: ServerCog, title: 'OpenCode', text: 'Подключение, модели и техническое состояние AI в настройках.', accent: 'teal' },
 ]

@@ -19,6 +19,7 @@ from config.environments import ENVIRONMENTS
 from config.mcp_profiles import AUTODEPLOY_MCP_NAME, AUTODEPLOY_MCP_TOOLS
 from opencode_integration.context_builder import redact_text
 from webapp import __version__
+from webapp.plugin_policy import PLUGIN_DISCOVERY_TOOLS, plugin_operation_tool_name
 
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -184,6 +185,198 @@ for _tool in TOOLS:
     }
 
 
+def _plugin_tools(container: Any) -> list[dict[str, Any]]:
+    """Build the current fail-closed plugin tool catalog."""
+    visible = container.plugin_ai_policy.visible_plugins()
+    if not visible:
+        return []
+    plugin_ids = [item.plugin_id for item in visible]
+    tools: list[dict[str, Any]] = [
+        {
+            "name": "list_plugins",
+            "description": (
+                "List corporate custom pages explicitly made visible to this AI. "
+                "Use this only when the operator asks about a plugin page or a "
+                "workflow exposed by one; ordinary form discovery still uses "
+                "semantic_search_forms."
+            ),
+            "inputSchema": _object_schema({}),
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "get_plugin_page",
+            "description": (
+                "Return the live fields, reference endpoints, dynamic widgets and "
+                "AI-visible operations of one corporate plugin page. Always read "
+                "this document before calling a plugin operation."
+            ),
+            "inputSchema": _object_schema({
+                "plugin_id": {
+                    "type": "string",
+                    "enum": plugin_ids,
+                    "description": "Stable id returned by list_plugins.",
+                },
+                "environment": _ENV,
+            }, ("plugin_id", "environment")),
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "calculate_plugin_state",
+            "description": (
+                "Recalculate visible and conditional fields plus dynamic widgets "
+                "for current values of an AI-visible corporate plugin page. Use "
+                "this after changing a value that can affect page state."
+            ),
+            "inputSchema": _object_schema({
+                "plugin_id": {
+                    "type": "string",
+                    "enum": plugin_ids,
+                    "description": "Stable id returned by list_plugins.",
+                },
+                "environment": _ENV,
+                "values": {
+                    "type": "object",
+                    "description": "Current plugin values keyed exactly as in get_plugin_page.",
+                },
+                "plugin_version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+            }, ("plugin_id", "environment", "values", "plugin_version")),
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": "search_plugin_reference_options",
+            "description": (
+                "Resolve a SELECT or MULTISELECT on an AI-visible plugin page. "
+                "Use the exact field path and current values from the live page; "
+                "return and pass value_key IDs, never guessed labels."
+            ),
+            "inputSchema": _object_schema({
+                "plugin_id": {
+                    "type": "string",
+                    "enum": plugin_ids,
+                    "description": "Stable id returned by list_plugins.",
+                },
+                "field_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+                "environment": _ENV,
+                "values": {
+                    "type": "object",
+                    "description": "Complete current plugin values, including dependencies.",
+                },
+                "query": {
+                    "type": "string",
+                    "maxLength": 1000,
+                    "default": "",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                },
+            }, ("plugin_id", "field_path", "environment", "values")),
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
+        {
+            "name": "validate_plugin_values",
+            "description": (
+                "Run authoritative Python structural, reference and corporate "
+                "validation for current values of an AI-visible plugin page."
+            ),
+            "inputSchema": _object_schema({
+                "plugin_id": {
+                    "type": "string",
+                    "enum": plugin_ids,
+                    "description": "Stable id returned by list_plugins.",
+                },
+                "environment": _ENV,
+                "values": {
+                    "type": "object",
+                    "description": "Complete current plugin values.",
+                },
+                "plugin_version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+            }, ("plugin_id", "environment", "values", "plugin_version")),
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
+    ]
+    for plugin in visible:
+        for operation in plugin.operations:
+            policy = container.plugin_ai_policy.operation_policy(
+                plugin.plugin_id, operation.operation_id
+            )
+            if policy == "deny":
+                continue
+            tools.append({
+                "name": plugin_operation_tool_name(
+                    plugin.plugin_id, operation.operation_id
+                ),
+                "description": (
+                    f"Plugin {plugin.title!r}, operation {operation.label!r}. "
+                    + (operation.ai_description or operation.description)
+                    + " Pass the complete current values and live plugin_version "
+                    "from get_plugin_page. The Python plugin owns validation and execution."
+                ).strip(),
+                "inputSchema": _object_schema({
+                    "environment": _ENV,
+                    "values": {
+                        "type": "object",
+                        "description": "Current plugin page values keyed exactly as in get_plugin_page.",
+                    },
+                    "plugin_version": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                }, ("environment", "values", "plugin_version")),
+                "annotations": {
+                    "readOnlyHint": bool(operation.read_only),
+                    "destructiveHint": not bool(operation.read_only),
+                    "idempotentHint": bool(operation.idempotent),
+                    "openWorldHint": bool(operation.open_world),
+                },
+            })
+    return tools
+
+
+def available_tools(container: Any) -> list[dict[str, Any]]:
+    return [*TOOLS, *_plugin_tools(container)]
+
+
 def _enabled(request: Request) -> bool:
     # Process settings define whether the endpoint exists for this server run.
     return bool(request.app.state.container.settings.mcp_enabled)
@@ -208,9 +401,137 @@ class MCPTools:
         self.container = container
 
     def call(self, name: str, arguments: Any) -> Any:
-        if name not in MCP_TOOL_NAMES:
-            raise KeyError(f"Unknown AutoDeploy tool: {name}")
-        return getattr(self, name)(**_require_arguments(arguments))
+        values = _require_arguments(arguments)
+        if name in MCP_TOOL_NAMES:
+            return getattr(self, name)(**values)
+        if name in PLUGIN_DISCOVERY_TOOLS:
+            return getattr(self, name)(**values)
+        return self._call_plugin_operation(name, values)
+
+    def list_plugins(self) -> dict[str, Any]:
+        visible = {
+            item.plugin_id for item in self.container.plugin_ai_policy.visible_plugins()
+        }
+        items = [
+            item for item in self.container.plugins.list_plugins()
+            if item["id"] in visible
+        ]
+        return {"items": items, "total": len(items)}
+
+    def get_plugin_page(self, plugin_id: str, environment: str) -> dict[str, Any]:
+        self._require_visible_plugin(plugin_id)
+        document = self.container.plugins.describe(plugin_id, environment)
+        plugin = self.container.plugins.get(plugin_id)
+        allowed_operations = []
+        for operation in plugin.operations:
+            policy = self.container.plugin_ai_policy.operation_policy(
+                plugin_id, operation.operation_id
+            )
+            if policy == "deny":
+                continue
+            allowed_operations.append({
+                "id": operation.operation_id,
+                "label": operation.label,
+                "description": operation.ai_description or operation.description,
+                "policy": policy,
+                "tool_name": plugin_operation_tool_name(
+                    plugin_id, operation.operation_id
+                ),
+            })
+        document["operations"] = allowed_operations
+        return document
+
+    def calculate_plugin_state(
+        self,
+        plugin_id: str,
+        environment: str,
+        values: Mapping[str, Any],
+        plugin_version: str,
+    ) -> dict[str, Any]:
+        self._require_visible_plugin(plugin_id)
+        document = self.container.plugins.state(
+            plugin_id, environment, values, plugin_version
+        )
+        # Do not leak operations that policy removed since session creation.
+        allowed = {
+            operation.operation_id
+            for operation in self.container.plugins.get(plugin_id).operations
+            if self.container.plugin_ai_policy.operation_policy(
+                plugin_id, operation.operation_id
+            ) != "deny"
+        }
+        document["operations"] = [
+            operation for operation in document["operations"]
+            if operation["id"] in allowed
+        ]
+        return document
+
+    def search_plugin_reference_options(
+        self,
+        plugin_id: str,
+        field_path: str,
+        environment: str,
+        values: Mapping[str, Any],
+        query: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        self._require_visible_plugin(plugin_id)
+        bounded_limit = int(limit)
+        if not 1 <= bounded_limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        return self.container.plugins.options(
+            plugin_id,
+            field_path,
+            environment,
+            values,
+            str(query),
+            0,
+            bounded_limit,
+            False,
+        )
+
+    def validate_plugin_values(
+        self,
+        plugin_id: str,
+        environment: str,
+        values: Mapping[str, Any],
+        plugin_version: str,
+    ) -> dict[str, Any]:
+        self._require_visible_plugin(plugin_id)
+        return dataclasses.asdict(self.container.plugins.validate(
+            plugin_id, environment, values, plugin_version
+        ))
+
+    def _require_visible_plugin(self, plugin_id: str) -> None:
+        visible = {
+            item.plugin_id for item in self.container.plugin_ai_policy.visible_plugins()
+        }
+        if plugin_id not in visible:
+            raise PermissionError("Плагин не разрешён для AI")
+
+    def _call_plugin_operation(
+        self, tool_name: str, arguments: Mapping[str, Any]
+    ) -> Any:
+        for plugin in self.container.plugin_ai_policy.visible_plugins():
+            for operation in plugin.operations:
+                if plugin_operation_tool_name(
+                    plugin.plugin_id, operation.operation_id
+                ) != tool_name:
+                    continue
+                policy = self.container.plugin_ai_policy.operation_policy(
+                    plugin.plugin_id, operation.operation_id
+                )
+                if policy == "deny":
+                    raise PermissionError("Операция плагина запрещена для AI")
+                return self.container.plugins.run_operation(
+                    plugin.plugin_id,
+                    operation.operation_id,
+                    str(arguments.get("environment") or ""),
+                    arguments.get("values") or {},
+                    str(arguments.get("plugin_version") or ""),
+                    invoked_by_ai=True,
+                )
+        raise KeyError(f"Unknown AutoDeploy tool: {tool_name}")
 
     def get_system_status(self) -> dict[str, Any]:
         return {
@@ -312,14 +633,16 @@ def _handle_call(request: Request, message: Mapping[str, Any]) -> dict[str, Any]
         requested = str(params.get("protocolVersion", MCP_PROTOCOL_VERSION)) if isinstance(params, Mapping) else MCP_PROTOCOL_VERSION
         return _jsonrpc(identifier, {
             "protocolVersion": requested,
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": "gravitee-autodeploy", "version": request.app.version},
-            "instructions": "For an AI workflow, discover forms lazily with semantic_search_forms, read the chosen live schema, resolve select values through form options, then prepare_form_draft. Use research_repository only for a bounded complex JSON Repository question. Never claim submission: every draft requires human review and the web UI owns submit.",
+            "instructions": "For an AI workflow, discover forms lazily with semantic_search_forms, read the chosen live schema, resolve select values through form options, then prepare_form_draft. Corporate custom pages are a separate concept: use list_plugins only when relevant, then get_plugin_page; use calculate_plugin_state, search_plugin_reference_options and validate_plugin_values as needed, and call only the operation-specific tool exposed by policy. A manual-policy tool is executed only after the operator approves it in OpenCode. Use research_repository only for a bounded complex JSON Repository question. Never claim a form submission: every draft requires human review and the web UI owns submit.",
         })
     if method == "ping":
         return _jsonrpc(identifier, {})
     if method == "tools/list":
-        return _jsonrpc(identifier, {"tools": TOOLS})
+        return _jsonrpc(identifier, {
+            "tools": available_tools(request.app.state.container)
+        })
     if method == "tools/call":
         params = message.get("params") or {}
         try:

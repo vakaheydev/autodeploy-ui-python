@@ -9,7 +9,8 @@
 ```text
 gravitee-autodeploy (public core)       corp-autodeploy (private package)
 ├── FastAPI + React                     ├── корпоративные формы
-├── form/runtime contracts              ├── ITSM/TFS/Gravitee adapters
+├── form/plugin runtime contracts       ├── custom page плагины
+├── generic UI renderer                 ├── ITSM/TFS/Gravitee adapters
 ├── AI, MCP, drafts                     ├── HTTP/local справочники
 ├── launcher/updater                    ├── environment/update hooks
 └── безопасные заглушки                 └── routing-описания форм
@@ -33,6 +34,8 @@ handbook с документацией публичного ядра.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — структура пакета и extension points.
 3. Документ по задаче:
    - [FORMS.md](FORMS.md) — формы, actions, submit и совместимость;
+   - [PLUGINS.md](PLUGINS.md) — корпоративные custom pages, динамические
+     виджеты, операции и AI policy;
    - [REFERENCES_AND_SEARCH.md](REFERENCES_AND_SEARCH.md) — справочники и поиск;
    - [SERVICES_AND_ENVIRONMENT.md](SERVICES_AND_ENVIRONMENT.md) — интеграции,
      авторизация и переключение окружения;
@@ -45,6 +48,7 @@ handbook с документацией публичного ядра.
 | Если меняется… | Сначала читать | Проверять в публичном ядре |
 |---|---|---|
 | Поля, validation, payload, submit | `FORMS.md` | `forms/base_form.py`, `forms/fields.py` |
+| Custom page, отчёт, график, plugin operation | `PLUGINS.md` | `plugins/`, `webapp/plugin_runtime.py` |
 | ITSM/TFS/Gravitee-клиент | `SERVICES_AND_ENVIRONMENT.md` | `webapp/extensions.py`, `services/submit_service.py` |
 | SELECT/MULTISELECT, remote dictionary | `REFERENCES_AND_SEARCH.md` | `handlers/`, `webapp/form_runtime.py` |
 | Выбор формы Copilot | `AI_AND_MCP.md` | `config/form_routing.py` |
@@ -73,6 +77,10 @@ handbook с документацией публичного ядра.
 - дублировать Python business rules во frontend;
 - обращаться к приватным атрибутам runtime;
 - создавать второй submit path в обход preview, validation и подтверждения.
+
+Для plugin operation отдельный form-submit lifecycle не требуется, но любой
+внешний side effect должен быть явно названной Python-операцией. AI-доступ к ней
+закрывается отдельной server-side policy и не выводится из MCP annotations.
 
 Tkinter остаётся compatibility path, но новая функциональность проектируется для
 Python server и React renderer.

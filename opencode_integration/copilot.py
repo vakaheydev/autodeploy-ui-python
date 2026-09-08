@@ -421,6 +421,7 @@ class UnifiedCopilot:
         allow_repository_git_pull: bool = True,
         max_context_chars: int = 120_000,
         trusted_mcp_tools: Optional[Mapping[str, Sequence[str]]] = None,
+        trusted_mcp_ask_tools: Optional[Mapping[str, Sequence[str]]] = None,
         workflow_id: str = "",
     ) -> None:
         self._client = client
@@ -443,6 +444,10 @@ class UnifiedCopilot:
         self._trusted_mcp_tools = {
             str(name): tuple(str(tool) for tool in tools)
             for name, tools in (trusted_mcp_tools or {}).items()
+        }
+        self._trusted_mcp_ask_tools = {
+            str(name): tuple(str(tool) for tool in tools)
+            for name, tools in (trusted_mcp_ask_tools or {}).items()
         }
         self._active_repository_mcp = ""
         self._active_mcp: tuple[str, ...] = ()
@@ -764,7 +769,7 @@ class UnifiedCopilot:
         statuses = self._client.list_mcp_servers(timeout=timeout)
         unavailable_trusted = [
             name
-            for name in self._trusted_mcp_tools
+            for name in set(self._trusted_mcp_tools) | set(self._trusted_mcp_ask_tools)
             if statuses.get(name, {}).get("status") != "connected"
         ]
         if unavailable_trusted:
@@ -801,6 +806,14 @@ class UnifiedCopilot:
         # Omitting a title lets OpenCode generate its own concise session name
         # from the first real operator turn.  AutoDeploy reads that title back
         # and still allows the operator to override it explicitly.
+        asklist = repository_tool_asklist(
+            self._active_repository_mcp,
+            allow_git_pull=self._allow_repository_git_pull,
+        )
+        asklist.update({
+            name: tools for name, tools in self._trusted_mcp_ask_tools.items()
+            if name in mcp_names
+        })
         self._session_id = self._client.create_session(
             "",
             agent=AUTODEPLOY_COPILOT_AGENT,
@@ -809,10 +822,7 @@ class UnifiedCopilot:
             variant=self._variant,
             mcp_names=mcp_names,
             mcp_tool_allowlist=allowlist,
-            mcp_tool_asklist=repository_tool_asklist(
-                self._active_repository_mcp,
-                allow_git_pull=self._allow_repository_git_pull,
-            ),
+            mcp_tool_asklist=asklist,
             metadata={
                 "source": "gravitee-autodeploy-ui-copilot",
                 "workflow_id": self._workflow_id,

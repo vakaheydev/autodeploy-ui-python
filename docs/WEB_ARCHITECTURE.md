@@ -15,6 +15,11 @@ source of truth for:
 - ITSM/TFS/Gravitee and private corporate integrations;
 - AI orchestration, Python-owned drafts and the mandatory human review boundary.
 
+The same separation also supports corporate custom pages. A private
+`PluginDefinition` declares shared form fields, dynamic safe widgets and named
+Python operations. `PluginRuntime` owns conditions, references, validation,
+service injection and operation execution; React remains a generic renderer.
+
 The same FastAPI process serves both `/api/v1/*` and the prebuilt static React
 application. There is no Node process on a user's machine.
 
@@ -97,6 +102,7 @@ kept in a separate wheel and selected from server-side `.env`:
 
 - `AUTODEPLOY_SERVICE_PROVIDER=corp.services:create_services`
 - `AUTODEPLOY_FORM_REGISTRAR=corp.forms:register_forms`
+- `AUTODEPLOY_PLUGIN_REGISTRAR=corp.plugins:register_plugins`
 - `AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp.references:create_handlers`
 - `AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp.search:create_search_catalogs`
 - `AUTODEPLOY_ENVIRONMENT_HOOK=corp.environment:create_environment_hook`
@@ -169,6 +175,9 @@ Important resources are:
 - `/opencode/*` and `/ai/*` for OpenCode chat, draft review and compatibility
   extraction endpoints;
 - `/settings` for whitelisted configuration with write-only secrets;
+- `/plugins`, `/plugins/{id}/state|validate|operations/*` and plugin reference
+  options for corporate custom pages;
+- `/plugins/ai-policy` for global, per-plugin and per-operation AI access;
 - `/api/mcp` for the optional Streamable HTTP MCP endpoint.
 
 All request models reject unknown properties. Breaking API changes require a new
@@ -194,6 +203,12 @@ versions, reference resolution or Python validation. It can store a persistent
 non-submitting draft; submission remains a separate human action in the web UI.
 Enable it with `AUTODEPLOY_MCP_ENABLED=true`; detailed tool guidance is in
 [MCP.md](MCP.md).
+
+Corporate plugin operations are exposed as one exact MCP tool per operation,
+never through a wildcard dispatcher. They are absent by default. Operators can
+choose `deny`, `manual` or `allow` in web settings; MCP dispatch rechecks deny so
+revocation also protects stale sessions. The corporate authoring contract lives
+in [corp/PLUGINS.md](corp/PLUGINS.md).
 
 The web Copilot starts without the form catalog. On demand it invokes a separate
 persistent `none`-thinking form-search session, then creates Python-validated

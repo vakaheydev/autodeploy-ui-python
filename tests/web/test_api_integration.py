@@ -97,6 +97,18 @@ def test_health_catalog_openapi_and_spa(server: str) -> None:
     assert "text/html" in headers["content-type"]
     assert b'<div id="root"></div>' in content
 
+    status, _, content = request(server, "/api/v1/plugins")
+    assert status == 200
+    assert json.loads(content) == {"items": []}
+
+    status, _, content = request(server, "/api/v1/plugins/ai-policy")
+    assert status == 200
+    assert json.loads(content) == {
+        "ai_visible": False,
+        "plugins": [],
+        "requires_new_session": True,
+    }
+
 
 @pytest.mark.integration
 def test_environment_activation_contract(server: str) -> None:

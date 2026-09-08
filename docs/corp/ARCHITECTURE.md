@@ -16,6 +16,10 @@ corp-autodeploy/
 │       ├── references.py
 │       ├── search_catalogs.py
 │       ├── environment.py
+│       ├── plugins/
+│       │   ├── __init__.py
+│       │   ├── registrar.py
+│       │   └── capacity_report.py
 │       ├── forms/
 │       │   ├── __init__.py
 │       │   └── create_api.py
@@ -64,10 +68,11 @@ release вместе с private wheel должны войти wheel всех е�
 1. создаёт public container и безопасные default services;
 2. импортирует private factories по значениям `.env`;
 3. регистрирует public forms, затем private forms;
-4. ставит private reference handlers перед встроенными fallback handlers;
-5. загружает ровно два global search catalog;
-6. создаёт environment hook;
-7. публикует один REST API, React SPA и optional MCP на localhost.
+4. регистрирует private custom page плагины в отдельном registry;
+5. ставит private reference handlers перед встроенными fallback handlers;
+6. загружает ровно два global search catalog;
+7. создаёт environment hook;
+8. публикует один REST API, React SPA и optional MCP на localhost.
 
 Private форма с тем же `form_id` заменяет public форму. Frontend не знает, какой
 package создал JSON schema.
@@ -79,6 +84,7 @@ package создал JSON schema.
 | `.env` key | Точная сигнатура | Жизненный цикл |
 |---|---|---|
 | `AUTODEPLOY_FORM_REGISTRAR` | `register_forms(registry) -> None` | один раз при startup |
+| `AUTODEPLOY_PLUGIN_REGISTRAR` | `register_plugins(registry) -> None` | один раз при startup |
 | `AUTODEPLOY_SERVICE_PROVIDER` | `create_services(env_manager, http_client) -> RuntimeServices` | factory загружается при startup, services создаются runtime для запросов |
 | `AUTODEPLOY_REFERENCE_HANDLER_FACTORY` | `create_handlers(env_manager, http_client, cache) -> Iterable[handler]` | один раз при startup |
 | `AUTODEPLOY_SEARCH_CATALOG_FACTORY` | `create_search_catalogs(env_manager) -> Mapping[str, ReferenceConfig]` | один раз при startup |
@@ -91,6 +97,7 @@ package создал JSON schema.
 from forms.base_form import BaseForm, ServerAction
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from handlers.base_reference_handler import BaseReferenceHandler
+from plugins import PluginDefinition, PluginOperation, PluginRegistry
 from webapp.extensions import (
     EnvironmentChangeRejected,
     RuntimeServices,
@@ -124,6 +131,19 @@ def register_forms(registry) -> None:
 незарегистрированного `form_id` также считается ошибкой. Описание должно
 различать соседние операции, но не повторять поля формы.
 
+Плагины регистрируются отдельно и не получают `FormRoutingDescription`:
+
+```python
+from corp_autodeploy.plugins.capacity_report import CAPACITY_REPORT
+
+
+def register_plugins(registry) -> None:
+    registry.register(CAPACITY_REPORT)
+```
+
+Полный plugin contract, виджеты и отдельная AI policy описаны в
+[PLUGINS.md](PLUGINS.md).
+
 Если добавляется новая категория, registrar обновляет оба public registry:
 
 ```python
@@ -140,6 +160,7 @@ if "security" not in CATEGORY_ORDER:
 |---|---|
 | HTTP API и validation pipeline | Конкретные формы и domain rules |
 | Generic React renderer | Корпоративные подписи/описания полей |
+| Plugin REST/MCP runtime и generic widgets | Custom page definitions и operation handlers |
 | Secrets whitelist и write-only transport | Значения secrets в пользовательском `.env` |
 | Reference paging/search engine | URL, auth и преобразование private dictionaries |
 | Submit/auth framework | Endpoint, auth type, payload и pre-submit logic формы |

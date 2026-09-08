@@ -301,3 +301,127 @@ test('shows submit progress and server failures inside the submit dialog', async
   await expect(page.getByText('API создан')).toBeVisible()
   expect(submitTokens).toEqual(['confirmation-2', 'confirmation-3'])
 })
+
+test('renders a corporate plugin page and confirms its Python operation', async ({ page }) => {
+  await page.route('**/api/v1/plugins', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      items: [{
+        id: 'reports.capacity',
+        title: 'Нагрузка API',
+        description: 'Корпоративный отчёт по нагрузке.',
+        category: 'Отчёты',
+        icon: 'puzzle',
+        keywords: ['rps', 'capacity'],
+        operation_count: 1,
+      }],
+    }),
+  }))
+  await page.route('**/api/v1/plugins/reports.capacity?environment=*', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      id: 'reports.capacity',
+      title: 'Нагрузка API',
+      description: 'Корпоративный отчёт по нагрузке.',
+      category: 'Отчёты',
+      icon: 'puzzle',
+      version: 'plugin-version-1',
+      fields: [{
+        key: 'api',
+        path: 'api',
+        label: 'API',
+        type: 'select',
+        required: true,
+        visible: true,
+        reference: {
+          value_key: 'id',
+          label_key: 'name',
+          search_keys: ['context_path', 'name'],
+          detail_keys: ['id', 'name', 'context_path'],
+          required_params: [],
+          endpoint: '/api/v1/plugins/reports.capacity/fields/api/options',
+        },
+      }],
+      initial_values: {},
+      operations: [{
+        id: 'refresh',
+        label: 'Обновить данные',
+        description: 'Перестроить отчёт.',
+        style: 'primary',
+        confirmation_required: true,
+        requires_valid_fields: true,
+      }],
+      widgets: [{ id: 'hint', kind: 'text', text: 'Выберите API', tone: 'info' }],
+    }),
+  }))
+  await page.route('**/api/v1/plugins/reports.capacity/fields/api/options', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      items: [{ id: 'api-1', name: 'Orders API', context_path: '/orders' }],
+      total: 1,
+      offset: 0,
+      limit: 100,
+      has_more: false,
+    }),
+  }))
+  await page.route('**/api/v1/plugins/reports.capacity/state', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      id: 'reports.capacity',
+      title: 'Нагрузка API',
+      description: 'Корпоративный отчёт по нагрузке.',
+      category: 'Отчёты',
+      icon: 'puzzle',
+      version: 'plugin-version-1',
+      initial_values: { api: 'api-1' },
+      fields: [],
+      operations: [{ id: 'refresh', label: 'Обновить данные', style: 'primary' }],
+      widgets: [{ id: 'rps', kind: 'metric', label: 'Текущий RPS', value: 42 }],
+    }),
+  }))
+  await page.route('**/api/v1/plugins/reports.capacity/operations/refresh', async (route) => {
+    const body = route.request().postDataJSON() as { confirmation_token?: string }
+    if (!body.confirmation_token) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          confirmation_required: true,
+          confirmation_text: 'Обновить корпоративные данные?',
+          confirmation_token: 'confirm-plugin',
+        }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        message: 'Данные обновлены',
+        values: { api: 'api-1' },
+        widgets: [{ id: 'rps', kind: 'metric', label: 'Текущий RPS', value: 84 }],
+        validation: { valid: true, values: { api: 'api-1' }, errors: [], visible_fields: ['api'] },
+      }),
+    })
+  })
+
+  await page.goto('/plugins')
+  await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
+  await page.getByRole('link', { name: /Нагрузка API/ }).click()
+  await expect(page.getByRole('heading', { name: 'Нагрузка API' })).toBeVisible()
+  await page.getByRole('button', { name: 'API' }).click()
+  await page.getByRole('option', { name: /Orders API/ }).click()
+  await expect(page.getByText('Текущий RPS')).toBeVisible()
+  await page.getByRole('button', { name: 'Обновить данные' }).click()
+  const confirmation = page.getByRole('dialog', { name: 'Подтвердите операцию' })
+  await expect(confirmation).toContainText('Обновить корпоративные данные?')
+  await confirmation.getByRole('button', { name: 'Выполнить' }).click()
+  await expect(page.getByText('Данные обновлены')).toBeVisible()
+  await expect(page.locator('.plugin-metric')).toContainText('84')
+})

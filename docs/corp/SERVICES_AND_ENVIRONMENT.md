@@ -52,8 +52,12 @@ AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 ```
 
 Форма получает объекты как `self.itsm_service`, `self.tfs_service` и
-`self.gravitee_service`. Конкретные дополнительные методы являются private
-contract между формами и adapters и должны тестироваться внутри одного package.
+`self.gravitee_service`. Плагин получает тот же результат provider через
+`PluginContext.services`; private provider также может вернуть собственный
+typed container с дополнительными сервисами, например `analytics`. Конкретные
+дополнительные методы являются private contract между формами/плагинами и
+adapters и должны тестироваться внутри одного package. Полный contract custom
+pages описан в [PLUGINS.md](PLUGINS.md).
 
 Factory может создавать lightweight clients на запрос. Connection pool или
 shared cache разрешён только при thread-safe реализации; mutable auth state
@@ -115,6 +119,7 @@ Authoritative keys объявлены public core и передаются стр
 - в `validate()` доступна request-scoped строка `self.current_environment`;
 - `self.screen.app.current_environment.get()` в web не поддерживается;
 - service не должен угадывать environment из глобальной переменной;
+- plugin operation/render получает тот же key как `context.environment`;
 - endpoint/token maps должны отклонять неизвестный key, а не fallback на prod.
 
 ## Hook переключения окружения
@@ -207,6 +212,7 @@ server log — сохранять exception type/traceback для диагнос
 Покройте:
 
 - factory возвращает три usable service object;
+- plugin context получает результат того же provider и выбранное environment;
 - ticket/PR happy path, timeout, 4xx/5xx, malformed/oversized response;
 - endpoint/auth selection для каждого environment;
 - TFS Basic header декодируется в пустой username + PAT;

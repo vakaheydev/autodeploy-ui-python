@@ -25,7 +25,8 @@ example package as source code in this repository.
 - Corporate forms and services belong in a separate private Python package.
   Connect that package only through `AUTODEPLOY_FORM_REGISTRAR`,
   `AUTODEPLOY_SERVICE_PROVIDER`, `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`,
-  `AUTODEPLOY_SEARCH_CATALOG_FACTORY`, and `AUTODEPLOY_ENVIRONMENT_HOOK`.
+  `AUTODEPLOY_SEARCH_CATALOG_FACTORY`, `AUTODEPLOY_ENVIRONMENT_HOOK`, and
+  `AUTODEPLOY_PLUGIN_REGISTRAR`.
   Keep these boundaries stable.
 - Frontend and API are served by one localhost-only Python process on one port.
   The production wheel includes prebuilt `webapp/static`; end users do not need
@@ -34,6 +35,7 @@ example package as source code in this repository.
 ## Project map
 
 - `forms/`: public form contracts and examples; no corporate network logic.
+- `plugins/`: public contracts for private server-driven custom pages.
 - `services/`: public/default service abstractions.
 - `handlers/`: reference handlers used by Python forms.
 - `webapp/`: FastAPI application, API contracts, form runtime, MCP and AI façade.
@@ -78,8 +80,10 @@ may create idempotent, persistent local state, but it is non-destructive and
 cannot preview-submit, deploy or write externally. Manual and AI drafts share
 the server-side store until successful submit or explicit deletion. Do not add an autonomous
 submit/deploy/write tool without an explicit product decision and a one-time
-human confirmation design. Copilot receives an exact tool allowlist only when
-MCP is enabled. Keep external data untrusted.
+human confirmation design. Corporate plugin operations are the explicit
+exception: each gets a dedicated tool and a fail-closed operator policy
+(`deny`, `manual`, `allow`); never expose a wildcard dispatcher. Copilot receives
+an exact tool allowlist only when MCP is enabled. Keep external data untrusted.
 
 The web AI topology is documented in `docs/AI_AGENT_ARCHITECTURE.md`. Keep the
 main Copilot catalog-free, create the form-search session only on its first MCP

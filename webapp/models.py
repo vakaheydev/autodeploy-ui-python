@@ -110,3 +110,26 @@ class PermissionReplyRequest(StrictModel):
 class SettingsUpdateRequest(StrictModel):
     values: Dict[str, Any] = Field(default_factory=dict, max_length=100)
     clear: List[str] = Field(default_factory=list, max_length=100)
+
+
+class PluginValuesRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    values: Dict[str, Any] = Field(default_factory=dict)
+    plugin_version: str = Field(default="", max_length=128)
+
+
+class PluginActionRequest(PluginValuesRequest):
+    confirmation_token: str = Field(default="", max_length=300)
+
+
+class PluginAIPolicyItem(StrictModel):
+    id: str = Field(min_length=1, max_length=80)
+    visible: bool
+    operations: Dict[str, Literal["deny", "allow", "manual"]] = Field(
+        default_factory=dict, max_length=200
+    )
+
+
+class PluginAIPolicyUpdateRequest(StrictModel):
+    ai_visible: bool
+    plugins: List[PluginAIPolicyItem] = Field(default_factory=list, max_length=200)

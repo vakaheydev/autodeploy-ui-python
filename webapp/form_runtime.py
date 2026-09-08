@@ -447,6 +447,7 @@ class FormRuntime:
         *,
         prefix: str = "",
         siblings: Optional[Iterable[FieldDefinition]] = None,
+        reference_namespace: str = "forms",
     ) -> dict[str, Any]:
         path = f"{prefix}.{field.key}" if prefix else field.key
         visible = _visible(field, values)
@@ -478,7 +479,10 @@ class FormRuntime:
                 "search_keys": list(ref.search_keys or (ref.label_key,)),
                 "detail_keys": list(ref.detail_keys),
                 "required_params": list(ref.required_params),
-                "endpoint": f"/api/v1/forms/{form.form_id}/fields/{path}/options",
+                "endpoint": (
+                    f"/api/v1/{reference_namespace}/{form.form_id}"
+                    f"/fields/{path}/options"
+                ),
             }
             if ref.source == "local" and visible:
                 items = self._resolve_reference(
@@ -507,6 +511,7 @@ class FormRuntime:
                     nested_values,
                     prefix=path,
                     siblings=field.block_fields,
+                    reference_namespace=reference_namespace,
                 )
                 for nested in field.block_fields
             ]

@@ -11,6 +11,7 @@ operator
        -> repository-researcher     short-lived, read-only, только сложный анализ
        -> AutoDeploy MCP            schema/state/reference/draft tools
        -> JSON Repository MCP       targeted read-only repository tools
+       -> corporate plugin tools    только явно видимые страницы/операции
   -> Python draft + human review
   -> normal form preview/confirmation/submit
 ```
@@ -31,6 +32,14 @@ schema и reference values нет. Helper всегда работает с exact
 Legacy `form-extractor` существует в public core только для desktop/backward
 compatibility. Новые corporate web flows не должны его вызывать или добавлять
 новую structured-output цепочку.
+
+Custom page плагины не участвуют в semantic form routing и не загружаются в
+form-search. Только если запрос относится к корпоративной странице/workflow,
+Copilot может вызвать `list_plugins`, затем `get_plugin_page`, при необходимости
+лениво пересчитать state, разрешить reference ID и провалидировать значения, а
+после этого — dedicated operation tool. Глобальная, per-plugin и per-operation policy
+настраивается оператором и по умолчанию всё запрещает. См.
+[PLUGINS.md](PLUGINS.md).
 
 ## Что должна сделать корпоративная форма
 
@@ -103,6 +112,14 @@ AUTODEPLOY_MCP_ENABLED=true
 - `preview_form_submission` (read-only, ничего не отправляет);
 - `prepare_form_draft` (persistent local draft, без external write);
 - `research_repository`, `search_gravitee_objects`.
+
+Если разрешены corporate plugins, список дополняется `list_plugins`,
+`get_plugin_page`, `calculate_plugin_state`,
+`search_plugin_reference_options`, `validate_plugin_values` и отдельными
+operation tools. Служебные plugin tools read-only и доступны только для видимых
+страниц. `allow` входит в exact auto-allowlist, `manual` — в exact asklist,
+`deny` не публикуется. Универсального инструмента запуска произвольной операции
+нет.
 
 Generic `search_forms` доступен внешним MCP clients, но намеренно не входит в
 web Copilot allowlist: web Copilot должен использовать session-owned semantic
@@ -197,5 +214,7 @@ OpenCode session.
 - simple request не создаёт Researcher; complex bounded case создаёт и удаляет;
 - AI draft переживает restart, открывается по старой ссылке и не submitится сам;
 - tool permissions соответствуют exact allowlists;
+- plugin видимость и каждая operation policy fail-closed; manual спрашивает
+  approval на каждый вызов, deny блокирует stale session;
 - `git_pull` всегда спрашивает approval;
 - logs/chat не раскрывают secrets и unrelated repository content.

@@ -9,6 +9,8 @@ import { HomePage } from './pages/HomePage'
 import { RunsPage } from './pages/RunsPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { PluginPage } from './pages/PluginPage'
+import { PluginsPage } from './pages/PluginsPage'
 import type { Category, Environment } from './types'
 
 function RoutesWithBootstrap() {
@@ -24,6 +26,8 @@ function RoutesWithBootstrap() {
         <Route index element={<HomePage />} />
         <Route path="forms" element={<FormsPage />} />
         <Route path="forms/:formId" element={<FormPage />} />
+        <Route path="plugins" element={<PluginsPage />} />
+        <Route path="plugins/:pluginId" element={<PluginPage />} />
         <Route path="search" element={<SearchPage />} />
         <Route path="runs" element={<RunsPage />} />
         <Route path="opencode" element={<Navigate to="/settings?section=OpenCode" replace />} />

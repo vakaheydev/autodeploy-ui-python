@@ -7,6 +7,7 @@ import pytest
 from core.env_manager import EnvManager
 from forms.fields import ReferenceConfig
 from webapp import extensions
+from plugins import PluginDefinition, PluginRegistry
 
 
 def _catalogs() -> dict[str, ReferenceConfig]:
@@ -80,6 +81,26 @@ def test_environment_hook_factory_must_return_callable(
 
     with pytest.raises(TypeError, match="вернуть callable"):
         extensions.load_environment_hook(env)
+
+
+def test_plugin_registrar_receives_public_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = EnvManager(tmp_path / ".env")
+    env.save({
+        extensions.PLUGIN_REGISTRAR_KEY:
+            "corp_autodeploy.plugins:register_plugins",
+    })
+    registry = PluginRegistry()
+
+    def registrar(received: PluginRegistry) -> None:
+        assert received is registry
+        received.register(PluginDefinition("corp.status", "Статус"))
+
+    monkeypatch.setattr(extensions, "import_callable", lambda _path: registrar)
+    extensions.register_extension_plugins(env, registry)
+
+    assert registry.get("corp.status").title == "Статус"
 
 
 @pytest.mark.parametrize(

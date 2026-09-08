@@ -213,6 +213,11 @@ class WebAIService:
         if self.container.settings.mcp_enabled:
             allowed_mcp = list(dict.fromkeys((*allowed_mcp, AUTODEPLOY_MCP_NAME)))
         forms = tuple(FormRegistry().all_forms())
+        plugin_allow_tools, plugin_ask_tools = (
+            self.container.plugin_ai_policy.copilot_tools()
+            if self.container.settings.mcp_enabled
+            else ((), ())
+        )
         copilot = UnifiedCopilot(
             client,
             services.itsm,
@@ -227,8 +232,17 @@ class WebAIService:
                 values.get(OPENCODE_MAX_CONTEXT_CHARS_KEY), 120_000
             ),
             trusted_mcp_tools=(
-                {AUTODEPLOY_MCP_NAME: AUTODEPLOY_COPILOT_TOOLS}
+                {
+                    AUTODEPLOY_MCP_NAME: tuple(dict.fromkeys(
+                        (*AUTODEPLOY_COPILOT_TOOLS, *plugin_allow_tools)
+                    ))
+                }
                 if self.container.settings.mcp_enabled
+                else {}
+            ),
+            trusted_mcp_ask_tools=(
+                {AUTODEPLOY_MCP_NAME: plugin_ask_tools}
+                if self.container.settings.mcp_enabled and plugin_ask_tools
                 else {}
             ),
             workflow_id=workflow_id,

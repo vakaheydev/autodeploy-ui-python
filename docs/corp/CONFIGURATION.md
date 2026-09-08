@@ -67,6 +67,7 @@ OPENCODE_REPOSITORY_GIT_PULL=true
 
 # Private package composition
 AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
+AUTODEPLOY_PLUGIN_REGISTRAR=corp_autodeploy.plugins.registrar:register_plugins
 AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp_autodeploy.references:create_handlers
 AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp_autodeploy.search_catalogs:create_search_catalogs
@@ -101,6 +102,13 @@ stored value. Browser может заменить secret либо явно оч�
 Extension factories и `AUTODEPLOY_MCP_ENABLED` применяются после полного restart,
 потому что входят в composition root. OpenCode connection settings можно
 переподключить через UI; новые MCP permissions применяются к новой AI session.
+
+Отдельная вкладка **Настройки -> Плагины** хранит не секреты и не import paths,
+а operator policy для AI: глобальную видимость, видимость каждой страницы и
+`deny/manual/allow` для каждой операции. Policy хранится в mutable
+`data/plugin-ai-policy.json` и должна сохраняться updater наравне с drafts.
+После расширения permissions нужен новый AI chat; запрет проверяется runtime и
+для уже существующей сессии. Подробности — в [PLUGINS.md](PLUGINS.md).
 
 ## OpenCode configuration
 

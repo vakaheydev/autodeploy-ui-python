@@ -23,15 +23,19 @@ from forms.registry import FormRegistry
 from handlers.http_reference_handler import HttpReferenceHandler
 from handlers.local_reference_handler import LocalReferenceHandler
 from opencode_integration.manager import OpenCodeManager, REQUIRED_AGENTS
+from plugins.registry import PluginRegistry
 from services.submit_service import SubmitService
 from webapp.extensions import (
     extension_reference_handlers,
     load_search_catalogs,
     load_service_provider,
     register_extension_forms,
+    register_extension_plugins,
 )
 from webapp.environment_runtime import EnvironmentRuntime
 from webapp.form_runtime import FormRuntime
+from webapp.plugin_policy import PluginAIPolicyStore
+from webapp.plugin_runtime import PluginRuntime
 from webapp.security import ConfirmationStore, SubmissionStore, request_fingerprint
 from webapp.settings import WebSettings
 
@@ -56,6 +60,13 @@ class ApplicationContainer:
         register_all_forms()
         register_extension_forms(self.env_manager, registry)
         self.forms = FormRuntime(self)
+        self.plugin_registry = PluginRegistry()
+        register_extension_plugins(self.env_manager, self.plugin_registry)
+        self.plugins = PluginRuntime(self, self.plugin_registry)
+        self.plugin_ai_policy = PluginAIPolicyStore(
+            settings.data_dir / "plugin-ai-policy.json",
+            self.plugin_registry,
+        )
         self._opencode_lock = threading.Lock()
         self.opencode_manager = self._build_opencode_manager()
         self.ai = None

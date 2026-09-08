@@ -41,6 +41,7 @@ from opencode_integration.manager import DEFAULT_SERVER_URL, OpenCodeManager
 from webapp.extensions import (
     ENVIRONMENT_HOOK_KEY,
     FORM_REGISTRAR_KEY,
+    PLUGIN_REGISTRAR_KEY,
     REFERENCE_HANDLER_FACTORY_KEY,
     SEARCH_CATALOG_FACTORY_KEY,
     SERVICE_PROVIDER_KEY,
@@ -205,6 +206,15 @@ def _specs() -> tuple[SettingSpec, ...]:
             "text",
             "",
             "package.module:callable; factory(env_manager) возвращает hook(previous, current)",
+            restart_required=True,
+        ),
+        SettingSpec(
+            PLUGIN_REGISTRAR_KEY,
+            "Регистратор корпоративных плагинов",
+            "Расширения",
+            "text",
+            "",
+            "package.module:callable; регистрирует серверные custom pages",
             restart_required=True,
         ),
         SettingSpec(

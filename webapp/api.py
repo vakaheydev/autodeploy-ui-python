@@ -18,6 +18,9 @@ from webapp.models import (
     ActionRequest,
     DraftSaveRequest,
     EnvironmentActivationRequest,
+    PluginActionRequest,
+    PluginAIPolicyUpdateRequest,
+    PluginValuesRequest,
     ReferenceRequest,
     SearchRequest,
     SearchStatusRequest,
@@ -56,6 +59,7 @@ def health(request: Request) -> dict[str, Any]:
         "service": "gravitee-autodeploy-web",
         "version": request.app.version,
         "forms": len(FormRegistry().all_forms()),
+        "plugins": len(app_container.plugin_registry.all_plugins()),
         "opencode": app_container.opencode_manager.status.state,
         "mcp": "enabled" if app_container.settings.mcp_enabled else "disabled",
     }
@@ -140,6 +144,111 @@ def catalog(request: Request) -> dict[str, Any]:
         "categories": categories,
         "environments": [dataclasses.asdict(value) for value in ENVIRONMENTS],
     }
+
+
+@router.get("/plugins", tags=["plugins"])
+def plugins(request: Request) -> dict[str, Any]:
+    return {"items": container(request).plugins.list_plugins()}
+
+
+@router.get("/plugins/ai-policy", tags=["plugins", "settings"])
+def plugin_ai_policy(request: Request) -> dict[str, Any]:
+    return container(request).plugin_ai_policy.snapshot()
+
+
+@router.put("/plugins/ai-policy", tags=["plugins", "settings"])
+def save_plugin_ai_policy(
+    body: PluginAIPolicyUpdateRequest, request: Request
+) -> dict[str, Any]:
+    try:
+        return container(request).plugin_ai_policy.update(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/plugins/{plugin_id}", tags=["plugins"])
+def plugin_document(
+    plugin_id: str,
+    request: Request,
+    environment: str = Query(default="test_int", max_length=80),
+):
+    try:
+        return container(request).plugins.describe(plugin_id, environment)
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post("/plugins/{plugin_id}/state", tags=["plugins"])
+def plugin_state(plugin_id: str, body: PluginValuesRequest, request: Request):
+    try:
+        return container(request).plugins.state(
+            plugin_id,
+            body.environment,
+            body.values,
+            body.plugin_version,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post("/plugins/{plugin_id}/validate", tags=["plugins"])
+def validate_plugin(plugin_id: str, body: PluginValuesRequest, request: Request):
+    try:
+        return dataclasses.asdict(container(request).plugins.validate(
+            plugin_id,
+            body.environment,
+            body.values,
+            body.plugin_version,
+        ))
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/plugins/{plugin_id}/operations/{operation_id}", tags=["plugins"]
+)
+def run_plugin_operation(
+    plugin_id: str,
+    operation_id: str,
+    body: PluginActionRequest,
+    request: Request,
+):
+    try:
+        return container(request).plugins.run_operation(
+            plugin_id,
+            operation_id,
+            body.environment,
+            body.values,
+            body.plugin_version,
+            body.confirmation_token,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/plugins/{plugin_id}/fields/{field_path:path}/options",
+    tags=["plugins", "references"],
+)
+def plugin_reference_options(
+    plugin_id: str,
+    field_path: str,
+    body: ReferenceRequest,
+    request: Request,
+):
+    try:
+        return container(request).plugins.options(
+            plugin_id,
+            field_path,
+            body.environment,
+            body.values,
+            body.query,
+            body.offset,
+            body.limit,
+            body.refresh,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
 
 
 @router.post("/environments/activate", tags=["environments"])
