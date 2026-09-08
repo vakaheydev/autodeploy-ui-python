@@ -2442,6 +2442,19 @@ class CopilotWorkflowTests(unittest.TestCase):
         )
         events: list[ConversationEvent] = []
         copilot._on_event = events.append
+        # The prompt may arrive before its message role.  Its messageID must
+        # still prevent it from being flushed with a later assistant tool.
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "prompt_before_role",
+                    "messageID": "msg_user_before_role",
+                    "type": "text",
+                    "text": "Handle this operator turn. BEGIN_OPERATOR_REQUEST",
+                },
+            },
+        })
         copilot._handle_raw_event({
             "type": "message.part.updated",
             "properties": {
@@ -2467,6 +2480,69 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual([event.kind for event in events], ["assistant_text", "tool"])
         self.assertEqual(events[0].detail, "Получил схему. Теперь ищу API.")
         self.assertEqual(events[0].call_id, "text_1")
+
+    def test_user_prompt_and_synthetic_text_are_never_emitted_as_narration(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events: list[ConversationEvent] = []
+        copilot._on_event = events.append
+        copilot._handle_raw_event({
+            "type": "message.updated",
+            "properties": {
+                "info": {"id": "msg_user", "role": "user"},
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "prompt_1",
+                    "messageID": "msg_user",
+                    "type": "text",
+                    "text": "[search-mode] MAXIMIZE SEARCH EFFORT\nBEGIN_OPERATOR_REQUEST",
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "synthetic_1",
+                    "messageID": "msg_assistant",
+                    "type": "text",
+                    "text": "Служебная синтетическая инструкция.",
+                    "synthetic": True,
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "text_1",
+                    "messageID": "msg_assistant",
+                    "type": "text",
+                    "text": "Получил задачу. Ищу API.",
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "tool_1",
+                    "messageID": "msg_assistant",
+                    "type": "tool",
+                    "tool": "get_api",
+                    "state": {"status": "running", "input": {}},
+                },
+            },
+        })
+
+        self.assertEqual([event.kind for event in events], ["assistant_text", "tool"])
+        self.assertEqual(events[0].detail, "Получил задачу. Ищу API.")
 
     def test_reasoning_parts_are_never_emitted_as_assistant_messages(self) -> None:
         copilot = UnifiedCopilot(

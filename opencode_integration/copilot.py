@@ -88,7 +88,11 @@ _OPEN_REASONING_TAIL_RE = re.compile(r"(?is)<(?:think|reasoning)>.*$")
 
 
 def _assistant_text_part_allowed(part: Mapping[str, Any]) -> bool:
-    if part.get("type") != "text" or part.get("ignored") is True:
+    if (
+        part.get("type") != "text"
+        or part.get("ignored") is True
+        or part.get("synthetic") is True
+    ):
         return False
     metadata = part.get("metadata")
     if isinstance(metadata, Mapping):
@@ -491,7 +495,8 @@ class UnifiedCopilot:
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
         self._part_started_at: dict[str, float] = {}
-        self._pending_text_parts: dict[str, str] = {}
+        self._pending_text_parts: dict[str, tuple[str, str]] = {}
+        self._message_roles: dict[str, str] = {}
         self._permission_ids: set[str] = set()
         self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
@@ -556,6 +561,7 @@ class UnifiedCopilot:
         self._part_states.clear()
         self._part_started_at.clear()
         self._pending_text_parts.clear()
+        self._message_roles.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
         self._on_session(None)
@@ -1010,6 +1016,7 @@ class UnifiedCopilot:
         self._part_states.clear()
         self._part_started_at.clear()
         self._pending_text_parts.clear()
+        self._message_roles.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
         self._on_session(None)
@@ -1071,6 +1078,23 @@ class UnifiedCopilot:
                 "error", "Ошибка OpenCode session", self._safe_detail(values.get("error", values))
             ))
             return
+        if event_type == "message.updated":
+            info = values.get("info")
+            if not isinstance(info, dict):
+                return
+            message_id = str(info.get("id") or "")
+            role = str(info.get("role") or "").casefold()
+            if not message_id or not role:
+                return
+            with self._event_lock:
+                self._message_roles[message_id] = role
+                if role != "assistant":
+                    for part_id, (part_message_id, _text) in tuple(
+                        self._pending_text_parts.items()
+                    ):
+                        if part_message_id == message_id:
+                            self._pending_text_parts.pop(part_id, None)
+            return
         if event_type == "message.part.updated":
             part = values.get("part")
             if not isinstance(part, dict):
@@ -1083,7 +1107,7 @@ class UnifiedCopilot:
             # A tool transition proves that all text received before it is
             # narration, not the final answer.  Flush it at this exact point so
             # AutoDeploy mirrors OpenCode Web without duplicating the final text.
-            self._flush_pending_text_parts()
+            self._flush_pending_text_parts(str(part.get("messageID") or ""))
             part_id = str(part.get("id") or part.get("callID") or "")
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
             status = str(state.get("status") or "updated")
@@ -1120,6 +1144,7 @@ class UnifiedCopilot:
             ))
 
     def _remember_text_part(self, part: Mapping[str, Any], delta: Any) -> None:
+        message_id = str(part.get("messageID") or "")
         part_id = str(
             part.get("id")
             or f"{part.get('messageID', 'message')}:{len(self._pending_text_parts)}"
@@ -1130,17 +1155,45 @@ class UnifiedCopilot:
             return
         full_text = part.get("text")
         with self._event_lock:
+            if message_id and self._message_roles.get(message_id) not in {
+                None,
+                "assistant",
+            }:
+                self._pending_text_parts.pop(part_id, None)
+                return
             if isinstance(full_text, str):
-                self._pending_text_parts[part_id] = full_text
+                self._pending_text_parts[part_id] = (message_id, full_text)
             elif isinstance(delta, str) and delta:
+                previous = self._pending_text_parts.get(part_id)
                 self._pending_text_parts[part_id] = (
-                    self._pending_text_parts.get(part_id, "") + delta
+                    message_id or (previous[0] if previous else ""),
+                    (previous[1] if previous else "") + delta,
                 )
 
-    def _flush_pending_text_parts(self) -> None:
+    def _flush_pending_text_parts(self, assistant_message_id: str) -> None:
         with self._event_lock:
-            pending = tuple(self._pending_text_parts.items())
-            self._pending_text_parts.clear()
+            pending: list[tuple[str, str]] = []
+            for part_id, (message_id, value) in tuple(
+                self._pending_text_parts.items()
+            ):
+                # OpenCode's SSE stream also publishes the user prompt.  Only
+                # narration belonging to the same assistant message as the tool
+                # may be exposed in chat.  Events without messageID are retained
+                # solely for compatibility with older/test event payloads.
+                matches = (
+                    message_id == assistant_message_id
+                    if assistant_message_id
+                    else not message_id
+                )
+                if matches:
+                    pending.append((part_id, value))
+                    self._pending_text_parts.pop(part_id, None)
+                    continue
+                if message_id and self._message_roles.get(message_id) not in {
+                    None,
+                    "assistant",
+                }:
+                    self._pending_text_parts.pop(part_id, None)
         for part_id, value in pending:
             text = visible_assistant_text({"type": "text", "text": value})
             text = redact_text(text).strip()[:60_000]
@@ -1156,6 +1209,7 @@ class UnifiedCopilot:
     def _discard_pending_text_parts(self) -> None:
         with self._event_lock:
             self._pending_text_parts.clear()
+            self._message_roles.clear()
 
     def _bounded_diagnostic_data(self, value: Any) -> Any:
         """Очищает диагностический payload и жёстко ограничивает его размер."""

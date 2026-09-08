@@ -213,6 +213,7 @@ def test_persisted_history_never_restores_reasoning_as_chat_messages() -> None:
         "parts": [
             {"id": "thought", "type": "reasoning", "text": "Внутренняя цепочка."},
             {"id": "hidden", "type": "text", "text": "Скрытый анализ.", "metadata": {"channel": "analysis"}},
+            {"id": "synthetic", "type": "text", "text": "Служебный prompt.", "synthetic": True},
             {"id": "note", "type": "text", "text": "Проверю форму."},
             {"id": "tool", "type": "tool", "tool": "get_form", "state": {"status": "completed"}},
             {"id": "answer", "type": "text", "text": "Готово."},
