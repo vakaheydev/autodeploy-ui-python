@@ -219,3 +219,73 @@ test('autosaves, restores and manually deletes a form draft', async ({ page }) =
   await link.locator('xpath=..').getByRole('button', { name: 'Удалить черновик Создание АПИ' }).click()
   await expect(link).toHaveCount(0)
 })
+
+test('shows submit progress and server failures inside the submit dialog', async ({ page }) => {
+  let previewCalls = 0
+  const submitTokens: string[] = []
+  await page.route('**/api/v1/forms/api.create/preview', async (route) => {
+    previewCalls += 1
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        valid: true,
+        values: {},
+        errors: [],
+        visible_fields: [],
+        payload: { operation: 'create-api' },
+        confirmation_required: true,
+        confirmation_text: 'Создать API?',
+        confirmation_token: `confirmation-${previewCalls}`,
+      }),
+    })
+  })
+  await page.route('**/api/v1/forms/api.create/submit', async (route) => {
+    const body = route.request().postDataJSON() as { confirmation_token: string }
+    submitTokens.push(body.confirmation_token)
+    if (submitTokens.length === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: { message: 'TFS вернул 401 Unauthorized' } }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        message: 'API создан',
+        submission_id: 'submission-1',
+        status: 'success',
+        title: 'Создание API',
+        content: 'Готово',
+        response: {},
+        payload: {},
+        polling: false,
+        poll_interval_ms: null,
+      }),
+    })
+  })
+
+  await page.goto('/forms/api.create')
+  await page.getByRole('button', { name: 'Отправить', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Подтвердите операцию' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Подтвердить и отправить' }).click()
+
+  await expect(dialog.getByRole('status')).toContainText('Отправляю форму')
+  await expect(dialog.getByRole('button', { name: 'Отправляю…' })).toBeDisabled()
+  await expect(dialog.locator('footer').getByRole('button', { name: 'Закрыть' })).toBeDisabled()
+
+  await expect(dialog.getByRole('alert')).toContainText('TFS вернул 401 Unauthorized')
+  await expect(dialog.getByRole('button', { name: 'Повторить отправку' })).toBeEnabled()
+  expect(submitTokens).toEqual(['confirmation-2'])
+
+  await dialog.getByRole('button', { name: 'Повторить отправку' }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(page.getByText('API создан')).toBeVisible()
+  expect(submitTokens).toEqual(['confirmation-2', 'confirmation-3'])
+})

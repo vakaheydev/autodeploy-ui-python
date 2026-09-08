@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -125,5 +125,86 @@ describe('FormPage custom actions', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
     expect(input.closest('.form-field')).toHaveClass('invalid')
     expect(screen.getByRole('alert')).toHaveTextContent('Поле обязательно')
+  })
+
+  it('keeps submit progress and failures in the dialog and refreshes confirmation before retry', async () => {
+    const user = userEvent.setup()
+    let previewCalls = 0
+    const submitBodies: Array<Record<string, unknown>> = []
+    let finishFirstSubmit: ((response: Response) => void) | undefined
+    const firstSubmit = new Promise<Response>((resolve) => { finishFirstSubmit = resolve })
+    const confirmedDocument: FormDocument = { ...document, confirm_submit: true, itsm_support: false, custom_actions: [] }
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/preview')) {
+        previewCalls += 1
+        return Promise.resolve(new Response(JSON.stringify({
+          valid: true,
+          values: {},
+          errors: [],
+          visible_fields: [],
+          payload: { operation: 'deploy' },
+          confirmation_required: true,
+          confirmation_text: 'Отправить изменения?',
+          confirmation_token: `confirmation-${previewCalls}`,
+        }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      }
+      if (url.endsWith('/submit')) {
+        submitBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        if (submitBodies.length === 1) return firstSubmit
+        return Promise.resolve(new Response(JSON.stringify({
+          success: true,
+          message: 'Готово',
+          submission_id: 'submission-1',
+          status: 'success',
+          title: 'Создание API',
+          content: 'Создано',
+          response: {},
+          payload: {},
+          polling: false,
+          poll_interval_ms: null,
+        }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      }
+      return Promise.resolve(new Response(JSON.stringify(confirmedDocument), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+    }))
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes>
+            <Route path="/forms/:formId" element={<FormPage />} />
+          </Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Отправить/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Подтвердите операцию' })
+    await user.click(within(dialog).getByRole('button', { name: 'Подтвердить и отправить' }))
+
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('Отправляю форму')
+    expect(within(dialog).getByRole('button', { name: 'Отправляю…' })).toBeDisabled()
+    for (const closeButton of within(dialog).getAllByRole('button', { name: 'Закрыть' })) {
+      expect(closeButton).toBeDisabled()
+    }
+    expect(submitBodies[0]).toMatchObject({ confirmation_token: 'confirmation-2' })
+
+    finishFirstSubmit?.(new Response(JSON.stringify({
+      detail: { message: 'TFS вернул 401 Unauthorized' },
+    }), { status: 422, headers: { 'content-type': 'application/json' } }))
+
+    const submitAlert = await within(dialog).findByRole('alert')
+    expect(submitAlert).toHaveTextContent('Не удалось отправить форму')
+    expect(submitAlert).toHaveTextContent('TFS вернул 401 Unauthorized')
+    expect(within(dialog).getByRole('button', { name: 'Повторить отправку' })).toBeEnabled()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Повторить отправку' }))
+    await waitFor(() => expect(submitBodies).toHaveLength(2))
+    expect(submitBodies[1]).toMatchObject({ confirmation_token: 'confirmation-3' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Подтвердите операцию' })).not.toBeInTheDocument())
   })
 })

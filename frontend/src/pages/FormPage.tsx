@@ -131,6 +131,8 @@ export function FormPage() {
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [previewMode, setPreviewMode] = useState<'inspect' | 'submit'>('inspect')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
   const [ticketModal, setTicketModal] = useState(false)
   const [ticketId, setTicketId] = useState('')
   const [result, setResult] = useState<SubmitResult | null>(null)
@@ -161,7 +163,7 @@ export function FormPage() {
       focusedValidationRef.current = ''
       return
     }
-    if (busy) return
+    if (busy || (preview && previewMode === 'submit')) return
     const signature = `${first.field}|${first.code}|${first.message}`
     if (focusedValidationRef.current === signature) return
     const timer = window.setTimeout(() => {
@@ -177,7 +179,7 @@ export function FormPage() {
       control?.focus({ preventScroll: true })
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [busy, errors])
+  }, [busy, errors, preview, previewMode])
 
   const reportFailure = (reason: unknown) => {
     const inlineErrors = validationErrorsFromApi(reason)
@@ -187,6 +189,13 @@ export function FormPage() {
       return
     }
     setError(reason instanceof Error ? reason.message : String(reason))
+  }
+
+  const reportSubmitFailure = (reason: unknown) => {
+    const inlineErrors = validationErrorsFromApi(reason)
+    if (inlineErrors.length) setErrors(inlineErrors)
+    const message = reason instanceof Error ? reason.message.trim() : String(reason).trim()
+    setSubmitError(message || 'Не удалось отправить форму')
   }
 
   const clearFieldErrors = (changedPath: string) => {
@@ -392,6 +401,7 @@ export function FormPage() {
     if (!document) return
     setBusy(true)
     setError('')
+    setSubmitError('')
     setErrors([])
     try {
       const value = await post<PreviewResult>(`/api/v1/forms/${encodeURIComponent(formId)}/preview`, {
@@ -417,16 +427,37 @@ export function FormPage() {
   const executeSubmit = async (prepared = preview) => {
     if (!document || !prepared) return
     setBusy(true)
+    setSubmitting(true)
     setError('')
+    setSubmitError('')
     try {
+      // Confirmation capabilities are deliberately one-time. Refresh the
+      // preview immediately before every confirmed attempt so an expired or
+      // already-consumed token can never make the Retry button stale.
+      let submission = prepared
+      if (prepared.confirmation_required) {
+        const refreshed = await post<PreviewResult>(`/api/v1/forms/${encodeURIComponent(formId)}/preview`, {
+          environment,
+          values: prepared.values,
+          form_version: document.version,
+        })
+        if (!refreshed.valid) {
+          setValues(refreshed.values)
+          setErrors(refreshed.errors)
+          setSubmitError('Данные формы больше не проходят проверку. Закройте окно и исправьте отмеченные поля.')
+          return
+        }
+        setPreview(refreshed)
+        submission = refreshed
+      }
       const submitted = await post<SubmitResult>(`/api/v1/forms/${encodeURIComponent(formId)}/submit`, {
         environment,
-        values: prepared.values,
+        values: submission.values,
         form_version: document.version,
-        confirmation_token: prepared.confirmation_token ?? '',
+        confirmation_token: submission.confirmation_token ?? '',
         draft_id: activeDraftIdRef.current,
       })
-      setValues(prepared.values)
+      setValues(submission.values)
       setResult(submitted)
       setPreview(null)
       activeDraftIdRef.current = ''
@@ -437,10 +468,17 @@ export function FormPage() {
       setReview({})
       navigate(location.pathname, { replace: true })
     } catch (reason) {
-      reportFailure(reason)
+      reportSubmitFailure(reason)
     } finally {
+      setSubmitting(false)
       setBusy(false)
     }
+  }
+
+  const closePreview = () => {
+    if (submitting) return
+    setPreview(null)
+    setSubmitError('')
   }
 
   const fetchTicket = async () => {
@@ -678,12 +716,15 @@ export function FormPage() {
       </footer>
 
       {preview && <Modal
-        title={previewMode === 'submit' && preview.confirmation_required ? 'Подтвердите операцию' : 'Предварительный просмотр'}
-        onClose={() => setPreview(null)}
-        footer={<><button className="button secondary" onClick={() => setPreview(null)}>Закрыть</button>{previewMode === 'submit' && <button className="button primary" disabled={busy} onClick={() => void executeSubmit()}><Check size={17} /> Подтвердить и отправить</button>}</>}
+        title={previewMode === 'submit' ? (preview.confirmation_required ? 'Подтвердите операцию' : 'Отправка формы') : 'Предварительный просмотр'}
+        onClose={closePreview}
+        closeDisabled={submitting}
+        footer={<><button className="button secondary" disabled={submitting} onClick={closePreview}>Закрыть</button>{previewMode === 'submit' && <button className="button primary" disabled={submitting} onClick={() => void executeSubmit()}>{submitting ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} {submitting ? 'Отправляю…' : submitError ? 'Повторить отправку' : 'Подтвердить и отправить'}</button>}</>}
       >
         {preview.confirmation_text && <pre className="confirm-text">{preview.confirmation_text}</pre>}
         {!preview.confirmation_text && <pre className="json-preview">{JSON.stringify(preview.payload, null, 2)}</pre>}
+        {submitting && <div className="submit-progress" role="status"><span className="submit-feedback-icon"><LoaderCircle className="spin" size={21} /></span><span><strong>Отправляю форму…</strong><small>Ожидаю ответ сервера</small></span></div>}
+        {submitError && !submitting && <div className="submit-error" role="alert"><span className="submit-feedback-icon"><X size={21} /></span><span><strong>Не удалось отправить форму</strong><small>{submitError}</small></span></div>}
       </Modal>}
 
       {ticketModal && <Modal title="Подтянуть данные из заявки" onClose={() => setTicketModal(false)} footer={<><button className="button secondary" onClick={() => setTicketModal(false)}>Отмена</button><button className="button primary" disabled={busy || !ticketId.trim()} onClick={() => void fetchTicket()}><Sparkles size={17} /> Получить данные</button></>}>

@@ -17,11 +17,11 @@ export function ErrorBanner({ message, onClose }: { message: string; onClose?: (
     </div>
   )
 }
-export function Modal({ title, children, onClose, footer }: { title: string; children: ReactNode; onClose: () => void; footer?: ReactNode }) {
+export function Modal({ title, children, onClose, footer, closeDisabled = false }: { title: string; children: ReactNode; onClose: () => void; footer?: ReactNode; closeDisabled?: boolean }) {
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
-        <header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Закрыть"><X /></button></header>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !closeDisabled && onClose()}>
+      <section className="modal" role="dialog" aria-modal="true" aria-label={title} aria-busy={closeDisabled || undefined}>
+        <header><h2>{title}</h2><button className="icon-button" disabled={closeDisabled} onClick={onClose} aria-label="Закрыть"><X /></button></header>
         <div className="modal-body">{children}</div>
         {footer && <footer>{footer}</footer>}
       </section>
