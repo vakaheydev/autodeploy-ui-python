@@ -159,6 +159,20 @@ thinking; сложность определяет Copilot/tool workflow, а form
 значения (в текущем corporate provider проверены `none`, `low`, `medium`,
 `xhigh`).
 
+## История и метаданные чата
+
+OpenCode хранит persistent transcript. Текст модели перед следующим tool call
+показывается в AutoDeploy как отдельная промежуточная реплика в правильном месте,
+а текст после последнего tool call — как один финальный ответ. При восстановлении
+сессии порядок собирается заново из OpenCode message parts.
+
+`generation_started_at` хранится в Python session snapshot, поэтому browser
+refresh не сбрасывает таймер выполняющегося ответа. Счётчик в header показывает
+context usage последнего assistant message и `limit.context` выбранной модели из
+OpenCode configuration. Название берётся у OpenCode, а при его отсутствии
+создаётся короткий fallback; ручное переименование через web UI также обновляет
+OpenCode session.
+
 ## Диагностика
 
 Для AI issue сохраните:

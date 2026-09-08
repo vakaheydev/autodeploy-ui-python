@@ -153,6 +153,23 @@ manual edit is respected); each red cross restores that field's baseline.
 After review, the ordinary Python validate/preview/confirmation/submit path is
 still mandatory.
 
+## Chat transcript and session metadata
+
+OpenCode remains the persistent source of the conversation. During a live turn,
+text emitted before another tool call is published as an `assistant_note` SSE
+event in its original position; the text after the final tool is the single
+final `assistant` event. Restoring a session rebuilds the same interleaved
+timeline from OpenCode message parts instead of grouping all tools before all
+text.
+
+The session snapshot owns `generation_started_at`, so refreshing the browser
+continues the existing elapsed-time counter. The header shows the last assistant
+message's context usage against `limit.context` for the selected model; both
+values come from OpenCode, not a browser estimate. OpenCode's generated session
+title is used when available, with a short local fallback. `PATCH
+/api/v1/ai/sessions/{session_id}` renames both the AutoDeploy chat and its
+OpenCode session.
+
 ## Trust and permission boundaries
 
 - ITSM, ADO, operator text, diagnostics, repository definitions and MCP output

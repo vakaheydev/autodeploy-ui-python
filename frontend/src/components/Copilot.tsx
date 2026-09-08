@@ -3,14 +3,14 @@ import { Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, post } from '../api'
-import { Bot, Check, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, RefreshCw, Send, Sparkles, Trash2, X } from './Icons'
+import { Bot, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, Pencil, Send, Sparkles, Trash2, X } from './Icons'
 import { useEnvironment } from '../environment'
 import { SearchableSelect } from './SearchableSelect'
 import { Modal } from './Feedback'
 
-interface ModelItem { provider_id: string; model_id: string; provider_name: string; model_name: string; variants: string[] }
+interface ModelItem { provider_id: string; model_id: string; provider_name: string; model_name: string; variants: string[]; context_limit: number }
 interface ChatEvent { sequence: number; kind: string; timestamp: number; payload: Record<string, unknown> }
-interface SessionSnapshot { id: string; busy: boolean; provider_id: string; model_id: string; default_variant: string; variants: string[]; opencode_url: string | null; form_search_url?: string | null; events: ChatEvent[] }
+interface SessionSnapshot { id: string; title: string; busy: boolean; provider_id: string; model_id: string; default_variant: string; variants: string[]; tokens_used: number; context_limit: number; generation_started_at: number | null; opencode_url: string | null; form_search_url?: string | null; events: ChatEvent[] }
 interface SessionItem { id: string; title: string; updated_at: number; busy: boolean; provider_id: string; model_id: string; opencode_session_id: string | null }
 
 function eventText(event: ChatEvent): string {
@@ -28,6 +28,15 @@ export function waitingLabel(seconds: number): string {
 
 function formatSeconds(value: number): string {
   return value < 10 ? `${value.toFixed(1)} с` : `${Math.round(value)} с`
+}
+
+export function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat('ru-RU').format(Math.max(0, Math.round(value || 0)))
+}
+
+function payloadNumber(payload: Record<string, unknown>, key: string): number | null {
+  const value = payload[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function prettyToolDetail(value: unknown): string {
@@ -78,6 +87,9 @@ export function Copilot() {
   const [waitingStartedAt, setWaitingStartedAt] = useState(0)
   const [sessionToDelete, setSessionToDelete] = useState<SessionItem | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [renamingSession, setRenamingSession] = useState(false)
   const transcript = useRef<HTMLDivElement>(null)
 
   const refreshSessions = async () => {
@@ -91,7 +103,7 @@ export function Copilot() {
     setEvents(value.events)
     setBusy(value.busy)
     setProgress('')
-    setWaitingStartedAt(value.busy ? Date.now() : 0)
+    setWaitingStartedAt(value.busy && value.generation_started_at ? value.generation_started_at * 1000 : 0)
     setWaitingSeconds(0)
     setModelKey(`${value.provider_id}/${value.model_id}`)
     setThinking('auto')
@@ -124,7 +136,23 @@ export function Copilot() {
     stream.onmessage = (raw) => {
       const event = JSON.parse(raw.data) as ChatEvent
       setEvents((current) => current.some((item) => item.sequence === event.sequence) ? current : [...current, event])
-      if (event.kind === 'progress') { setProgress(eventText(event)); setBusy(true); setWaitingStartedAt((current) => current || Date.now()) }
+      if (event.kind === 'progress') {
+        const startedAt = payloadNumber(event.payload, 'generation_started_at')
+        setProgress(eventText(event)); setBusy(true)
+        setWaitingStartedAt((current) => startedAt ? startedAt * 1000 : current || Date.now())
+      }
+      if (event.kind === 'user' || event.kind === 'assistant' || event.kind === 'idle') {
+        const title = typeof event.payload.session_title === 'string' ? event.payload.session_title : ''
+        const tokensUsed = payloadNumber(event.payload, 'tokens_used')
+        const contextLimit = payloadNumber(event.payload, 'context_limit')
+        setSession((current) => current ? {
+          ...current,
+          title: title || current.title,
+          tokens_used: tokensUsed ?? current.tokens_used,
+          context_limit: contextLimit ?? current.context_limit,
+        } : current)
+        if (title) setSessions((current) => current.map((item) => item.id === session.id ? { ...item, title } : item))
+      }
       if (event.kind === 'idle') { setProgress(''); setBusy(false); setWaitingStartedAt(0); setWaitingSeconds(0) }
       if (event.kind === 'error') setError(eventText(event))
       window.setTimeout(() => transcript.current?.scrollTo({ top: transcript.current.scrollHeight, behavior: 'smooth' }), 40)
@@ -165,7 +193,7 @@ export function Copilot() {
     const [providerId, ...modelParts] = modelKey.split('/')
     setBusy(true); setWaitingStartedAt(Date.now()); setWaitingSeconds(0); setError('')
     try {
-      await post(`/api/v1/ai/sessions/${encodeURIComponent(session.id)}/messages`, {
+      const started = await post<{ generation_started_at: number }>(`/api/v1/ai/sessions/${encodeURIComponent(session.id)}/messages`, {
         message: text.trim(),
         environment,
         ticket_id: attachedTicket,
@@ -173,6 +201,7 @@ export function Copilot() {
         model_id: modelParts.join('/'),
         thinking,
       })
+      if (started.generation_started_at) setWaitingStartedAt(started.generation_started_at * 1000)
     } catch (reason) {
       setBusy(false); setError(reason instanceof Error ? reason.message : String(reason))
       throw reason
@@ -238,9 +267,71 @@ export function Copilot() {
     }
   }
 
+  const openRename = () => {
+    if (!session) return
+    setRenameValue(sessions.find((item) => item.id === session.id)?.title || session.title)
+    setRenameOpen(true)
+  }
+
+  const renameChat = async () => {
+    if (!session || !renameValue.trim() || renamingSession) return
+    setRenamingSession(true)
+    setError('')
+    try {
+      const value = await api<SessionSnapshot>(`/api/v1/ai/sessions/${encodeURIComponent(session.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: renameValue.trim() }),
+      })
+      applySession(value)
+      setSessions((current) => current.map((item) => item.id === value.id ? { ...item, title: value.title } : item))
+      setRenameOpen(false)
+      await refreshSessions()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRenamingSession(false)
+    }
+  }
+
   return (
     <section className="copilot-card">
-      <header className="copilot-header"><div className="copilot-identity"><span className="copilot-logo"><Sparkles /></span><div><span className="eyebrow">OpenCode подключён</span><h2>Gravitee Copilot</h2></div></div><div className="copilot-header-actions"><SearchableSelect compact clearable={false} ariaLabel="Сессия Copilot" value={session?.id ?? ''} onChange={(value) => { void switchChat(value).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))) }} disabled={busy || deletingSession} options={sessions.map((item) => ({ value: item.id, label: item.title, description: `${new Date(item.updated_at * 1000).toLocaleString('ru-RU')} · ${item.model_id}${item.busy ? ' · выполняется' : ''}` }))} searchPlaceholder="Найти сессию…" /><button type="button" className="icon-button danger session-delete-button" disabled={!session || deletingSession} onClick={() => setSessionToDelete(sessions.find((item) => item.id === session?.id) ?? (session ? { id: session.id, title: 'Текущий диалог', updated_at: Date.now() / 1000, busy: session.busy, provider_id: session.provider_id, model_id: session.model_id, opencode_session_id: null } : null))} title="Удалить текущую сессию" aria-label="Удалить текущую сессию"><Trash2 size={16} /></button><button className="button ghost small" onClick={() => void newChat()} title="Новая сессия"><Sparkles size={15} /> Новый чат</button>{session?.opencode_url && <a className="button ghost small" href={session.opencode_url} target="_blank" rel="noreferrer"><Code2 size={15} /> OpenCode</a>}</div></header>
+      <header className="copilot-header">
+        <div className="copilot-identity">
+          <span className="copilot-logo"><Sparkles /></span>
+          <div><span className="eyebrow">OpenCode подключён</span><h2>Gravitee Copilot</h2></div>
+        </div>
+        <div className="copilot-header-actions">
+          {session && <span className="token-counter" title="Контекст последнего ответа / максимальный контекст модели">
+            <span>Токены</span>
+            <strong>{formatTokenCount(session.tokens_used)} / {session.context_limit ? formatTokenCount(session.context_limit) : '—'}</strong>
+          </span>}
+          <SearchableSelect
+            compact
+            clearable={false}
+            ariaLabel="Сессия Copilot"
+            value={session?.id ?? ''}
+            onChange={(value) => { void switchChat(value).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))) }}
+            disabled={busy || deletingSession}
+            options={sessions.map((item) => ({
+              value: item.id,
+              label: item.title,
+              description: `${new Date(item.updated_at * 1000).toLocaleString('ru-RU')} · ${item.model_id}${item.busy ? ' · выполняется' : ''}`,
+            }))}
+            searchPlaceholder="Найти сессию…"
+          />
+          <button type="button" className="icon-button" disabled={!session || renamingSession} onClick={openRename} title="Переименовать чат" aria-label="Переименовать чат"><Pencil size={16} /></button>
+          <button
+            type="button"
+            className="icon-button danger session-delete-button"
+            disabled={!session || deletingSession}
+            onClick={() => setSessionToDelete(sessions.find((item) => item.id === session?.id) ?? (session ? { id: session.id, title: session.title, updated_at: Date.now() / 1000, busy: session.busy, provider_id: session.provider_id, model_id: session.model_id, opencode_session_id: null } : null))}
+            title="Удалить текущую сессию"
+            aria-label="Удалить текущую сессию"
+          ><Trash2 size={16} /></button>
+          <button className="button ghost small" onClick={() => void newChat()} title="Новая сессия"><Sparkles size={15} /> Новый чат</button>
+          {session?.opencode_url && <a className="button ghost small" href={session.opencode_url} target="_blank" rel="noreferrer"><Code2 size={15} /> OpenCode</a>}
+        </div>
+      </header>
       <p className="copilot-intro">Опишите задачу или приложите номер заявки. Copilot выберет форму, подготовит план или найдёт объект в Gravitee Repository.</p>
       <div className="chat-transcript" ref={transcript}>
         {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={event.sequence} />)}
@@ -253,6 +344,7 @@ export function Copilot() {
         <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Опишите результат, который нужен…" rows={2} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
         <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><button className="send-button" disabled={!session || busy || !message.trim()} aria-label="Отправить"><Send size={19} /></button></div>
       </form>
+      {renameOpen && <Modal title="Переименовать чат" onClose={() => !renamingSession && setRenameOpen(false)} footer={<><button type="button" className="button secondary" disabled={renamingSession} onClick={() => setRenameOpen(false)}>Отмена</button><button type="button" className="button primary" disabled={renamingSession || !renameValue.trim()} onClick={() => void renameChat()}>{renamingSession ? <LoaderCircle className="spin" size={16} /> : <Pencil size={16} />} Сохранить</button></>}><label className="rename-session-field"><span>Короткое название</span><input value={renameValue} maxLength={80} autoFocus onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void renameChat() } }} /></label></Modal>}
       {sessionToDelete && <Modal title="Удалить сессию?" onClose={() => !deletingSession && setSessionToDelete(null)} footer={<><button type="button" className="button secondary" disabled={deletingSession} onClick={() => setSessionToDelete(null)}>Отмена</button><button type="button" className="button danger" disabled={deletingSession} onClick={() => void deleteChat()}>{deletingSession ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Удалить</button></>}><div className="delete-session-confirm"><strong>{sessionToDelete.title}</strong><p>История этой сессии будет удалена из AutoDeploy и OpenCode. Созданные черновики форм останутся доступны в каталоге.</p></div></Modal>}
     </section>
   )
@@ -261,6 +353,7 @@ export function Copilot() {
 function ChatEventView({ event, sessionId, busy, onCandidate }: { event: ChatEvent; sessionId: string; busy: boolean; onCandidate: (formId: string) => void }) {
   const payload = event.payload
   if (event.kind === 'system') return <div className="system-event"><Bot size={15} /><span>{String(payload.title ?? '')}</span></div>
+  if (event.kind === 'assistant_note') return <div className="message-row assistant assistant-note"><div className="message-meta"><span>Copilot · ход выполнения</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time><span className="thinking-tag">{String(payload.thinking ?? '—')}</span></div><div className="message-bubble markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{String(payload.text ?? '')}</ReactMarkdown></div></div>
   if (event.kind === 'agent_event') {
     if (payload.kind === 'permission') return <div className="permission-event"><div><strong>{String(payload.title ?? 'Требуется разрешение')}</strong><small>{String(payload.detail ?? '')}</small></div><div><button className="button secondary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: false })}>Отклонить</button><button className="button primary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: true })}>Разрешить один раз</button></div></div>
     if (payload.kind === 'tool' || payload.call_id) {

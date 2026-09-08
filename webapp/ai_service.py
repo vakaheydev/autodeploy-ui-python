@@ -28,7 +28,7 @@ from config.mcp_profiles import (
 )
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
-from opencode_integration.client import opencode_message_duration
+from opencode_integration.client import opencode_context_tokens, opencode_message_duration
 from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot, detect_ticket_reference
 from opencode_integration.context_builder import BuiltContext, redact_text
 from opencode_integration.form_search import SemanticFormSearchSession
@@ -59,6 +59,11 @@ class WebCopilotSession:
     default_variant: str
     variants: tuple[str, ...]
     form_search: SemanticFormSearchSession
+    title: str = "Новый диалог"
+    title_custom: bool = False
+    context_limit: int = 0
+    tokens_used: int = 0
+    generation_started_at: float = 0.0
     created_at: float = field(default_factory=time.time)
     events: list[WebEvent] = field(default_factory=list)
     sequence: int = 0
@@ -172,6 +177,7 @@ class WebAIService:
             model_id=model_id,
             default_variant=default_variant,
             variants=tuple(model.variants),
+            context_limit=model.context_limit,
         )
         session.emit("system", {
             "title": "Сессия готова",
@@ -189,6 +195,9 @@ class WebAIService:
         model_id: str,
         default_variant: str,
         variants: tuple[str, ...],
+        context_limit: int = 0,
+        title: str = "Новый диалог",
+        title_custom: bool = False,
         opencode_session_id: str = "",
         created_at: Optional[float] = None,
         events: Optional[list[WebEvent]] = None,
@@ -227,6 +236,11 @@ class WebAIService:
         if opencode_session_id:
             copilot.resume_session(opencode_session_id)
         restored_events = list(events or [])
+        restored_tokens = next((
+            int(event.payload.get("tokens_used") or 0)
+            for event in reversed(restored_events)
+            if event.kind == "assistant"
+        ), 0)
         return WebCopilotSession(
             id=workflow_id,
             copilot=copilot,
@@ -235,6 +249,10 @@ class WebAIService:
             default_variant=default_variant,
             variants=variants,
             form_search=SemanticFormSearchSession(client, forms=forms),
+            title=title,
+            title_custom=title_custom,
+            context_limit=max(0, int(context_limit)),
+            tokens_used=max(0, restored_tokens),
             created_at=created_at or time.time(),
             events=restored_events,
             sequence=max((event.sequence for event in restored_events), default=0),
@@ -252,14 +270,6 @@ class WebAIService:
             sessions = list(self._sessions.values())
         items = []
         for session in sessions:
-            first_user = next(
-                (
-                    str(event.payload.get("text") or "").strip()
-                    for event in session.events
-                    if event.kind == "user"
-                ),
-                "",
-            )
             updated_at = (
                 session.events[-1].timestamp
                 if session.events
@@ -267,7 +277,7 @@ class WebAIService:
             )
             items.append({
                 "id": session.id,
-                "title": first_user[:80] or "Новый диалог",
+                "title": session.title,
                 "created_at": session.created_at,
                 "updated_at": updated_at,
                 "busy": session.busy,
@@ -344,6 +354,12 @@ class WebAIService:
                 history = self._history_from_opencode(client.list_session_messages(remote_id))
                 raw_time = remote.get("time") if isinstance(remote.get("time"), Mapping) else {}
                 created_at = self._timestamp_seconds(raw_time.get("created")) or time.time()
+                fallback_title = next((
+                    self._short_title(str(event.payload.get("text") or ""))
+                    for event in history
+                    if event.kind == "user"
+                ), "Новый диалог")
+                remote_title = self._usable_opencode_title(remote.get("title"))
                 restored = self._compose_session(
                     workflow_id=workflow_id,
                     provider_id=provider_id,
@@ -353,6 +369,8 @@ class WebAIService:
                         or (default.variant if default else "")
                     ),
                     variants=tuple(model.variants),
+                    context_limit=model.context_limit,
+                    title=remote_title[:80] if remote_title else fallback_title,
                     opencode_session_id=remote_id,
                     created_at=created_at,
                     events=history,
@@ -369,6 +387,198 @@ class WebAIService:
     ) -> list[WebEvent]:
         events: list[WebEvent] = []
         sequence = 0
+        assistant_messages: list[tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]] = []
+
+        def append(kind: str, timestamp: float, payload: Mapping[str, Any]) -> None:
+            nonlocal sequence
+            sequence += 1
+            events.append(WebEvent(sequence, kind, timestamp, dict(payload)))
+
+        def flush_assistant_turn() -> None:
+            """Restore the exact text/tool order of one OpenCode turn."""
+            nonlocal assistant_messages
+            if not assistant_messages:
+                return
+
+            flattened: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+            for info, parts in assistant_messages:
+                flattened.extend((info, part) for part in parts)
+            text_indexes = [
+                index
+                for index, (_info, part) in enumerate(flattened)
+                if part.get("type") == "text" and str(part.get("text") or "").strip()
+            ]
+            tool_indexes = [
+                index
+                for index, (_info, part) in enumerate(flattened)
+                if part.get("type") == "tool"
+            ]
+            if tool_indexes:
+                last_tool_index = tool_indexes[-1]
+                final_text_indexes = {
+                    index for index in text_indexes if index > last_tool_index
+                }
+            else:
+                final_text_indexes = set(text_indexes)
+
+            final_text: list[str] = []
+            final_info: Mapping[str, Any] = assistant_messages[-1][0]
+            message_drafts: list[dict[str, Any]] = []
+            started_at: Optional[float] = None
+            completed_at: Optional[float] = None
+            started_ms: Optional[float] = None
+            completed_ms: Optional[float] = None
+            tokens_used = 0
+
+            for info, _parts in assistant_messages:
+                timing = info.get("time") if isinstance(info.get("time"), Mapping) else {}
+                raw_created = timing.get("created")
+                raw_completed = timing.get("completed")
+                if isinstance(raw_created, (int, float)) and not isinstance(raw_created, bool):
+                    started_ms = (
+                        float(raw_created)
+                        if started_ms is None
+                        else min(started_ms, float(raw_created))
+                    )
+                if isinstance(raw_completed, (int, float)) and not isinstance(raw_completed, bool):
+                    completed_ms = (
+                        float(raw_completed)
+                        if completed_ms is None
+                        else max(completed_ms, float(raw_completed))
+                    )
+                created = cls._timestamp_seconds(timing.get("created"))
+                completed = cls._timestamp_seconds(timing.get("completed"))
+                if created is not None:
+                    started_at = created if started_at is None else min(started_at, created)
+                if completed is not None:
+                    completed_at = completed if completed_at is None else max(completed_at, completed)
+                current_tokens = opencode_context_tokens(info)
+                if current_tokens:
+                    tokens_used = current_tokens
+
+            for index, (info, part) in enumerate(flattened):
+                info_time = info.get("time") if isinstance(info.get("time"), Mapping) else {}
+                fallback_timestamp = (
+                    cls._timestamp_seconds(info_time.get("created")) or time.time()
+                )
+                part_type = str(part.get("type") or "")
+                if part_type == "text":
+                    text = str(part.get("text") or "").strip()
+                    if not text:
+                        continue
+                    if index in final_text_indexes:
+                        final_text.append(text)
+                        final_info = info
+                    else:
+                        part_time = (
+                            part.get("time")
+                            if isinstance(part.get("time"), Mapping)
+                            else {}
+                        )
+                        append(
+                            "assistant_note",
+                            cls._timestamp_seconds(part_time.get("start"))
+                            or fallback_timestamp,
+                            {
+                                "text": text,
+                                "part_id": str(part.get("id") or ""),
+                                "thinking": str(info.get("variant") or "—"),
+                            },
+                        )
+                    continue
+                if part_type != "tool":
+                    continue
+
+                state = part.get("state") if isinstance(part.get("state"), Mapping) else {}
+                status = str(state.get("status") or "completed")
+                output_value = state.get("output", "")
+                tool_name = str(part.get("tool") or state.get("title") or "MCP tool")
+                decoded_output: Any = output_value
+                if isinstance(decoded_output, str):
+                    try:
+                        decoded_output = json.loads(decoded_output)
+                    except (TypeError, ValueError):
+                        pass
+                if (
+                    status == "completed"
+                    and tool_name.endswith("prepare_form_draft")
+                    and isinstance(decoded_output, Mapping)
+                    and decoded_output.get("draft_id")
+                    and decoded_output.get("form_id")
+                ):
+                    message_drafts.append({
+                        "draft_id": str(decoded_output["draft_id"]),
+                        "form_id": str(decoded_output["form_id"]),
+                        "environment": str(decoded_output.get("environment") or ""),
+                        "valid": bool(decoded_output.get("valid")),
+                        "revision": int(decoded_output.get("revision") or 1),
+                    })
+                event = ConversationEvent(
+                    "error" if status == "error" else "tool",
+                    tool_name,
+                    cls._safe_detail(state.get("input", "")),
+                    call_id=str(part.get("id") or part.get("callID") or ""),
+                    status=status,
+                    input_detail=cls._safe_detail(state.get("input", "")),
+                    output_detail=cls._safe_detail(
+                        state.get("error", "")
+                        if status == "error"
+                        else state.get("output", "")
+                    ),
+                    duration_seconds=UnifiedCopilot._tool_duration_seconds(state, None),
+                )
+                state_time = (
+                    state.get("time")
+                    if isinstance(state.get("time"), Mapping)
+                    else {}
+                )
+                append(
+                    "agent_event",
+                    cls._timestamp_seconds(state_time.get("start"))
+                    or fallback_timestamp,
+                    dataclasses.asdict(event),
+                )
+
+            answer = "\n\n".join(final_text).strip()
+            if answer:
+                final_time = (
+                    final_info.get("time")
+                    if isinstance(final_info.get("time"), Mapping)
+                    else {}
+                )
+                assistant_payload: dict[str, Any] = {
+                    "text": answer,
+                    "thinking": str(final_info.get("variant") or "—"),
+                    "elapsed_seconds": (
+                        (completed_ms - started_ms) / 1000.0
+                        if started_ms is not None
+                        and completed_ms is not None
+                        and completed_ms >= started_ms
+                        else opencode_message_duration(final_info)
+                    ),
+                    "tokens_used": tokens_used,
+                }
+                if len(message_drafts) == 1:
+                    assistant_payload.update({
+                        "intent": "single_form",
+                        "selected_form_id": message_drafts[0]["form_id"],
+                        "draft_id": message_drafts[0]["draft_id"],
+                    })
+                elif message_drafts:
+                    assistant_payload.update({
+                        "intent": "execution_plan",
+                        "drafts": message_drafts,
+                    })
+                append(
+                    "assistant",
+                    completed_at
+                    or cls._timestamp_seconds(final_time.get("completed"))
+                    or cls._timestamp_seconds(final_time.get("created"))
+                    or time.time(),
+                    assistant_payload,
+                )
+            assistant_messages = []
+
         for message in messages:
             info = (
                 message.get("info")
@@ -397,100 +607,28 @@ class WebAIService:
                 )
                 if not match:
                     continue
+                flush_assistant_turn()
                 operator_text = match.group(1).strip()
                 try:
                     parsed = json.loads(operator_text)
                     operator_text = str(parsed)
                 except Exception:
                     pass
-                sequence += 1
-                events.append(WebEvent(
-                    sequence,
+                append(
                     "user",
                     timestamp,
                     {
                         "text": operator_text,
                         "thinking": str(info.get("variant") or "—"),
                     },
-                ))
-                continue
-            if role != "assistant":
-                continue
-            message_drafts: list[dict[str, Any]] = []
-            for part in parts:
-                if not isinstance(part, Mapping) or part.get("type") != "tool":
-                    continue
-                state = part.get("state") if isinstance(part.get("state"), Mapping) else {}
-                status = str(state.get("status") or "completed")
-                output_value = state.get("output", "")
-                tool_name = str(part.get("tool") or state.get("title") or "MCP tool")
-                decoded_output: Any = output_value
-                if isinstance(decoded_output, str):
-                    try:
-                        decoded_output = json.loads(decoded_output)
-                    except (TypeError, ValueError):
-                        pass
-                if (
-                    status == "completed"
-                    and tool_name.endswith("prepare_form_draft")
-                    and isinstance(decoded_output, Mapping)
-                    and decoded_output.get("draft_id")
-                    and decoded_output.get("form_id")
-                ):
-                    message_drafts.append({
-                        "draft_id": str(decoded_output["draft_id"]),
-                        "form_id": str(decoded_output["form_id"]),
-                        "environment": str(decoded_output.get("environment") or ""),
-                        "valid": bool(decoded_output.get("valid")),
-                        "revision": int(decoded_output.get("revision") or 1),
-                    })
-                sequence += 1
-                event = ConversationEvent(
-                    "error" if status == "error" else "tool",
-                    tool_name,
-                    cls._safe_detail(state.get("input", "")),
-                    call_id=str(part.get("id") or part.get("callID") or ""),
-                    status=status,
-                    input_detail=cls._safe_detail(state.get("input", "")),
-                    output_detail=cls._safe_detail(
-                        state.get("error", "")
-                        if status == "error"
-                        else state.get("output", "")
-                    ),
-                    duration_seconds=UnifiedCopilot._tool_duration_seconds(
-                        state, None
-                    ),
                 )
-                events.append(WebEvent(
-                    sequence,
-                    "agent_event",
-                    timestamp,
-                    dataclasses.asdict(event),
+                continue
+            if role == "assistant":
+                assistant_messages.append((
+                    info,
+                    tuple(part for part in parts if isinstance(part, Mapping)),
                 ))
-            answer = "\n".join(
-                str(part.get("text") or "")
-                for part in parts
-                if isinstance(part, Mapping) and part.get("type") == "text"
-            ).strip()
-            if answer:
-                sequence += 1
-                assistant_payload = {
-                    "text": answer,
-                    "thinking": str(info.get("variant") or "—"),
-                    "elapsed_seconds": opencode_message_duration(info),
-                }
-                if len(message_drafts) == 1:
-                    assistant_payload.update({
-                        "intent": "single_form",
-                        "selected_form_id": message_drafts[0]["form_id"],
-                        "draft_id": message_drafts[0]["draft_id"],
-                    })
-                elif message_drafts:
-                    assistant_payload.update({
-                        "intent": "execution_plan",
-                        "drafts": message_drafts,
-                    })
-                events.append(WebEvent(sequence, "assistant", timestamp, assistant_payload))
+        flush_assistant_turn()
         if events:
             events.insert(0, WebEvent(0, "system", events[0].timestamp, {
                 "title": "Сессия восстановлена из OpenCode",
@@ -508,12 +646,18 @@ class WebAIService:
         session = self._session(session_id)
         return {
             "id": session.id,
+            "title": session.title,
             "busy": session.busy,
             "job_id": session.job_id or None,
             "provider_id": session.provider_id,
             "model_id": session.model_id,
             "default_variant": session.default_variant,
             "variants": list(session.variants),
+            "tokens_used": session.tokens_used,
+            "context_limit": session.context_limit,
+            "generation_started_at": (
+                session.generation_started_at or None
+            ),
             "opencode_session_id": session.copilot.session_id,
             "form_search_session_id": session.form_search.session_id,
             "form_search_url": (
@@ -553,7 +697,9 @@ class WebAIService:
                 raise RuntimeError("Предыдущий запрос ещё выполняется")
             selected_provider = provider_id.strip() or session.provider_id
             selected_model = model_id.strip() or session.model_id
-            variants = self._model_variants(selected_provider, selected_model)
+            variants, context_limit = self._model_details(
+                selected_provider, selected_model
+            )
             actual_thinking, thinking_reason = self._resolve_copilot_thinking(
                 thinking,
                 variants,
@@ -562,7 +708,9 @@ class WebAIService:
             session.provider_id = selected_provider
             session.model_id = selected_model
             session.variants = variants
+            session.context_limit = context_limit
             session.busy = True
+            session.generation_started_at = time.time()
             session.job_id = secrets.token_urlsafe(16)
             session.cancel_event = threading.Event()
             session.last_progress = ""
@@ -573,8 +721,18 @@ class WebAIService:
             session.turn_draft_job_id = ""
             session.refining_draft_id = refining_draft_id
             session.active_environment = environment
+            if session.title == "Новый диалог" and not session.title_custom:
+                session.title = self._short_title(message)
             job_id = session.job_id
-        session.emit("user", {"text": message, "thinking": actual_thinking})
+            generation_started_at = session.generation_started_at
+        session.emit("user", {
+            "text": message,
+            "thinking": actual_thinking,
+            "provider_id": selected_provider,
+            "model_id": selected_model,
+            "context_limit": context_limit,
+            "session_title": session.title,
+        })
         clean_message = redact_text(message.strip())[:20_000]
         if not session.copilot.mcp_native:
             session.operator_messages.append(clean_message)
@@ -587,6 +745,7 @@ class WebAIService:
             "text": "OpenCode начинает обработку",
             "thinking": actual_thinking,
             "thinking_reason": thinking_reason,
+            "generation_started_at": generation_started_at,
         })
 
         def worker() -> None:
@@ -597,9 +756,19 @@ class WebAIService:
                 if not clean or clean == session.last_progress:
                     return
                 session.last_progress = clean
-                session.emit("progress", {"text": clean})
+                session.emit("progress", {
+                    "text": clean,
+                    "generation_started_at": generation_started_at,
+                })
 
             def conversation(event: ConversationEvent) -> None:
+                if event.kind == "assistant_text":
+                    session.emit("assistant_note", {
+                        "text": event.detail,
+                        "part_id": event.call_id,
+                        "thinking": actual_thinking,
+                    })
+                    return
                 session.emit("agent_event", dataclasses.asdict(event))
 
             try:
@@ -615,9 +784,14 @@ class WebAIService:
                     on_event=conversation,
                     draft_context=draft_context,
                 )
+                session.tokens_used = max(0, int(outcome.tokens_used))
+                self._sync_session_title(session)
                 payload = self._outcome_payload(session, outcome)
                 payload["thinking"] = actual_thinking
                 payload["elapsed_seconds"] = outcome.elapsed_seconds or (time.monotonic() - started)
+                payload["tokens_used"] = session.tokens_used
+                payload["context_limit"] = session.context_limit
+                payload["session_title"] = session.title
                 session.emit("assistant", payload)
                 if (
                     refining_draft_id
@@ -654,14 +828,23 @@ class WebAIService:
                         session.cancel_event = None
                         session.refining_draft_id = ""
                         session.active_environment = ""
-                session.emit("idle", {})
+                        session.generation_started_at = 0.0
+                session.emit("idle", {
+                    "tokens_used": session.tokens_used,
+                    "context_limit": session.context_limit,
+                    "session_title": session.title,
+                })
 
         threading.Thread(
             target=worker,
             name=f"web-copilot-{job_id}",
             daemon=True,
         ).start()
-        return {"job_id": job_id, "thinking": actual_thinking}
+        return {
+            "job_id": job_id,
+            "thinking": actual_thinking,
+            "generation_started_at": generation_started_at,
+        }
 
     def cancel(self, session_id: str) -> None:
         session = self._session(session_id)
@@ -687,6 +870,24 @@ class WebAIService:
                 session.active_researcher.cancel()
                 session.active_researcher.close()
             self._drafts.delete_workflow(session.id)
+
+    def rename(self, session_id: str, title: str) -> dict[str, Any]:
+        session = self._session(session_id)
+        clean = " ".join(str(title).split()).strip()
+        if not clean:
+            raise ValueError("Название чата не может быть пустым")
+        if len(clean) > 80:
+            raise ValueError("Название чата не должно превышать 80 символов")
+        if any(ord(character) < 32 for character in clean):
+            raise ValueError("Название чата содержит недопустимые символы")
+        remote_id = session.copilot.session_id
+        client = self.container.opencode_manager.client
+        if remote_id and client is not None:
+            client.update_session_title(remote_id, clean)
+        with session.condition:
+            session.title = clean
+            session.title_custom = True
+        return self.snapshot(session_id, include_events=True)
 
     def semantic_search_forms(
         self,
@@ -1350,15 +1551,79 @@ class WebAIService:
             raise ValueError(f"Thinking variant {requested!r} отсутствует в opencode.json")
         return mapping[clean], "уровень выбран пользователем"
 
-    def _model_variants(self, provider_id: str, model_id: str) -> tuple[str, ...]:
+    def _model_details(
+        self, provider_id: str, model_id: str
+    ) -> tuple[tuple[str, ...], int]:
         client = self.container.opencode_manager.client
         if client is None:
             raise RuntimeError("OpenCode Server не подключён")
         catalog = client.configured_model_catalog(agent_name="autodeploy-copilot")
         for item in catalog.models:
             if item.provider_id == provider_id and item.model_id == model_id:
-                return tuple(item.variants)
+                return tuple(item.variants), max(0, int(item.context_limit))
         raise ValueError("Выбранная модель отсутствует в opencode.json")
+
+    @staticmethod
+    def _short_title(value: Any) -> str:
+        """Build a stable two-to-five word fallback without storing the full prompt."""
+        clean = " ".join(redact_text(str(value or "")).split()).strip()
+        if not clean:
+            return "Новый диалог"
+        tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/+-]*", clean)
+        stop_words = {
+            "а", "без", "бы", "в", "вы", "для", "давай", "же", "и", "или",
+            "как", "ли", "мне", "можешь", "мы", "на", "надо", "не", "нужно",
+            "о", "по", "пожалуйста", "про", "с", "так", "такое", "такой", "такую",
+            "там", "то", "только", "ты", "у", "хочу", "чтобы", "это", "эту", "я",
+            "a", "an", "and", "can", "could", "for", "from", "i", "in", "is",
+            "it", "of", "on", "please", "that", "the", "this", "to", "with", "you",
+        }
+        meaningful = [
+            token for token in tokens
+            if token.casefold() not in stop_words and len(token) > 1
+        ]
+        selected = (meaningful or tokens)[:5]
+        title = " ".join(selected).strip(" .,:;!?—-")[:60].strip()
+        if not title:
+            return "Новый диалог"
+        return title[0].upper() + title[1:]
+
+    @staticmethod
+    def _usable_opencode_title(value: Any) -> str:
+        title = " ".join(str(value or "").split()).strip()
+        if not title:
+            return ""
+        lowered = title.casefold()
+        if lowered == "gravitee autodeploy unified copilot":
+            return ""
+        if re.match(r"^(new|child) session(?:\s+-|$)", lowered):
+            return ""
+        return title
+
+    def _sync_session_title(self, session: WebCopilotSession) -> None:
+        """Mirror OpenCode's generated title, or persist our concise fallback."""
+        remote_id = session.copilot.session_id
+        client = self.container.opencode_manager.client
+        if not remote_id or client is None:
+            return
+        try:
+            if session.title_custom:
+                client.update_session_title(remote_id, session.title)
+                return
+            remote = client.get_session(
+                remote_id, timeout=min(5.0, max(0.5, client.timeout))
+            )
+            remote_title = self._usable_opencode_title(remote.get("title"))
+            if remote_title:
+                session.title = remote_title[:80]
+            else:
+                client.update_session_title(remote_id, session.title)
+        except Exception:
+            # A title is presentation metadata and must never turn a successful
+            # model response into a failed chat turn.
+            _log.debug(
+                "opencode session title sync failed id=%s", remote_id, exc_info=True
+            )
 
     def _active_workflow(self, workflow_id: str) -> tuple[WebCopilotSession, str]:
         session = self._session(str(workflow_id))

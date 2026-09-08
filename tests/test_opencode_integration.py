@@ -42,6 +42,7 @@ from opencode_integration.client import (
     OpenCodeModelSelection,
     OpenCodeStructuredOutputError,
     build_session_permissions,
+    opencode_context_tokens,
     opencode_message_duration,
     opencode_text_generation_duration,
 )
@@ -477,6 +478,7 @@ class _CatalogClient(OpenCodeClient):
                         "Qwen3.8-27B-FP8": {
                             "id": "Qwen3.8-27B-FP8",
                             "name": "Qwen 3.8 27B",
+                            "limit": {"context": 131072},
                             "variants": {"high": {}, "xhigh": {}},
                         },
                         "team/model-v1": {
@@ -551,6 +553,26 @@ class OpenCodeContractTests(unittest.TestCase):
             OpenCodeModelSelection("corp", "Qwen3.8-27B-FP8"),
         )
         self.assertEqual(len(catalog.models), 2)
+        self.assertEqual(catalog.models[0].context_limit, 131072)
+
+    def test_context_tokens_use_total_or_component_fallback(self) -> None:
+        self.assertEqual(opencode_context_tokens({"tokens": {"total": 123}}), 123)
+        self.assertEqual(opencode_context_tokens({
+            "tokens": {
+                "input": 100,
+                "output": 20,
+                "reasoning": 3,
+                "cache": {"read": 10, "write": 2},
+            },
+        }), 135)
+
+    def test_session_title_is_updated_through_patch(self) -> None:
+        client = _RecordingClient()
+        client.update_session_title("ses_contract", "Короткий чат")
+        self.assertEqual(
+            client.requests,
+            [("PATCH", "/session/ses_contract", {"title": "Короткий чат"})],
+        )
 
     def test_agent_model_and_thinking_override_global_default(self) -> None:
         catalog = _CatalogClient(
@@ -2370,6 +2392,39 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(tool_events[-1].call_id, "part_1")
         self.assertEqual(tool_events[-1].status, "completed")
         self.assertNotIn("running", tool_events[-1].title)
+
+    def test_text_before_a_tool_is_emitted_as_intermediate_assistant_message(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events: list[ConversationEvent] = []
+        copilot._on_event = events.append
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "text_1",
+                    "type": "text",
+                    "text": "Получил схему. Теперь ищу API.",
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "tool_1",
+                    "type": "tool",
+                    "tool": "gravitee_repo_get_api",
+                    "state": {"status": "running", "input": {"id": "api-1"}},
+                },
+            },
+        })
+
+        self.assertEqual([event.kind for event in events], ["assistant_text", "tool"])
+        self.assertEqual(events[0].detail, "Получил схему. Теперь ищу API.")
+        self.assertEqual(events[0].call_id, "text_1")
 
     def test_copilot_uses_exact_repository_profile(self) -> None:
         payload = _copilot_payload("repository_search")

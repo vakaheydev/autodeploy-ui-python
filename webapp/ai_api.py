@@ -9,7 +9,13 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import Field
 
-from webapp.models import ChatMessageRequest, ChatSessionRequest, PermissionReplyRequest, StrictModel
+from webapp.models import (
+    ChatMessageRequest,
+    ChatSessionRequest,
+    ChatSessionUpdateRequest,
+    PermissionReplyRequest,
+    StrictModel,
+)
 
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
@@ -60,6 +66,16 @@ def list_sessions(request: Request):
 def session(session_id: str, request: Request):
     try:
         return service(request).snapshot(session_id, include_events=True)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.patch("/sessions/{session_id}")
+def rename_session(
+    session_id: str, body: ChatSessionUpdateRequest, request: Request
+):
+    try:
+        return service(request).rename(session_id, body.title)
     except Exception as exc:
         translate(exc)
 

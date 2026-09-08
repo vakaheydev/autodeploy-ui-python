@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collapseToolEvents, isReconnectNotice, waitingLabel } from '../components/Copilot'
+import { collapseToolEvents, formatTokenCount, isReconnectNotice, waitingLabel } from '../components/Copilot'
 
 describe('Copilot event presentation', () => {
   it('replaces a running tool event with its completed details', () => {
@@ -30,5 +30,9 @@ describe('Copilot event presentation', () => {
       timestamp: 1,
       payload: { kind: 'warning', title: 'Важное предупреждение' },
     })).toBe(false)
+  })
+
+  it('formats the context counter as used and maximum tokens', () => {
+    expect(formatTokenCount(131072)).toBe(new Intl.NumberFormat('ru-RU').format(131072))
   })
 })

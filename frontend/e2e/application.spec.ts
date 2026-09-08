@@ -138,7 +138,7 @@ test('uses dark surfaces and high-contrast form labels in the dark theme', async
     body: JSON.stringify({ items: [] }),
   }))
   await page.goto('/forms/api.create')
-  await page.getByRole('button', { name: 'Включить тёмную тему' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 
   const input = page.getByPlaceholder('Введите название АПИ')
   const label = page.locator('label[for="name"]')
@@ -161,8 +161,9 @@ test('filters the catalog by Python field keywords and switches theme', async ({
   await page.getByRole('textbox', { name: 'Поиск форм' }).fill('Контекстный путь')
   await expect(page.getByRole('link', { name: /Создание АПИ/ })).toBeVisible()
   await expect(page.getByText(/найдено/)).toBeVisible()
-  await page.getByRole('button', { name: 'Включить тёмную тему' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.getByRole('button', { name: 'Включить светлую тему' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.getByRole('link', { name: /Настройки/ }).click()
   await expect(page.getByRole('heading', { name: 'Настройки' })).toBeVisible()
   await page.getByRole('button', { name: /Общие/ }).click()

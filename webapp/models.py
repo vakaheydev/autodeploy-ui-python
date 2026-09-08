@@ -90,6 +90,10 @@ class ChatSessionRequest(StrictModel):
     environment: str = Field(default="test_int", min_length=1, max_length=80)
 
 
+class ChatSessionUpdateRequest(StrictModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
 class ChatMessageRequest(StrictModel):
     message: str = Field(min_length=1, max_length=20_000)
     environment: str = Field(min_length=1, max_length=80)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -164,3 +165,75 @@ def test_restored_chat_rebuilds_permanent_draft_link_from_mcp_result() -> None:
     assistant = next(event for event in events if event.kind == "assistant")
     assert assistant.payload["selected_form_id"] == "api.create"
     assert assistant.payload["draft_id"] == "persistent-draft"
+
+
+def test_persisted_history_keeps_model_notes_between_tool_calls() -> None:
+    events = WebAIService._history_from_opencode([
+        {
+            "info": {"role": "user", "variant": "none", "time": {"created": 1_000}},
+            "parts": [{
+                "type": "text",
+                "text": "BEGIN_OPERATOR_REQUEST\n\"Скопируй API\"\nEND_OPERATOR_REQUEST",
+            }],
+        },
+        {
+            "info": {
+                "role": "assistant",
+                "variant": "none",
+                "tokens": {"total": 321},
+                "time": {"created": 1_100, "completed": 5_100},
+            },
+            "parts": [
+                {"id": "text-1", "type": "text", "text": "Сначала получу схему формы."},
+                {"id": "tool-1", "type": "tool", "tool": "get_form_schema", "state": {"status": "completed", "input": {}, "output": {"ok": True}}},
+                {"id": "text-2", "type": "text", "text": "Теперь читаю исходный API."},
+                {"id": "tool-2", "type": "tool", "tool": "get_api", "state": {"status": "completed", "input": {}, "output": {"id": "api"}}},
+                {"id": "text-3", "type": "text", "text": "Черновик готов."},
+            ],
+        },
+    ])
+
+    assert [event.kind for event in events] == [
+        "system", "user", "assistant_note", "agent_event",
+        "assistant_note", "agent_event", "assistant",
+    ]
+    assert events[2].payload["text"] == "Сначала получу схему формы."
+    assert events[4].payload["text"] == "Теперь читаю исходный API."
+    assert events[-1].payload["text"] == "Черновик готов."
+    assert events[-1].payload["tokens_used"] == 321
+
+
+def test_short_title_does_not_copy_the_whole_operator_question() -> None:
+    assert WebAIService._short_title(
+        "А ты можешь, пожалуйста, создать такую же API, только с новым путём?"
+    ) == "Создать API новым путём"
+
+
+def test_manual_chat_title_is_persisted_in_opencode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.updated: tuple[str, str] | None = None
+
+        def update_session_title(self, session_id: str, title: str) -> None:
+            self.updated = session_id, title
+
+    client = Client()
+    service = WebAIService(SimpleNamespace(
+        opencode_manager=SimpleNamespace(client=client),
+    ))
+    session = SimpleNamespace(
+        title="Старое название",
+        title_custom=False,
+        copilot=SimpleNamespace(session_id="ses-1"),
+        condition=threading.Condition(),
+    )
+    service._sessions["chat-1"] = session
+    monkeypatch.setattr(service, "snapshot", lambda *_args, **_kwargs: {"title": session.title})
+
+    result = service.rename("chat-1", "  Новый   короткий чат  ")
+
+    assert result == {"title": "Новый короткий чат"}
+    assert session.title_custom is True
+    assert client.updated == ("ses-1", "Новый короткий чат")

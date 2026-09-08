@@ -101,6 +101,7 @@ class OpenCodeModel:
     provider_name: str
     model_name: str
     variants: tuple[str, ...]
+    context_limit: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,40 @@ def opencode_text_generation_duration(
         total_ms += float(ended) - float(started)
         found = True
     return total_ms / 1000.0 if found else None
+
+
+def _positive_integer(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if not math.isfinite(float(value)) or value <= 0:
+        return 0
+    return int(value)
+
+
+def opencode_context_tokens(info: Mapping[str, Any]) -> int:
+    """Return the context footprint reported for one assistant message.
+
+    OpenCode 1.18.18 exposes ``tokens.total`` when the provider supplies it.
+    Older/custom providers may omit that field, so the component sum is used
+    as a conservative fallback.  This is deliberately per-message usage, not
+    the lifetime session counters, because only the former is comparable with
+    a model context-window limit.
+    """
+    tokens = info.get("tokens")
+    if not isinstance(tokens, Mapping):
+        return 0
+
+    total = _positive_integer(tokens.get("total"))
+    if total:
+        return total
+    cache = tokens.get("cache") if isinstance(tokens.get("cache"), Mapping) else {}
+    return sum((
+        _positive_integer(tokens.get("input")),
+        _positive_integer(tokens.get("output")),
+        _positive_integer(tokens.get("reasoning")),
+        _positive_integer(cache.get("read")),
+        _positive_integer(cache.get("write")),
+    ))
 
 
 def _unwrap_data(value: Any) -> Any:
@@ -511,6 +546,11 @@ class OpenCodeClient:
                     model_name=str(model.get("name") or model_id).strip()[:200]
                     or model_id,
                     variants=variants,
+                    context_limit=_positive_integer(
+                        (model.get("limit") or {}).get("context")
+                        if isinstance(model.get("limit"), Mapping)
+                        else 0
+                    ),
                 ))
         _log.info(
             "configured model catalog loaded providers=%d models=%d variants=%d",
@@ -564,7 +604,7 @@ class OpenCodeClient:
 
     def create_session(
         self,
-        title: str,
+        title: str = "",
         *,
         agent: str = "",
         provider_id: str = "",
@@ -584,7 +624,6 @@ class OpenCodeClient:
                 "Для явного выбора thinking нужны provider ID и model ID"
             )
         body: Dict[str, Any] = {
-            "title": title[:200],
             "permission": build_session_permissions(
                 mcp_names,
                 mcp_tool_allowlist,
@@ -592,6 +631,8 @@ class OpenCodeClient:
             ),
             "metadata": dict(metadata or {}),
         }
+        if title.strip():
+            body["title"] = title.strip()[:200]
         if agent:
             body["agent"] = agent
         if provider_id and model_id:
@@ -614,6 +655,29 @@ class OpenCodeClient:
             timeout=min(5.0, max(0.5, self.timeout)),
         )
         _log.info("session deleted id=%s", session_id)
+
+    def get_session(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        payload = _unwrap_data(self._request(
+            "GET",
+            f"/session/{urllib.parse.quote(session_id, safe='')}",
+            timeout=timeout,
+        ))
+        if not isinstance(payload, dict):
+            raise OpenCodeError("Некорректный ответ OpenCode session")
+        return dict(payload)
+
+    def update_session_title(self, session_id: str, title: str) -> None:
+        clean = str(title).strip()
+        if not clean:
+            raise ValueError("Название OpenCode session не может быть пустым")
+        self._request(
+            "PATCH",
+            f"/session/{urllib.parse.quote(session_id, safe='')}",
+            {"title": clean[:200]},
+        )
+        _log.info("session title updated id=%s", session_id)
 
     def list_sessions(self, timeout: Optional[float] = None) -> list[Dict[str, Any]]:
         payload = _unwrap_data(self._request("GET", "/session", timeout=timeout))

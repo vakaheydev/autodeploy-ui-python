@@ -22,6 +22,7 @@ from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeClient,
     OpenCodeError,
+    opencode_context_tokens,
     opencode_message_duration,
     opencode_text_generation_duration,
 )
@@ -128,6 +129,7 @@ class CopilotOutcome:
     elapsed_seconds: float = 0.0
     opencode_seconds: Optional[float] = None
     generation_seconds: Optional[float] = None
+    tokens_used: int = 0
 
 
 def detect_ticket_reference(message: str) -> Optional[str]:
@@ -454,6 +456,7 @@ class UnifiedCopilot:
         self._on_session: Callable[[Optional[str]], None] = lambda _session: None
         self._part_states: dict[str, str] = {}
         self._part_started_at: dict[str, float] = {}
+        self._pending_text_parts: dict[str, str] = {}
         self._permission_ids: set[str] = set()
         self._last_session_status_signature = ""
         self._event_lock = threading.Lock()
@@ -517,6 +520,7 @@ class UnifiedCopilot:
         self._current_environment = ""
         self._part_states.clear()
         self._part_started_at.clear()
+        self._pending_text_parts.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
         self._on_session(None)
@@ -551,17 +555,20 @@ class UnifiedCopilot:
             self._model_id = model_id
             self._variant = variant
             self._last_session_status_signature = ""
+            self._discard_pending_text_parts()
             started = time.monotonic()
             opencode_durations: list[float] = []
             generation_seconds: Optional[float] = None
+            context_tokens = 0
 
             def observe_response(response: Mapping[str, Any]) -> None:
-                nonlocal generation_seconds
+                nonlocal generation_seconds, context_tokens
                 info = response.get("info")
                 if isinstance(info, Mapping):
                     duration = opencode_message_duration(info)
                     if duration is not None:
                         opencode_durations.append(duration)
+                    context_tokens = opencode_context_tokens(info)
                 raw_parts = response.get("parts")
                 if isinstance(raw_parts, (list, tuple)):
                     generation_seconds = opencode_text_generation_duration(
@@ -609,6 +616,7 @@ class UnifiedCopilot:
                     on_event=self._handle_raw_event,
                 )
                 answer = message_result.text.strip()
+                self._discard_pending_text_parts()
                 if not answer:
                     raise OpenCodeError("OpenCode вернул пустой ответ")
                 outcome = CopilotOutcome(
@@ -628,6 +636,7 @@ class UnifiedCopilot:
                     generation_seconds=opencode_text_generation_duration(
                         message_result.parts
                     ),
+                    tokens_used=opencode_context_tokens(message_result.info),
                 )
                 _log.info(
                     "mcp-native copilot success session=%s ticket=%s duration=%.2fs",
@@ -651,6 +660,7 @@ class UnifiedCopilot:
                     on_event=self._handle_raw_event,
                 )
                 answer = message_result.text.strip()
+                self._discard_pending_text_parts()
                 if not answer:
                     raise OpenCodeError("OpenCode вернул пустой ответ")
                 outcome = CopilotOutcome(
@@ -670,6 +680,7 @@ class UnifiedCopilot:
                     generation_seconds=opencode_text_generation_duration(
                         message_result.parts
                     ),
+                    tokens_used=opencode_context_tokens(message_result.info),
                 )
                 _log.info(
                     "copilot conversation success session=%s duration=%.2fs",
@@ -696,6 +707,7 @@ class UnifiedCopilot:
                 on_event=self._handle_raw_event,
                 on_response=observe_response,
             )
+            self._discard_pending_text_parts()
             notify("Проверяю ответ помощника Python-валидатором…")
             outcome = validate_copilot_output(
                 structured,
@@ -728,6 +740,7 @@ class UnifiedCopilot:
                 elapsed_seconds=time.monotonic() - started,
                 opencode_seconds=(sum(opencode_durations) if opencode_durations else None),
                 generation_seconds=generation_seconds,
+                tokens_used=context_tokens,
             )
             _log.info(
                 "copilot success session=%s intent=%s ticket=%s repository_items=%d "
@@ -785,8 +798,11 @@ class UnifiedCopilot:
             name: tools for name, tools in self._trusted_mcp_tools.items()
             if name in mcp_names
         })
+        # Omitting a title lets OpenCode generate its own concise session name
+        # from the first real operator turn.  AutoDeploy reads that title back
+        # and still allows the operator to override it explicitly.
         self._session_id = self._client.create_session(
-            "Gravitee AutoDeploy unified copilot",
+            "",
             agent=AUTODEPLOY_COPILOT_AGENT,
             provider_id=self._provider_id,
             model_id=self._model_id,
@@ -941,6 +957,7 @@ class UnifiedCopilot:
         self._current_environment = ""
         self._part_states.clear()
         self._part_started_at.clear()
+        self._pending_text_parts.clear()
         self._permission_ids.clear()
         self._last_session_status_signature = ""
         self._on_session(None)
@@ -1004,8 +1021,17 @@ class UnifiedCopilot:
             return
         if event_type == "message.part.updated":
             part = values.get("part")
-            if not isinstance(part, dict) or part.get("type") != "tool":
+            if not isinstance(part, dict):
                 return
+            if part.get("type") == "text":
+                self._remember_text_part(part, values.get("delta"))
+                return
+            if part.get("type") != "tool":
+                return
+            # A tool transition proves that all text received before it is
+            # narration, not the final answer.  Flush it at this exact point so
+            # AutoDeploy mirrors OpenCode Web without duplicating the final text.
+            self._flush_pending_text_parts()
             part_id = str(part.get("id") or part.get("callID") or "")
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
             status = str(state.get("status") or "updated")
@@ -1040,6 +1066,39 @@ class UnifiedCopilot:
                 output_detail=output_detail,
                 duration_seconds=duration,
             ))
+
+    def _remember_text_part(self, part: Mapping[str, Any], delta: Any) -> None:
+        part_id = str(
+            part.get("id")
+            or f"{part.get('messageID', 'message')}:{len(self._pending_text_parts)}"
+        )
+        full_text = part.get("text")
+        with self._event_lock:
+            if isinstance(full_text, str):
+                self._pending_text_parts[part_id] = full_text
+            elif isinstance(delta, str) and delta:
+                self._pending_text_parts[part_id] = (
+                    self._pending_text_parts.get(part_id, "") + delta
+                )
+
+    def _flush_pending_text_parts(self) -> None:
+        with self._event_lock:
+            pending = tuple(self._pending_text_parts.items())
+            self._pending_text_parts.clear()
+        for part_id, value in pending:
+            text = redact_text(value).strip()[:60_000]
+            if text:
+                self._emit(ConversationEvent(
+                    "assistant_text",
+                    "Copilot",
+                    text,
+                    call_id=part_id,
+                    status="completed",
+                ))
+
+    def _discard_pending_text_parts(self) -> None:
+        with self._event_lock:
+            self._pending_text_parts.clear()
 
     def _bounded_diagnostic_data(self, value: Any) -> Any:
         """Очищает диагностический payload и жёстко ограничивает его размер."""

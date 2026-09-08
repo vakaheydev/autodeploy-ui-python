@@ -15,6 +15,7 @@ const catalog = {
 describe('App shell', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    document.documentElement.dataset.theme = 'dark'
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
       let payload: unknown = catalog
@@ -38,12 +39,12 @@ describe('App shell', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled())
   })
 
-  it('switches and persists the dark theme', async () => {
+  it('starts dark and persists a switch to the light theme', async () => {
     const user = userEvent.setup()
     render(<MemoryRouter><App /></MemoryRouter>)
-    await user.click(screen.getByRole('button', { name: 'Включить тёмную тему' }))
-    expect(document.documentElement.dataset.theme).toBe('dark')
-    expect(window.localStorage.getItem('autodeploy.theme')).toBe('dark')
+    await user.click(screen.getByRole('button', { name: 'Включить светлую тему' }))
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(window.localStorage.getItem('autodeploy.theme')).toBe('light')
   })
 
   it('activates the server hook before committing an environment switch', async () => {
