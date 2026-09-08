@@ -11,6 +11,7 @@ from pydantic import Field
 
 from webapp.models import (
     ChatMessageRequest,
+    ChatReferenceSearchRequest,
     ChatSessionRequest,
     ChatSessionUpdateRequest,
     PermissionReplyRequest,
@@ -47,6 +48,22 @@ def translate(exc: Exception):
     if isinstance(exc, (ValueError, RuntimeError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     raise exc
+
+
+@router.post("/reference-mentions/search")
+def search_reference_mentions(
+    body: ChatReferenceSearchRequest,
+    request: Request,
+):
+    """Search the current environment's existing cache without refreshing it."""
+    try:
+        return service(request).search_reference_mentions(
+            environment=body.environment,
+            query=body.query,
+            limit=body.limit,
+        )
+    except Exception as exc:
+        translate(exc)
 
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -97,6 +114,7 @@ def message(session_id: str, body: ChatMessageRequest, request: Request):
             provider_id=body.provider_id,
             model_id=body.model_id,
             thinking=body.thinking,
+            mentions=[item.model_dump() for item in body.mentions],
         )
     except Exception as exc:
         translate(exc)

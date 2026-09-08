@@ -81,6 +81,36 @@ _CASUAL_MESSAGE_RE = re.compile(
     r"спасибо|благодарю|thanks|thank\s+you"
     r")\s*[!?.]*\s*$"
 )
+_HIDDEN_REASONING_BLOCK_RE = re.compile(
+    r"(?is)<(?:think|reasoning)>.*?</(?:think|reasoning)>"
+)
+_OPEN_REASONING_TAIL_RE = re.compile(r"(?is)<(?:think|reasoning)>.*$")
+
+
+def _assistant_text_part_allowed(part: Mapping[str, Any]) -> bool:
+    if part.get("type") != "text" or part.get("ignored") is True:
+        return False
+    metadata = part.get("metadata")
+    if isinstance(metadata, Mapping):
+        channel = str(
+            metadata.get("channel")
+            or metadata.get("type")
+            or metadata.get("kind")
+            or ""
+        ).casefold()
+        if channel in {"analysis", "reasoning", "thinking", "thought"}:
+            return False
+    return True
+
+
+def visible_assistant_text(part: Mapping[str, Any]) -> str:
+    """Return displayable model narration, never OpenCode reasoning parts."""
+    if not _assistant_text_part_allowed(part):
+        return ""
+    text = str(part.get("text") or "")
+    text = _HIDDEN_REASONING_BLOCK_RE.sub("", text)
+    text = _OPEN_REASONING_TAIL_RE.sub("", text)
+    return text.strip()
 
 
 class CopilotValidationError(ValueError):
@@ -545,6 +575,7 @@ class UnifiedCopilot:
         on_event: Optional[Callable[[ConversationEvent], None]] = None,
         on_session: Optional[Callable[[Optional[str]], None]] = None,
         draft_context: Any = None,
+        operator_references: Any = None,
     ) -> CopilotOutcome:
         with self._operation_lock:
             text = redact_text(str(message).strip())
@@ -611,6 +642,7 @@ class UnifiedCopilot:
                         operator_message=text,
                         diagnostic_data=self._bounded_diagnostic_data(diagnostic_data),
                         draft_context=draft_context,
+                        operator_references=operator_references,
                     ),
                     system=MCP_COPILOT_SYSTEM_RULES,
                     agent=AUTODEPLOY_COPILOT_AGENT,
@@ -620,7 +652,10 @@ class UnifiedCopilot:
                     cancel_event=cancel_event,
                     on_event=self._handle_raw_event,
                 )
-                answer = message_result.text.strip()
+                answer = visible_assistant_text({
+                    "type": "text",
+                    "text": message_result.text,
+                })
                 self._discard_pending_text_parts()
                 if not answer:
                     raise OpenCodeError("OpenCode вернул пустой ответ")
@@ -655,7 +690,10 @@ class UnifiedCopilot:
                 notify("OpenCode готовит ответ…")
                 message_result = self._client.send_chat_message(
                     session_id=self._require_session(),
-                    prompt=build_copilot_conversation_prompt(text),
+                    prompt=build_copilot_conversation_prompt(
+                        text,
+                        operator_references=operator_references,
+                    ),
                     system=COPILOT_SYSTEM_RULES,
                     agent=AUTODEPLOY_COPILOT_AGENT,
                     provider_id=provider_id,
@@ -664,7 +702,10 @@ class UnifiedCopilot:
                     cancel_event=cancel_event,
                     on_event=self._handle_raw_event,
                 )
-                answer = message_result.text.strip()
+                answer = visible_assistant_text({
+                    "type": "text",
+                    "text": message_result.text,
+                })
                 self._discard_pending_text_parts()
                 if not answer:
                     raise OpenCodeError("OpenCode вернул пустой ответ")
@@ -700,6 +741,7 @@ class UnifiedCopilot:
                 prompt=build_copilot_prompt(
                     operator_message=text,
                     diagnostic_data=self._bounded_diagnostic_data(diagnostic_data),
+                    operator_references=operator_references,
                 ),
                 system=COPILOT_SYSTEM_RULES,
                 schema=build_copilot_schema(self._form_ids),
@@ -1082,6 +1124,10 @@ class UnifiedCopilot:
             part.get("id")
             or f"{part.get('messageID', 'message')}:{len(self._pending_text_parts)}"
         )
+        if not _assistant_text_part_allowed(part):
+            with self._event_lock:
+                self._pending_text_parts.pop(part_id, None)
+            return
         full_text = part.get("text")
         with self._event_lock:
             if isinstance(full_text, str):
@@ -1096,7 +1142,8 @@ class UnifiedCopilot:
             pending = tuple(self._pending_text_parts.items())
             self._pending_text_parts.clear()
         for part_id, value in pending:
-            text = redact_text(value).strip()[:60_000]
+            text = visible_assistant_text({"type": "text", "text": value})
+            text = redact_text(text).strip()[:60_000]
             if text:
                 self._emit(ConversationEvent(
                     "assistant_text",

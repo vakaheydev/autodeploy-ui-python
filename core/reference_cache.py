@@ -12,11 +12,22 @@ import os
 import stat
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 _CACHE_DIR = Path(__file__).parent.parent / "cached"
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CachedReferenceEntry:
+    """Immutable cache snapshot used by strictly cache-only readers."""
+
+    resource: str
+    environment: str
+    timestamp: float
+    data: tuple[Mapping[str, object], ...]
 
 
 class ReferenceCache:
@@ -31,6 +42,7 @@ class ReferenceCache:
         # (resource, environment) → (timestamp, data)
         self._store: Dict[Tuple[str, str], Tuple[float, List[Dict]]] = {}
         self._lock = threading.RLock()
+        self._revision = 0
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -63,6 +75,7 @@ class ReferenceCache:
             if infinite or time.time() - ts <= ttl:
                 return data
             del self._store[key]
+            self._revision += 1
 
         # 2. Пробуем загрузить из файла
         file_entry = self._load_file(resource, environment)
@@ -73,6 +86,7 @@ class ReferenceCache:
                 return data
             # Файл устарел — удаляем
             self._delete_file(resource, environment)
+            self._revision += 1
 
         return None
 
@@ -97,12 +111,58 @@ class ReferenceCache:
 
             return None
 
+    @property
+    def revision(self) -> int:
+        """Monotonic process-local revision for derived read-only indexes."""
+        with self._lock:
+            return self._revision
+
+    def read_entries(self, environment: str) -> List[CachedReferenceEntry]:
+        """Return every cached entry for ``environment`` without applying TTL.
+
+        This is deliberately different from :meth:`get`: it never refreshes,
+        invalidates or deletes an expired entry.  It is used by UI affordances
+        that must stay fast and must not cause an unexpected corporate HTTP
+        request, such as ``@`` references in the Copilot composer.
+        """
+        clean_environment = str(environment)
+        safe_environment = self._safe_component(clean_environment)
+        suffix = f"__{safe_environment}"
+        with self._lock:
+            snapshots: dict[str, CachedReferenceEntry] = {}
+            seen_paths: set[Path] = set()
+
+            for (resource, entry_environment), (timestamp, data) in self._store.items():
+                if entry_environment != clean_environment:
+                    continue
+                path = self._cache_path(resource, entry_environment)
+                seen_paths.add(path)
+                snapshots[resource] = self._entry(
+                    resource, entry_environment, timestamp, data
+                )
+
+            for path in sorted(self._cache_dir.glob(f"*{suffix}.json")):
+                if path in seen_paths:
+                    continue
+                file_entry = self._load_path(path)
+                if file_entry is None:
+                    continue
+                timestamp, data = file_entry
+                resource = path.stem[:-len(suffix)]
+                snapshots.setdefault(
+                    resource,
+                    self._entry(resource, clean_environment, timestamp, data),
+                )
+
+            return sorted(snapshots.values(), key=lambda item: item.resource)
+
     def set(self, resource: str, environment: str, data: List[Dict]) -> None:
         """Сохраняет данные в память и на диск."""
         with self._lock:
             ts = time.time()
             self._store[(resource, environment)] = (ts, data)
             self._save_file(resource, environment, ts, data)
+            self._revision += 1
 
     def invalidate(
         self, resource: Optional[str] = None, environment: Optional[str] = None
@@ -123,6 +183,7 @@ class ReferenceCache:
             self._store.clear()
             for f in self._cache_dir.glob("*.json"):
                 f.unlink(missing_ok=True)
+            self._revision += 1
             return
 
         keys = [
@@ -137,6 +198,7 @@ class ReferenceCache:
         else:
             for f in self._cache_dir.glob(f"{resource}__*.json"):
                 f.unlink(missing_ok=True)
+        self._revision += 1
 
     # ------------------------------------------------------------------
     # Работа с файлами
@@ -145,14 +207,35 @@ class ReferenceCache:
     def _cache_path(self, resource: str, environment: str) -> Path:
         # Двойное подчёркивание как разделитель — resource и environment
         # не содержат __ в штатных именах
-        safe_res = resource.replace("/", "_").replace("\\", "_")
-        safe_env = environment.replace("/", "_").replace("\\", "_")
+        safe_res = self._safe_component(resource)
+        safe_env = self._safe_component(environment)
         return self._cache_dir / f"{safe_res}__{safe_env}.json"
+
+    @staticmethod
+    def _safe_component(value: str) -> str:
+        return str(value).replace("/", "_").replace("\\", "_")
+
+    @staticmethod
+    def _entry(
+        resource: str,
+        environment: str,
+        timestamp: float,
+        data: List[Dict],
+    ) -> CachedReferenceEntry:
+        return CachedReferenceEntry(
+            resource=resource,
+            environment=environment,
+            timestamp=float(timestamp),
+            data=tuple(dict(item) for item in data if isinstance(item, Mapping)),
+        )
 
     def _load_file(
         self, resource: str, environment: str
     ) -> Optional[Tuple[float, List[Dict]]]:
         path = self._cache_path(resource, environment)
+        return self._load_path(path)
+
+    def _load_path(self, path: Path) -> Optional[Tuple[float, List[Dict]]]:
         if not path.exists():
             return None
         try:

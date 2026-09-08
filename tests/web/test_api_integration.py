@@ -137,6 +137,32 @@ def test_environment_activation_contract(server: str) -> None:
 
 
 @pytest.mark.integration
+def test_chat_reference_search_is_explicitly_cache_only(server: str) -> None:
+    status, _, content = request(
+        server,
+        "/api/v1/ai/reference-mentions/search",
+        method="POST",
+        body={"environment": "test_int", "query": "payments", "limit": 20},
+    )
+    payload = json.loads(content)
+    assert status == 200
+    assert payload["cache_only"] is True
+    assert payload["environment"] == "test_int"
+
+    status, _, _ = request(
+        server,
+        "/api/v1/ai/reference-mentions/search",
+        method="POST",
+        body={
+            "environment": "test_int",
+            "query": "payments",
+            "refresh": True,
+        },
+    )
+    assert status == 422, "the mention API must not expose a refresh switch"
+
+
+@pytest.mark.integration
 def test_form_validation_contract(server: str) -> None:
     status, _, content = request(server, "/api/v1/forms/api.create?environment=test_int")
     document = json.loads(content)

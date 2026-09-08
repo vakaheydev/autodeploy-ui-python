@@ -127,4 +127,64 @@ describe('Copilot sessions', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/v1/ai/sessions/chat-1', expect.objectContaining({ method: 'PATCH' })))
     expect(await screen.findByRole('button', { name: 'Сессия Copilot' })).toHaveTextContent('Копирование API')
   })
+
+  it('attaches a cache-only reference through @ and sends its authoritative pointer', async () => {
+    window.localStorage.setItem('autodeploy.ai.session', 'chat-1')
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: vi.fn(), configurable: true })
+    vi.stubGlobal('EventSource', EventSourceStub)
+    let sentBody: Record<string, unknown> | null = null
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/reference-mentions/search')) {
+        return new Response(JSON.stringify({
+          cache_only: true,
+          environment: 'test_int',
+          truncated: false,
+          items: [{
+            catalog_id: 'aabbcc',
+            cache_resource: 'gravitee_apis',
+            catalog_label: 'API',
+            resource: 'gravitee_apis',
+            identifier: 'api-42',
+            label: 'Payments',
+            search_fields: [
+              { key: 'context_path', value: '/payments' },
+              { key: 'name', value: 'Payments' },
+            ],
+            cached_at: 100,
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (path.endsWith('/chat-1/messages')) {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({ generation_started_at: Date.now() / 1000 }), { status: 202, headers: { 'content-type': 'application/json' } })
+      }
+      if (path.endsWith('/chat-1')) return new Response(JSON.stringify(snapshot('chat-1')), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/opencode/models')) return new Response(JSON.stringify({ items: [{ provider_id: 'corp', model_id: 'model', provider_name: 'Corp', model_name: 'Model', variants: ['none'], context_limit: 131072 }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/ai/sessions')) return new Response(JSON.stringify({ items: [{ id: 'chat-1', title: 'Первый диалог', updated_at: 20, busy: false, provider_id: 'corp', model_id: 'model', opencode_session_id: 'ses-1' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    const user = userEvent.setup()
+
+    render(<MemoryRouter><EnvironmentProvider><Copilot /></EnvironmentProvider></MemoryRouter>)
+    const composer = await screen.findByPlaceholderText(/Используйте @/)
+    await user.type(composer, 'Создай копию для @')
+    const picker = await screen.findByRole('dialog', { name: 'Выбор объекта справочника' })
+    await user.type(within(picker).getByPlaceholderText('Поиск по полям справочников…'), 'payments')
+    await user.click(await within(picker).findByRole('option', { name: /Payments/ }))
+
+    expect(composer).toHaveValue('Создай копию для @Payments [ID: api-42] ')
+    await user.click(screen.getByRole('button', { name: 'Отправить' }))
+    await waitFor(() => expect(sentBody).not.toBeNull())
+    expect(sentBody).toMatchObject({
+      environment: 'test_int',
+      message: 'Создай копию для @Payments [ID: api-42]',
+      mentions: [{
+        catalog_id: 'aabbcc',
+        cache_resource: 'gravitee_apis',
+        identifier: 'api-42',
+      }],
+    })
+  })
 })

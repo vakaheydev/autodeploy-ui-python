@@ -7,6 +7,12 @@ import { Bot, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, Penci
 import { useEnvironment } from '../environment'
 import { SearchableSelect } from './SearchableSelect'
 import { Modal } from './Feedback'
+import {
+  ReferenceMentionItem,
+  ReferenceMentionPicker,
+  SelectedReferenceMention,
+  referenceMentionMarker,
+} from './ReferenceMentionPicker'
 
 interface ModelItem { provider_id: string; model_id: string; provider_name: string; model_name: string; variants: string[]; context_limit: number }
 interface ChatEvent { sequence: number; kind: string; timestamp: number; payload: Record<string, unknown> }
@@ -90,7 +96,11 @@ export function Copilot() {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionAnchor, setMentionAnchor] = useState(-1)
+  const [mentions, setMentions] = useState<SelectedReferenceMention[]>([])
   const transcript = useRef<HTMLDivElement>(null)
+  const composer = useRef<HTMLTextAreaElement>(null)
 
   const refreshSessions = async () => {
     const result = await api<{ items: SessionItem[] }>('/api/v1/ai/sessions')
@@ -128,6 +138,12 @@ export function Copilot() {
   }
 
   useEffect(() => { void initialise().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))) }, [])
+
+  useEffect(() => {
+    setMentionOpen(false)
+    setMentionAnchor(-1)
+    setMentions([])
+  }, [environment])
 
   useEffect(() => {
     if (!session) return
@@ -188,7 +204,11 @@ export function Copilot() {
     return collapseToolEvents(filtered)
   }, [events])
 
-  const sendText = async (text: string, attachedTicket: string | null = null) => {
+  const sendText = async (
+    text: string,
+    attachedTicket: string | null = null,
+    attachedMentions: SelectedReferenceMention[] = [],
+  ) => {
     if (!session || !text.trim() || busy) return
     const [providerId, ...modelParts] = modelKey.split('/')
     setBusy(true); setWaitingStartedAt(Date.now()); setWaitingSeconds(0); setError('')
@@ -200,6 +220,11 @@ export function Copilot() {
         provider_id: providerId,
         model_id: modelParts.join('/'),
         thinking,
+        mentions: attachedMentions.map((item) => ({
+          catalog_id: item.catalog_id,
+          cache_resource: item.cache_resource,
+          identifier: item.identifier,
+        })),
       })
       if (started.generation_started_at) setWaitingStartedAt(started.generation_started_at * 1000)
     } catch (reason) {
@@ -213,17 +238,55 @@ export function Copilot() {
     if (!message.trim()) return
     const text = message.trim()
     const attachedTicket = ticketId.trim() || null
+    const attachedMentions = mentions.filter((item) => text.includes(item.marker))
     setMessage('')
     try {
-      await sendText(text, attachedTicket)
+      await sendText(text, attachedTicket, attachedMentions)
       setTicketId(''); setTicketVisible(false)
+      setMentions([]); setMentionOpen(false); setMentionAnchor(-1)
     } catch {
       setMessage(text)
     }
   }
 
+  const changeMessage = (next: string, caret: number | null) => {
+    setMessage(next)
+    setMentions((current) => current.filter((item) => next.includes(item.marker)))
+    const position = caret ?? next.length
+    const typedAt = position > 0 && next[position - 1] === '@'
+      && (position === 1 || /\s/.test(next[position - 2]))
+    if (typedAt) {
+      setMentionAnchor(position - 1)
+      setMentionOpen(true)
+    } else if (mentionOpen && (mentionAnchor < 0 || next[mentionAnchor] !== '@')) {
+      setMentionOpen(false)
+      setMentionAnchor(-1)
+    }
+  }
+
+  const selectMention = (item: ReferenceMentionItem) => {
+    if (mentionAnchor < 0 || message[mentionAnchor] !== '@') return
+    const marker = referenceMentionMarker(item)
+    const next = `${message.slice(0, mentionAnchor)}${marker} ${message.slice(mentionAnchor + 1)}`
+    const selected = { ...item, marker }
+    setMessage(next)
+    setMentions((current) => current.some((value) => (
+      value.catalog_id === selected.catalog_id
+      && value.cache_resource === selected.cache_resource
+      && value.identifier === selected.identifier
+    )) ? current : [...current, selected])
+    setMentionOpen(false)
+    setMentionAnchor(-1)
+    window.setTimeout(() => {
+      const position = mentionAnchor + marker.length + 1
+      composer.current?.focus()
+      composer.current?.setSelectionRange(position, position)
+    }, 0)
+  }
+
   const newChat = async () => {
     setEvents([]); setSession(null); setBusy(false); setWaitingStartedAt(0); setWaitingSeconds(0)
+    setMessage(''); setMentions([]); setMentionOpen(false); setMentionAnchor(-1)
     await initialise(true)
   }
 
@@ -341,7 +404,9 @@ export function Copilot() {
       {error && <div className="chat-error"><X size={16} /><span>{error}</span></div>}
       <form className="chat-composer" onSubmit={(event) => void send(event)}>
         {ticketVisible && <div className="ticket-attachment"><MessageSquareText size={16} /><input value={ticketId} onChange={(event) => setTicketId(event.target.value)} placeholder="Номер заявки, например REQ-12345" autoFocus /><button type="button" className="icon-button" onClick={() => { setTicketVisible(false); setTicketId('') }}><X size={15} /></button></div>}
-        <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Опишите результат, который нужен…" rows={2} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
+        {mentions.length > 0 && <div className="composer-mentions" aria-label="Прикреплённые объекты">{mentions.map((item) => <span key={`${item.catalog_id}:${item.cache_resource}:${item.identifier}`}><b>@{item.label}</b><code>{item.identifier}</code><button type="button" aria-label={`Убрать ${item.label}`} onClick={() => { setMentions((current) => current.filter((value) => value !== item)); setMessage((current) => current.replace(item.marker, '').replace(/ {2,}/g, ' ')) }}><X size={12} /></button></span>)}</div>}
+        <textarea ref={composer} value={message} onChange={(event) => changeMessage(event.target.value, event.target.selectionStart)} placeholder="Опишите результат, который нужен… Используйте @ для ссылки на объект." rows={2} onKeyDown={(event) => { if (event.key === 'Escape' && mentionOpen) { event.preventDefault(); setMentionOpen(false); setMentionAnchor(-1); return } if (event.key === 'Enter' && !event.shiftKey && !mentionOpen) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
+        <ReferenceMentionPicker open={mentionOpen} environment={environment} onSelect={selectMention} onClose={() => { setMentionOpen(false); setMentionAnchor(-1); composer.current?.focus() }} />
         <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><button className="send-button" disabled={!session || busy || !message.trim()} aria-label="Отправить"><Send size={19} /></button></div>
       </form>
       {renameOpen && <Modal title="Переименовать чат" onClose={() => !renamingSession && setRenameOpen(false)} footer={<><button type="button" className="button secondary" disabled={renamingSession} onClick={() => setRenameOpen(false)}>Отмена</button><button type="button" className="button primary" disabled={renamingSession || !renameValue.trim()} onClick={() => void renameChat()}>{renamingSession ? <LoaderCircle className="spin" size={16} /> : <Pencil size={16} />} Сохранить</button></>}><label className="rename-session-field"><span>Короткое название</span><input value={renameValue} maxLength={80} autoFocus onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void renameChat() } }} /></label></Modal>}
@@ -353,7 +418,7 @@ export function Copilot() {
 function ChatEventView({ event, sessionId, busy, onCandidate }: { event: ChatEvent; sessionId: string; busy: boolean; onCandidate: (formId: string) => void }) {
   const payload = event.payload
   if (event.kind === 'system') return <div className="system-event"><Bot size={15} /><span>{String(payload.title ?? '')}</span></div>
-  if (event.kind === 'assistant_note') return <div className="message-row assistant assistant-note"><div className="message-meta"><span>Copilot · ход выполнения</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time><span className="thinking-tag">{String(payload.thinking ?? '—')}</span></div><div className="message-bubble markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{String(payload.text ?? '')}</ReactMarkdown></div></div>
+  if (event.kind === 'assistant_note') return <div className="message-row assistant assistant-note"><div className="message-meta"><span>Copilot · промежуточное сообщение</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-bubble markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{String(payload.text ?? '')}</ReactMarkdown></div></div>
   if (event.kind === 'agent_event') {
     if (payload.kind === 'permission') return <div className="permission-event"><div><strong>{String(payload.title ?? 'Требуется разрешение')}</strong><small>{String(payload.detail ?? '')}</small></div><div><button className="button secondary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: false })}>Отклонить</button><button className="button primary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: true })}>Разрешить один раз</button></div></div>
     if (payload.kind === 'tool' || payload.call_id) {
@@ -371,7 +436,10 @@ function ChatEventView({ event, sessionId, busy, onCandidate }: { event: ChatEve
     }
     return <div className={`tool-event ${payload.kind}`}><span className="tool-gear">⚙</span><strong>{String(payload.title ?? '')}</strong>{payload.detail ? <code>{String(payload.detail)}</code> : null}</div>
   }
-  if (event.kind === 'user') return <div className="message-row user"><div className="message-meta"><span>Вы</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time><span className="thinking-tag">{String(payload.thinking ?? '—')}</span></div><div className="message-bubble">{String(payload.text ?? '')}</div></div>
+  if (event.kind === 'user') {
+    const mentions = Array.isArray(payload.mentions) ? payload.mentions as Array<Record<string, unknown>> : []
+    return <div className="message-row user"><div className="message-meta"><span>Вы</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time><span className="thinking-tag">{String(payload.thinking ?? '—')}</span></div><div className="message-bubble">{String(payload.text ?? '')}{mentions.length > 0 && <span className="message-mentions">{mentions.map((item, index) => <span key={`${String(item.resource)}:${String(item.identifier)}:${index}`} title={String(item.catalog ?? '')}><b>@{String(item.label ?? '')}</b><code>{String(item.identifier ?? '')}</code></span>)}</span>}</div></div>
+  }
   if (event.kind === 'assistant') {
     const candidates = Array.isArray(payload.form_candidates) ? payload.form_candidates as Array<Record<string, unknown>> : []
     const drafts = Array.isArray(payload.drafts) ? payload.drafts as Array<Record<string, unknown>> : []

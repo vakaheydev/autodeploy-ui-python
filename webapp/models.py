@@ -94,6 +94,18 @@ class ChatSessionUpdateRequest(StrictModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class ChatReferenceMention(StrictModel):
+    catalog_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-f0-9]+$")
+    cache_resource: str = Field(min_length=1, max_length=500)
+    identifier: str = Field(min_length=1, max_length=1_000)
+
+
+class ChatReferenceSearchRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    query: str = Field(default="", max_length=500)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
 class ChatMessageRequest(StrictModel):
     message: str = Field(min_length=1, max_length=20_000)
     environment: str = Field(min_length=1, max_length=80)
@@ -101,6 +113,7 @@ class ChatMessageRequest(StrictModel):
     provider_id: str = Field(default="", max_length=200)
     model_id: str = Field(default="", max_length=300)
     thinking: str = Field(default="auto", max_length=100)
+    mentions: List[ChatReferenceMention] = Field(default_factory=list, max_length=20)
 
 
 class PermissionReplyRequest(StrictModel):

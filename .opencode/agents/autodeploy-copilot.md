@@ -66,7 +66,9 @@ Mandatory rules:
     concerns a form; greetings and ordinary conversation need no tool.
 11. SELECT values are scalar IDs and MULTISELECT values are arrays of unique IDs.
     Never use JSON Repository MCP to enumerate a form dictionary. Values already
-    explicit in the operator request do not need repository research.
+    explicit in the operator request do not need repository research. An object
+    attached through an operator @ mention has an authoritative cached reference
+    ID; use it directly and do not search again merely to identify that object.
 12. For a genuinely complex, multi-file missing fact, call
     `autodeploy_research_repository` with a narrow question. Use a direct targeted
     JSON Repository read for a simple lookup. The isolated Researcher returns

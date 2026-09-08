@@ -29,7 +29,12 @@ from config.mcp_profiles import (
 from forms.registry import FormRegistry
 from opencode_integration.agent import ConversationEvent, FormExtractorAgent
 from opencode_integration.client import opencode_context_tokens, opencode_message_duration
-from opencode_integration.copilot import CopilotOutcome, UnifiedCopilot, detect_ticket_reference
+from opencode_integration.copilot import (
+    CopilotOutcome,
+    UnifiedCopilot,
+    detect_ticket_reference,
+    visible_assistant_text,
+)
 from opencode_integration.context_builder import BuiltContext, redact_text
 from opencode_integration.form_search import SemanticFormSearchSession
 from opencode_integration.researcher import RepositoryResearcher
@@ -37,6 +42,7 @@ from opencode_integration.thinking import decide_copilot_thinking, decide_extrac
 from opencode_integration.workflow import ExtractionDirective
 from webapp.ai_drafts import FormDraftStore
 from webapp.form_runtime import form_version
+from webapp.reference_mentions import ReferenceMentionService
 
 
 _log = logging.getLogger("web.ai")
@@ -141,6 +147,7 @@ class WebAIService:
         self._handoffs: dict[str, AIHandoff] = {}
         self._extractions: dict[str, ExtractionJob] = {}
         self._drafts = FormDraftStore(container)
+        self._reference_mentions = ReferenceMentionService(container)
         self._lock = threading.RLock()
         self._session_discovery_at = 0.0
         self._session_discovery_client = 0
@@ -420,7 +427,7 @@ class WebAIService:
             text_indexes = [
                 index
                 for index, (_info, part) in enumerate(flattened)
-                if part.get("type") == "text" and str(part.get("text") or "").strip()
+                if visible_assistant_text(part)
             ]
             tool_indexes = [
                 index
@@ -477,7 +484,7 @@ class WebAIService:
                 )
                 part_type = str(part.get("type") or "")
                 if part_type == "text":
-                    text = str(part.get("text") or "").strip()
+                    text = visible_assistant_text(part)
                     if not text:
                         continue
                     if index in final_text_indexes:
@@ -700,11 +707,13 @@ class WebAIService:
         provider_id: str,
         model_id: str,
         thinking: str,
+        mentions: Sequence[Mapping[str, Any]] = (),
         draft_context: Any = None,
         refining_draft_id: str = "",
     ) -> dict[str, Any]:
         if environment not in ENVIRONMENT_MAP:
             raise ValueError("Неизвестное окружение")
+        resolved_mentions = self._reference_mentions.resolve(environment, mentions)
         session = self._session(session_id)
         with session.condition:
             if session.busy:
@@ -741,6 +750,15 @@ class WebAIService:
             generation_started_at = session.generation_started_at
         session.emit("user", {
             "text": message,
+            "mentions": [
+                {
+                    "catalog": item["catalog"],
+                    "resource": item["resource"],
+                    "identifier": item["identifier"],
+                    "label": item["label"],
+                }
+                for item in resolved_mentions
+            ],
             "thinking": actual_thinking,
             "provider_id": selected_provider,
             "model_id": selected_model,
@@ -797,6 +815,7 @@ class WebAIService:
                     on_progress=progress,
                     on_event=conversation,
                     draft_context=draft_context,
+                    operator_references=resolved_mentions,
                 )
                 session.tokens_used = max(0, int(outcome.tokens_used))
                 self._sync_session_title(session)
@@ -859,6 +878,15 @@ class WebAIService:
             "thinking": actual_thinking,
             "generation_started_at": generation_started_at,
         }
+
+    def search_reference_mentions(
+        self,
+        *,
+        environment: str,
+        query: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return self._reference_mentions.search(environment, query, limit)
 
     def cancel(self, session_id: str) -> None:
         session = self._session(session_id)

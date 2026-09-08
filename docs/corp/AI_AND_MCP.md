@@ -186,6 +186,18 @@ OpenCode хранит persistent transcript. Текст модели перед 
 а текст после последнего tool call — как один финальный ответ. При восстановлении
 сессии порядок собирается заново из OpenCode message parts.
 
+Parts типа `reasoning` и текстовые parts, явно помеченные каналом
+`analysis/reasoning/thinking`, никогда не публикуются в UI и не восстанавливаются
+как сообщения. Это сохраняет обычные промежуточные реплики между tool calls, но
+не раскрывает внутреннее рассуждение модели.
+
+Через `@` оператор может приложить объект зарегистрированного справочника. Picker
+ищет только в уже существующем cache текущего environment, использует
+`ReferenceConfig.search_keys`, не обновляет даже просроченный cache и ничего не
+загружает по сети. Backend повторно разрешает pointer и передаёт Copilot
+authoritative ID в отдельном ограниченном untrusted-блоке; повторный repository
+search только для обнаружения этого же ID не требуется.
+
 `generation_started_at` хранится в Python session snapshot, поэтому browser
 refresh не сбрасывает таймер выполняющегося ответа. Счётчик в header показывает
 context usage последнего assistant message и `limit.context` выбранной модели из

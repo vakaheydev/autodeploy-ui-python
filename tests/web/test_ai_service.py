@@ -203,6 +203,30 @@ def test_persisted_history_keeps_model_notes_between_tool_calls() -> None:
     assert events[-1].payload["tokens_used"] == 321
 
 
+def test_persisted_history_never_restores_reasoning_as_chat_messages() -> None:
+    events = WebAIService._history_from_opencode([{
+        "info": {
+            "role": "assistant",
+            "variant": "xhigh",
+            "time": {"created": 1_000, "completed": 3_000},
+        },
+        "parts": [
+            {"id": "thought", "type": "reasoning", "text": "Внутренняя цепочка."},
+            {"id": "hidden", "type": "text", "text": "Скрытый анализ.", "metadata": {"channel": "analysis"}},
+            {"id": "note", "type": "text", "text": "Проверю форму."},
+            {"id": "tool", "type": "tool", "tool": "get_form", "state": {"status": "completed"}},
+            {"id": "answer", "type": "text", "text": "Готово."},
+        ],
+    }])
+
+    visible_text = [
+        event.payload.get("text")
+        for event in events
+        if event.kind in {"assistant_note", "assistant"}
+    ]
+    assert visible_text == ["Проверю форму.", "Готово."]
+
+
 def test_short_title_does_not_copy_the_whole_operator_question() -> None:
     assert WebAIService._short_title(
         "А ты можешь, пожалуйста, создать такую же API, только с новым путём?"

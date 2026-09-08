@@ -1938,6 +1938,20 @@ class CopilotContractTests(unittest.TestCase):
         self.assertNotIn("BEGIN_UNTRUSTED_ITSM_DATA", prompt)
         self.assertNotIn("BEGIN_UNTRUSTED_ADO_DATA", prompt)
 
+    def test_turn_prompt_marks_operator_reference_id_as_selected_cache_data(self) -> None:
+        prompt = build_copilot_prompt(
+            operator_message="Скопируй @Payments [ID: api-42]",
+            operator_references=[{
+                "identifier": "api-42",
+                "label": "Payments",
+                "search_fields": {"context_path": "/payments"},
+            }],
+        )
+
+        self.assertIn("BEGIN_UNTRUSTED_OPERATOR_SELECTED_REFERENCES", prompt)
+        self.assertIn('"identifier": "api-42"', prompt)
+        self.assertIn("do not call a search tool merely", prompt)
+
     def test_fill_only_accepts_select_and_multiselect_semantic_values(self) -> None:
         payload = _copilot_payload("single_form")
         payload["selected_form_id"] = "other.ingress.enable"
@@ -2425,6 +2439,48 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual([event.kind for event in events], ["assistant_text", "tool"])
         self.assertEqual(events[0].detail, "Получил схему. Теперь ищу API.")
         self.assertEqual(events[0].call_id, "text_1")
+
+    def test_reasoning_parts_are_never_emitted_as_assistant_messages(self) -> None:
+        copilot = UnifiedCopilot(
+            _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
+            _FakeITSM(), _FakeTFS(), forms=_all_forms(),
+        )
+        events: list[ConversationEvent] = []
+        copilot._on_event = events.append
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "reasoning_1",
+                    "type": "reasoning",
+                    "text": "Не показывать оператору.",
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "text_1",
+                    "type": "text",
+                    "text": "Проверю данные.",
+                },
+            },
+        })
+        copilot._handle_raw_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "tool_1",
+                    "type": "tool",
+                    "tool": "get_api",
+                    "state": {"status": "running", "input": {}},
+                },
+            },
+        })
+
+        self.assertEqual([event.kind for event in events], ["assistant_text", "tool"])
+        self.assertEqual(events[0].detail, "Проверю данные.")
 
     def test_copilot_uses_exact_repository_profile(self) -> None:
         payload = _copilot_payload("repository_search")

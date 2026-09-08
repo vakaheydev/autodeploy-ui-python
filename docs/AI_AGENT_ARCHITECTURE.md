@@ -103,6 +103,24 @@ For ordinary conversation Copilot answers without loading the form catalog or
 calling form/repository tools. A request can create more than one draft; the
 chat returns a link for every form and labels the outcome as an execution plan.
 
+## Operator @ references
+
+Typing `@` in the web composer opens a cross-catalog picker for the current
+environment. `POST /api/v1/ai/reference-mentions/search` reads only persistent
+`ReferenceCache` snapshots already produced by form, plugin or global-search
+reference handlers. It never calls a resolver, performs HTTP, refreshes a
+resource or applies TTL; an expired entry remains selectable until an explicit
+application action replaces or invalidates it. Search uses each registered
+`ReferenceConfig.search_keys` in declaration order.
+
+The visible message contains the selected label and identifier. The client also
+sends a narrow catalog/cache/identifier pointer, which Python resolves against
+the cache again before starting OpenCode. The model receives the authoritative
+selected ID plus bounded non-secret label/search fields in a separate untrusted
+data section. It is instructed not to spend a repository call rediscovering the
+same entity. A pointer that disappeared after selection is rejected before the
+turn starts; it is never silently guessed or refreshed.
+
 ## Complex repository flow
 
 ```text
@@ -163,7 +181,9 @@ text emitted before another tool call is published as an `assistant_note` SSE
 event in its original position; the text after the final tool is the single
 final `assistant` event. Restoring a session rebuilds the same interleaved
 timeline from OpenCode message parts instead of grouping all tools before all
-text.
+text. OpenCode `reasoning` parts, ignored text parts and text explicitly marked
+as an analysis/reasoning channel are never published to the browser. This keeps
+intermediate messages visible without exposing model chain-of-thought.
 
 The session snapshot owns `generation_started_at`, so refreshing the browser
 continues the existing elapsed-time counter. The header shows the last assistant
