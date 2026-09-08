@@ -1,0 +1,163 @@
+# Конфигурация и секреты
+
+## Где хранится `.env`
+
+Установленный launcher хранит изменяемые данные вне immutable version:
+
+```text
+<install-root>/
+├── config/.env
+├── data/
+├── logs/
+└── versions/<version>/
+```
+
+Update сохраняет `config/.env`, drafts, history, logs и OpenCode runtime.
+Разработчик может явно задать файл process variable:
+
+```text
+AUTODEPLOY_ENV_FILE=/absolute/path/to/.env
+```
+
+Без override server использует legacy `.env` в project root, если он существует,
+иначе per-user data directory. Process environment имеет приоритет над saved
+`.env`; изменение такого key во frontend не переопределит process-level value
+до изменения способа запуска.
+
+## Corporate template
+
+Не храните заполненный файл в Git. Комментарии и пустой template допустимы:
+
+```dotenv
+# Runtime
+AUTODEPLOY_PORT=8765
+AUTODEPLOY_OPENCODE_AUTO_CONNECT=true
+AUTODEPLOY_OPEN_BROWSER=true
+AUTODEPLOY_MAX_REQUEST_BYTES=2097152
+AUTODEPLOY_MCP_ENABLED=false
+
+# User/corporate secrets
+LOGIN=
+TFS_TOKEN=
+ITSM_LOGIN=
+ITSM_PASSWORD=
+GRAVITEE_TOKEN_TEST_INT=
+GRAVITEE_TOKEN_TEST_EXT=
+GRAVITEE_TOKEN_REGRESS_INT=
+GRAVITEE_TOKEN_REGRESS_EXT=
+GRAVITEE_TOKEN_PROD_INT=
+GRAVITEE_TOKEN_PROD_EXT=
+
+# Optional corporate paths
+GRAVITEE_REPO_PATH=
+CERT_PATH=
+
+# OpenCode connection; provider credentials stay in OpenCode config
+OPENCODE_SERVER_URL=http://127.0.0.1:4096
+OPENCODE_SERVER_USERNAME=opencode
+OPENCODE_SERVER_PASSWORD=
+OPENCODE_CONNECT_TIMEOUT=10
+OPENCODE_STARTUP_TIMEOUT=20
+OPENCODE_REQUEST_TIMEOUT=120
+OPENCODE_PROVIDER_ID=
+OPENCODE_MODEL_ID=
+OPENCODE_ALLOWED_MCP=
+OPENCODE_REPOSITORY_MCP=
+OPENCODE_REPOSITORY_GIT_PULL=true
+
+# Private package composition
+AUTODEPLOY_FORM_REGISTRAR=corp_autodeploy.registrar:register_forms
+AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
+AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp_autodeploy.references:create_handlers
+AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp_autodeploy.search_catalogs:create_search_catalogs
+AUTODEPLOY_ENVIRONMENT_HOOK=corp_autodeploy.environment:create_environment_hook
+
+# Launcher delivery
+AUTODEPLOY_UPDATE_MANIFEST_URL=
+AUTODEPLOY_UPDATE_PROVIDER=
+AUTODEPLOY_UPDATE_TIMEOUT=30
+```
+
+AI context limits и inline-reference limits также доступны на странице
+OpenCode settings. Оставляйте public defaults, пока нет измеренного основания
+для изменения.
+
+## Frontend settings
+
+Страница **Настройки** работает только с whitelist public core. Она:
+
+- группирует runtime, access, OpenCode, extensions и updates;
+- показывает field-local HTTP 422 validation error;
+- подсвечивает изменённые поля;
+- показывает Save/Reset panel только после первого изменения;
+- использует file/directory picker для разрешённых path settings;
+- использует MCP pickers из фактической OpenCode configuration;
+- сообщает, когда нужен restart или reconnect.
+
+Secret fields write-only. API возвращает только `configured: true/false`, но не
+stored value. Browser может заменить secret либо явно очистить его. Не пытайтесь
+реализовать «показать текущий token»: это нарушение security boundary.
+
+Extension factories и `AUTODEPLOY_MCP_ENABLED` применяются после полного restart,
+потому что входят в composition root. OpenCode connection settings можно
+переподключить через UI; новые MCP permissions применяются к новой AI session.
+
+## OpenCode configuration
+
+AutoDeploy `.env` хранит только адрес/Basic auth локального OpenCode server,
+выбранный provider/model и MCP names. Credentials AI provider, model catalog,
+variants и определения MCP остаются в глобальной конфигурации OpenCode.
+
+URL должен быть локальным (`127.0.0.1`/`localhost`). Если server создан
+AutoDeploy, он также binds localhost. Один OpenCode server может одновременно
+обслуживать AutoDeploy и browser client; sessions разделяются ID.
+
+При `AUTODEPLOY_OPENCODE_AUTO_CONNECT=true` server делает попытку подключиться к
+`OPENCODE_SERVER_URL` при startup. Это не означает автоматически «создать
+OpenCode process»: подключение и создание — разные явные действия UI.
+
+Всегда выбирайте provider/model явно при создании session, даже если UI показывает
+default. Thinking variant должен быть одним из вариантов фактической model
+configuration.
+
+## Добавление собственного secret/config key
+
+Private package не может автоматически публиковать произвольные `.env` keys во
+frontend: whitelist принадлежит public core. Предпочтительный порядок:
+
+1. если setting должен быть UI-editable, добавить typed `SettingSpec` в public
+   core, validation и secret classification;
+2. если setting server-only, оставить его private и редактировать в managed
+   `.env` вне browser;
+3. читать значение через injected `EnvManager.get("CORP_KEY")`;
+4. не сохранять secret в class attribute дольше request;
+5. покрыть snapshot/update/redaction tests.
+
+Не используйте generic endpoint «прочитать весь `.env`» и не передавайте private
+configuration в form schema.
+
+## Security checklist
+
+- `.env`, certificates и local tokens исключены из Git и release wheel;
+- installer/update никогда не затирает `config/.env` и `.venv` active version
+  атомарно заменяется только внутри release directory;
+- logs не содержат secret values, Authorization или URL credentials/query;
+- `OPENCODE_SERVER_PASSWORD` не попадает в model context;
+- private dictionary detail keys не публикуют confidential fields;
+- file picker перечисляет metadata путей, но не читает содержимое файлов;
+- server binds только `127.0.0.1`/`localhost`;
+- `.env` permissions ограничены текущим пользователем средствами deployment;
+- production URLs используют HTTPS и проверенный corporate certificate.
+
+## Диагностика startup
+
+При ошибке import path проверьте в том же interpreter:
+
+```bash
+python -c "import corp_autodeploy; print(corp_autodeploy.__file__)"
+python -c "from corp_autodeploy.registrar import register_forms; print(register_forms)"
+```
+
+Затем проверьте, какой `.env` реально выбран через process
+`AUTODEPLOY_ENV_FILE`, и перезапустите server. Не печатайте `env_manager.load()`
+целиком: выводите только имя key и boolean `configured`.

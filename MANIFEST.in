@@ -1,4 +1,6 @@
-include README.md GUIDE.md OPENCODE_AUTOFILL.md version.txt
+include README.md AGENTS.md version.txt
+include scripts/check_docs.py
+recursive-include docs *.md
 recursive-include config/references *.json
 recursive-include webapp/static *
 recursive-include webapp/resources/opencode_agents *.md

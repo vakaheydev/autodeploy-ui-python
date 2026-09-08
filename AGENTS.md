@@ -1,8 +1,14 @@
-# Agent guide for Gravitee AutoDeploy
+# Agent guide for the public Gravitee AutoDeploy core
 
-This repository contains a public/local-first Python core, a same-port React
-client, a compatible Tkinter client, and optional private corporate extensions.
-Read this file before changing the project.
+This repository contains the public/local-first Python core, a same-port React
+client, a compatible Tkinter client, and stable boundaries for private corporate
+extensions. Read this file and `docs/README.md` before changing the project.
+
+This agent works on the public core. Do not implement a real corporate endpoint,
+schema, credential flow or organization-specific form here. `docs/corp/` is a
+self-contained consumer handbook that is copied to the private repository; keep
+it synchronized when a public extension contract changes, but do not treat its
+example package as source code in this repository.
 
 ## Non-negotiable architecture
 
@@ -34,7 +40,12 @@ Read this file before changing the project.
 - `frontend/`: React + TypeScript source and tests.
 - `opencode_integration/`: OpenCode 1.18.18 client, agents and safe sessions.
 - `launcher/`: atomic signed/checksummed release delivery.
-- `docs/CORPORATE_MIGRATION.md`: private-package integration guide.
+- `docs/`: current public-core documentation; `docs/README.md` is its router.
+- `docs/corp/`: copyable documentation for the private corporate package.
+
+Do not recreate migration diaries, temporary rollout steps or a second general
+guide. Document the current target state in the narrowest owning document and
+update both sides of a public/private contract when its signature changes.
 
 ## Forms and references
 
@@ -87,6 +98,10 @@ drafts rather than adding another model-to-model extractor handoff.
 5. Run Playwright for navigation or interaction changes.
 6. Commit the rebuilt `webapp/static` with frontend source changes.
 7. Never push major work directly to `master`; use the requested feature branch.
+
+For documentation-only work, at minimum run `python scripts/check_docs.py`,
+`git diff --check`, and any focused contract tests whose behavior the
+documentation describes.
 
 Build frontend with Node only on the developer/CI machine. Release artifacts are
 produced by the pipeline and installed atomically by the Python launcher. Keep

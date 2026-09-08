@@ -1,29 +1,37 @@
 # Gravitee AutoDeploy
 
-Gravitee AutoDeploy теперь доступен как локальное веб-приложение: один Python
-процесс публикует versioned REST API и уже собранный React-интерфейс на одном
-localhost-порту. Вся схема форм, валидация, payload, авторизация, отправка,
-опрос результата и интеграционная логика остаются в Python.
+Gravitee AutoDeploy — локальное web-приложение для корпоративных операций с
+Gravitee. Один Python-процесс публикует versioned REST API, optional MCP и
+предварительно собранный React-интерфейс на одном localhost-порту. Python
+остаётся единственным источником бизнес-логики: формы, условия, справочники,
+валидация, payload, авторизация, submit и polling не дублируются во frontend.
 
-Исходный Tkinter-клиент сохранён и запускается командой
-`python main.py`. Новый сервер запускается командой `python -m webapp` и по
-умолчанию открывается на `http://127.0.0.1:8765`.
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[test]"
+AUTODEPLOY_OPENCODE_AUTO_CONNECT=false .venv/bin/python -m webapp
+```
 
-Инструкции по production-установке, обновлению и корпоративным расширениям:
-[docs/INSTALLATION.md](docs/INSTALLATION.md) и
-[docs/WEB_ARCHITECTURE.md](docs/WEB_ARCHITECTURE.md).
+После запуска:
 
-Пошаговый перенос закрытых форм, ITSM/TFS/Gravitee-сервисов и справочников в
-отдельный корпоративный wheel описан в
-[docs/CORPORATE_MIGRATION.md](docs/CORPORATE_MIGRATION.md).
+- приложение: `http://127.0.0.1:8765`;
+- OpenAPI: `http://127.0.0.1:8765/api/docs`;
+- optional Streamable HTTP MCP: `http://127.0.0.1:8765/api/mcp`.
 
-Корпоративная подготовка при смене рабочего окружения подключается отдельным
-hook по инструкции
-[docs/CORPORATE_ENVIRONMENT_HOOK.md](docs/CORPORATE_ENVIRONMENT_HOOK.md).
+## Документация
 
-Опциональный same-port MCP и его инструменты описаны в
-[docs/MCP.md](docs/MCP.md).
+Начните с [индекса документации](docs/README.md). Для публичного ядра доступны:
 
-Архитектура Copilot, ленивого поиска форм, Python-черновиков и изолированного
-Repository Researcher зафиксирована в
-[docs/AI_AGENT_ARCHITECTURE.md](docs/AI_AGENT_ARCHITECTURE.md).
+- [web-архитектура](docs/WEB_ARCHITECTURE.md);
+- [архитектура AI-агентов](docs/AI_AGENT_ARCHITECTURE.md);
+- [AutoDeploy MCP](docs/MCP.md);
+- [установка, сборка и доставка](docs/INSTALLATION.md).
+
+Корпоративная реализация живёт в отдельном private Python package и подключается
+через стабильные extension points. Самодостаточная документация для её
+разработчиков и AI-агентов находится только в [docs/corp/](docs/corp/README.md).
+Эту папку можно целиком скопировать в закрытый репозиторий.
+
+Tkinter entry point `python main.py` сохранён только для совместимости. Новые
+возможности и корпоративные интеграции следует развивать через Python server и
+web UI.

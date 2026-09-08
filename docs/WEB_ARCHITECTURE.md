@@ -102,8 +102,9 @@ kept in a separate wheel and selected from server-side `.env`:
 - `AUTODEPLOY_ENVIRONMENT_HOOK=corp.environment:create_environment_hook`
 
 Последняя граница выполняет корпоративную подготовку до фиксации выбранного
-окружения в браузере; подробный контракт приведён в
-[CORPORATE_ENVIRONMENT_HOOK.md](CORPORATE_ENVIRONMENT_HOOK.md).
+окружения в браузере. Полный private-package handbook, включая точные контракты
+форм, сервисов, справочников и environment hook, изолирован в
+[corp/](corp/README.md).
 
 An extension wheel can be added to a release with
 `scripts/build_release.py --extra-wheel corp_autodeploy.whl`. It is installed

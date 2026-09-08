@@ -1,7 +1,8 @@
 # Installation, build and delivery
 
-Перенос закрытых форм и сборка отдельного корпоративного wheel описаны в
-[CORPORATE_MIGRATION.md](CORPORATE_MIGRATION.md).
+Целевой private-package contract и сборка корпоративного wheel описаны в
+[corp/](corp/README.md). Этот документ относится к public launcher и delivery
+mechanism.
 
 ## User installation (no Node/npm)
 

@@ -170,7 +170,8 @@ still mandatory.
 Corporate forms and services stay in a separately installed private package.
 Its registrar must register a `FormRoutingDescription` for every form. Lazy
 catalog creation means a missing description affects form search when first
-used, not ordinary chat startup. See [CORPORATE_MIGRATION.md](CORPORATE_MIGRATION.md).
+used, not ordinary chat startup. The copyable corporate agent handbook is in
+[corp/](corp/README.md).
 
 ## Compatibility and removal plan
 
