@@ -132,6 +132,11 @@ test('searches a large API dictionary on the Python server', async ({ page }) =>
 })
 
 test('uses dark surfaces and high-contrast form labels in the dark theme', async ({ page }) => {
+  await page.route('**/api/v1/drafts', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [] }),
+  }))
   await page.goto('/forms/api.create')
   await page.getByRole('button', { name: 'Включить тёмную тему' }).click()
 
@@ -143,6 +148,12 @@ test('uses dark surfaces and high-contrast form labels in the dark theme', async
     await expect.poll(() => control.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe('rgb(255, 255, 255)')
   }
   await expect.poll(() => label.evaluate((element) => getComputedStyle(element).color)).toBe('rgb(229, 237, 248)')
+
+  await page.goto('/forms')
+  await page.getByRole('tab', { name: /Черновики/ }).click()
+  const emptyDrafts = page.locator('.empty-state')
+  await expect(emptyDrafts).toContainText('Черновиков пока нет')
+  await expect.poll(() => emptyDrafts.evaluate((element) => getComputedStyle(element).backgroundImage)).toContain('rgb(16, 26, 42)')
 })
 
 test('filters the catalog by Python field keywords and switches theme', async ({ page }) => {

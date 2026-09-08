@@ -336,6 +336,8 @@ p { color: var(--muted); line-height: 1.58; }
 :root[data-theme='dark'] .form-card, :root[data-theme='dark'] .module-card, :root[data-theme='dark'] .form-surface, :root[data-theme='dark'] .form-actions, :root[data-theme='dark'] .result-card, :root[data-theme='dark'] .modal, :root[data-theme='dark'] .search-panel, :root[data-theme='dark'] .search-result, :root[data-theme='dark'] .runs-list .run-row, :root[data-theme='dark'] .opencode-status, :root[data-theme='dark'] .opencode-actions article, :root[data-theme='dark'] .settings-card, :root[data-theme='dark'] .technical-card, :root[data-theme='dark'] .copilot-card, :root[data-theme='dark'] .candidate { color: var(--text); background: var(--surface); }
 :root[data-theme='dark'] .draft-card { color: var(--text); background: var(--surface); }
 :root[data-theme='dark'] .draft-card-icon.ai { background: #322750; }
+:root[data-theme='dark'] .empty-state { border-color: #2d4059; background: linear-gradient(145deg, #101a2a, #14233a); }
+:root[data-theme='dark'] .empty-orb { background: linear-gradient(145deg, #28527f, #433b72); box-shadow: 0 0 0 9px rgb(70 116 174 / 15%); }
 :root[data-theme='dark'] input, :root[data-theme='dark'] textarea, :root[data-theme='dark'] select { color: var(--text); border-color: var(--border-strong); background-color: var(--surface); }
 :root[data-theme='dark'] .block-field, :root[data-theme='dark'] .form-field { color: var(--text); border-color: var(--border); background: var(--surface-soft); }
 :root[data-theme='dark'] .form-field.ai-review { background: #152944; }
