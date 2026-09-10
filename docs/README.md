@@ -12,7 +12,7 @@
 |---|---|---|
 | Form API, server-side lifecycle, React boundary | [WEB_ARCHITECTURE.md](WEB_ARCHITECTURE.md) | `webapp/form_runtime.py`, `forms/` |
 | Custom page plugin API, renderer and policy | [WEB_ARCHITECTURE.md](WEB_ARCHITECTURE.md) | `plugins/`, `webapp/plugin_runtime.py` |
-| Copilot, helper sessions, drafts, trust model | [AI_AGENT_ARCHITECTURE.md](AI_AGENT_ARCHITECTURE.md) | `opencode_integration/`, `webapp/ai_api.py`, `webapp/ai_service.py` |
+| Copilot, helper sessions, drafts, ITSM prompt overrides, trust model | [AI_AGENT_ARCHITECTURE.md](AI_AGENT_ARCHITECTURE.md) | `opencode_integration/`, `webapp/ai_api.py`, `webapp/ai_service.py`, `webapp/itsm_prompt_settings.py` |
 | MCP transport, инструменты и ограничения | [MCP.md](MCP.md) | `webapp/mcp_server.py` |
 | Установка, release archive и launcher | [INSTALLATION.md](INSTALLATION.md) | `launcher/`, `scripts/build_release.py` |
 

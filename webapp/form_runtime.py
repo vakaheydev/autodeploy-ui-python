@@ -1541,6 +1541,7 @@ class FormRuntime:
                     environment=environment,
                     ticket_context=safe_context,
                     form_id=form_id,
+                    prompt_override=self.container.itsm_prompt_settings.prompt_for,
                 )
             except Exception as exc:
                 _log.warning(

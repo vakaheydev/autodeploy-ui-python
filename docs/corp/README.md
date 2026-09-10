@@ -37,7 +37,7 @@ handbook с документацией публичного ядра.
    - [ACTION_DIALOGS.md](ACTION_DIALOGS.md) — интерактивные form actions,
      диалоги, кнопки и multi-dependent references;
    - [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md) — deterministic/AI режимы
-     кнопки заявки;
+     кнопки заявки, определение типа и prompts из frontend;
    - [PLUGINS.md](PLUGINS.md) — корпоративные custom pages, динамические
      виджеты, операции и AI policy;
    - [REFERENCES_AND_SEARCH.md](REFERENCES_AND_SEARCH.md) — справочники и поиск;
@@ -54,6 +54,7 @@ handbook с документацией публичного ядра.
 | Поля, validation, payload, submit | `FORMS.md` | `forms/base_form.py`, `forms/fields.py` |
 | Диалог кнопки формы, Swagger picker | `ACTION_DIALOGS.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
 | Заполнение формы из заявки | `ITSM_FORM_FILLING.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
+| Новый тип заявки или изменение AI prompt | `ITSM_FORM_FILLING.md`, `CONFIGURATION.md` | `opencode_integration/context_builder.py`, `webapp/itsm_prompt_settings.py` |
 | Custom page, отчёт, график, plugin operation | `PLUGINS.md` | `plugins/`, `webapp/plugin_runtime.py` |
 | ITSM/TFS/Gravitee-клиент | `SERVICES_AND_ENVIRONMENT.md` | `webapp/extensions.py`, `services/submit_service.py` |
 | SELECT/MULTISELECT, remote dictionary | `REFERENCES_AND_SEARCH.md` | `handlers/`, `webapp/form_runtime.py` |

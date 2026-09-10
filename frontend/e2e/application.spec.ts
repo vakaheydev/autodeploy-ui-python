@@ -331,6 +331,27 @@ test('shows settings validation errors beside the affected field', async ({ page
   await expect(page.locator('.settings-page > .alert.error')).toHaveCount(0)
 })
 
+test('persists an operator prompt for a corporate ITSM ticket type', async ({ page }) => {
+  await page.goto('/settings?section=ITSM%20%D0%B8%20AI')
+  await expect(page.getByRole('heading', { name: 'Инструкции по типам заявок' })).toBeVisible()
+  await page.getByRole('button', { name: 'Добавить тип' }).click()
+  await page.getByLabel('Стабильный ticket_type 1').fill('create_api_v2')
+  await page.getByLabel('Prompt для AI 1').fill('Use requested_api.contextPath for context_path.')
+
+  const savedResponse = page.waitForResponse((response) => (
+    response.url().endsWith('/api/v1/settings/itsm-ai-prompts')
+      && response.request().method() === 'PUT'
+      && response.status() === 200
+  ))
+  await page.getByRole('button', { name: 'Сохранить ITSM AI-правила' }).click()
+  await savedResponse
+  await expect(page.getByText(/Правила сохранены/)).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByLabel('Стабильный ticket_type 1')).toHaveValue('create_api_v2')
+  await expect(page.getByLabel('Prompt для AI 1')).toHaveValue('Use requested_api.contextPath for context_path.')
+})
+
 test('autosaves, restores and manually deletes a form draft', async ({ page }) => {
   await page.goto('/forms/api.create')
   await expect(page.getByRole('heading', { name: 'Создание АПИ' })).toBeVisible()

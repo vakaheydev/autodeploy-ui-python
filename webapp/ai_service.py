@@ -261,6 +261,7 @@ class WebAIService:
                 else {}
             ),
             workflow_id=workflow_id,
+            prompt_override=self.container.itsm_prompt_settings.prompt_for,
         )
         if opencode_session_id:
             copilot.resume_session(opencode_session_id)
@@ -1480,6 +1481,7 @@ class WebAIService:
             inline_reference_max_items=self._integer(values.get(OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY), 99),
             inline_reference_max_bytes=self._integer(values.get(OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY), 24_576),
             inline_reference_total_bytes=self._integer(values.get(OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY), 49_152),
+            prompt_override=self.container.itsm_prompt_settings.prompt_for,
         )
         job.agent = agent
         with job.lock:

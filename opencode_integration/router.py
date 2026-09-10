@@ -161,12 +161,14 @@ class FormRouter:
         *,
         forms: Iterable[BaseForm],
         max_context_chars: int = 120_000,
+        prompt_override: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
             itsm_service,
             tfs_service,
             max_context_chars=max_context_chars,
+            prompt_override=prompt_override,
         )
         self._forms = tuple(forms)
         self._catalog = build_form_catalog(self._forms)

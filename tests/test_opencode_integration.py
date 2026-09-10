@@ -736,6 +736,23 @@ class ContextTests(unittest.TestCase):
         self.assertIn("Use service_name", context.ai_instructions)
         self.assertNotIn("must-not-reach-opencode", context.ai_instructions)
 
+    def test_operator_prompt_override_replaces_hook_prompt_for_exact_type(self) -> None:
+        source = _PromptITSM()
+        context = ContextBuilder(
+            source,
+            _FakeTFS(),
+            prompt_override=lambda ticket_type: (
+                "Use the operator-managed mapping. token=redact-me"
+                if ticket_type.casefold() == "create_api_v2"
+                else None
+            ),
+        ).build(ticket_id="REQ-7", environment="test_int")
+
+        self.assertEqual(context.ticket_type, "create_api_v2")
+        self.assertIn("operator-managed mapping", context.ai_instructions)
+        self.assertNotIn("Use service_name", context.ai_instructions)
+        self.assertNotIn("redact-me", context.ai_instructions)
+
     def test_invalid_corporate_prompt_contract_fails_without_leaking_body(self) -> None:
         class InvalidPromptITSM(_FakeITSM):
             def get_ai_prompt(self, _request: ITSMAIPromptRequest) -> object:

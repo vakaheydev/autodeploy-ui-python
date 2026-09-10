@@ -311,6 +311,29 @@ def test_settings_keep_secrets_write_only(server: str) -> None:
 
 
 @pytest.mark.integration
+def test_ticket_type_prompts_can_be_managed_through_settings_api(server: str) -> None:
+    status, _, content = request(
+        server,
+        "/api/v1/settings/itsm-ai-prompts",
+        method="PUT",
+        body={"rules": [{
+            "ticket_type": "create_api_v2",
+            "prompt": "Use requested_api.contextPath for context_path.",
+        }]},
+    )
+    assert status == 200
+    document = json.loads(content)
+    assert document["rules"] == [{
+        "ticket_type": "create_api_v2",
+        "prompt": "Use requested_api.contextPath for context_path.",
+    }]
+
+    status, _, content = request(server, "/api/v1/settings/itsm-ai-prompts")
+    assert status == 200
+    assert json.loads(content)["rules"] == document["rules"]
+
+
+@pytest.mark.integration
 def test_streamable_http_mcp_lists_and_calls_documented_tools(server: str) -> None:
     status, _, content = request(
         server, "/api/mcp", method="POST",

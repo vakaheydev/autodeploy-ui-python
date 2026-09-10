@@ -126,6 +126,10 @@ mapping rules per corporate request type without promoting ticket prose across
 the trust boundary. The returned instructions must be static, reviewed
 configuration selected by type; raw ticket fields stay inside `UNTRUSTED`
 sections. Adapters without this capability keep the default Copilot behavior.
+An operator can override the instructions for an exact returned `ticket_type`
+under **Settings → ITSM and AI**. These typed server-side rules are read for
+each newly loaded ticket, take precedence over the hook's fallback prompt, and
+never replace the corporate adapter's responsibility to identify the type.
 
 For ordinary conversation Copilot answers without loading the form catalog or
 calling form/repository tools. A request can create more than one draft; the

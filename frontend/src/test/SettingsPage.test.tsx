@@ -91,6 +91,42 @@ describe('SettingsPage', () => {
     expect(screen.getByLabelText(/Адрес сервера/)).toHaveValue('http://127.0.0.1:4096')
   })
 
+  it('edits ticket-type prompts as typed server-side settings', async () => {
+    const promptSettings = {
+      rules: [{ ticket_type: 'create_api_v2', prompt: 'Use service_name as name.' }],
+      warning: '', max_rules: 100, max_ticket_type_chars: 200, max_prompt_chars: 16000,
+      precedence: 'ui_override_then_corporate_hook',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/opencode/mcp')) return new Response(JSON.stringify({ connected: false, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/settings/itsm-ai-prompts')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          return new Response(JSON.stringify({ ...promptSettings, rules: body.rules }), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response(JSON.stringify(promptSettings), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(settings), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/settings?section=ITSM%20%D0%B8%20AI']}><SettingsPage /></MemoryRouter>)
+
+    const prompt = await screen.findByLabelText('Prompt для AI 1')
+    await user.clear(prompt)
+    await user.type(prompt, 'Use requested_api.contextPath.')
+    expect(prompt.closest('.itsm-prompt-card')).toHaveClass('changed')
+    await user.click(screen.getByRole('button', { name: 'Сохранить ITSM AI-правила' }))
+
+    const request = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/settings/itsm-ai-prompts') && init?.method === 'PUT')
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      rules: [{ ticket_type: 'create_api_v2', prompt: 'Use requested_api.contextPath.' }],
+    })
+    expect(await screen.findByText(/Правила сохранены/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Сохранить ITSM AI-правила' })).not.toBeInTheDocument()
+  })
+
   it('saves fail-closed AI visibility and an explicit policy per plugin operation', async () => {
     const policy = {
       ai_visible: false,

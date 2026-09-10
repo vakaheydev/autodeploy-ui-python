@@ -457,10 +457,14 @@ class UnifiedCopilot:
         trusted_mcp_tools: Optional[Mapping[str, Sequence[str]]] = None,
         trusted_mcp_ask_tools: Optional[Mapping[str, Sequence[str]]] = None,
         workflow_id: str = "",
+        prompt_override: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
-            itsm_service, tfs_service, max_context_chars=max_context_chars
+            itsm_service,
+            tfs_service,
+            max_context_chars=max_context_chars,
+            prompt_override=prompt_override,
         )
         self._forms = tuple(forms)
         self._workflow_id = str(workflow_id).strip()

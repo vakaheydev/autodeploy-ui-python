@@ -72,10 +72,18 @@ release вместе с private wheel должны войти wheel всех е�
 5. ставит private reference handlers перед встроенными fallback handlers;
 6. загружает ровно два global search catalog;
 7. создаёт environment hook;
-8. публикует один REST API, React SPA и optional MCP на localhost.
+8. загружает mutable operator settings, включая AI prompts по типам заявок;
+9. публикует один REST API, React SPA и optional MCP на localhost.
 
 Private форма с тем же `form_id` заменяет public форму. Frontend не знает, какой
 package создал JSON schema.
+
+Настройки prompt по типам заявок не являются ещё одним extension point и не
+должны храниться в private React-коде. Corporate ITSM-service определяет
+стабильный `ticket_type` через `get_ai_prompt`; public core хранит операторское
+переопределение и применяет его server-side. Поэтому обновление prompt через UI
+не требует пересборки private wheel, а изменение алгоритма классификации типа
+по-прежнему принадлежит private package.
 
 ## Extension points
 

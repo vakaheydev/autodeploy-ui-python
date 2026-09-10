@@ -77,6 +77,14 @@ the already selected form and creates a persistent inline-review draft. A plain
 mapping remains a deterministic compatibility result. AI source context is
 sanitized server-side and never returned to React.
 
+For AI mode the corporate ITSM capability remains responsible for returning a
+stable `ticket_type`. An operator may maintain an exact `ticket_type -> prompt`
+override in **Settings -> ITSM and AI**. The override is mutable server state,
+not form schema or frontend business logic: it replaces the corporate fallback
+prompt for the next ticket load, while the per-form `ITSMFetchResult.ai()`
+instruction is appended afterward. See `docs/corp/ITSM_FORM_FILLING.md` for the
+consumer contract.
+
 For gradual migration, `self.apply_form_data({...})` and the legacy
 `self.screen.apply_form_data({...})` are supported while executing a
 `ServerAction` or deterministic `fetch_from_itsm()`. The web context accumulates
@@ -209,6 +217,8 @@ Important resources are:
 - `/opencode/*` and `/ai/*` for OpenCode chat, draft review and compatibility
   extraction endpoints;
 - `/settings` for whitelisted configuration with write-only secrets;
+- `/settings/itsm-ai-prompts` for non-secret operator-managed prompt overrides
+  keyed by the stable corporate ticket type;
 - `/plugins`, `/plugins/{id}/state|validate|operations/*` and plugin reference
   options for corporate custom pages;
 - `/plugins/ai-policy` for global, per-plugin and per-operation AI access;

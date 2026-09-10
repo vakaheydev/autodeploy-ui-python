@@ -148,6 +148,15 @@ class SettingsUpdateRequest(StrictModel):
     clear: List[str] = Field(default_factory=list, max_length=100)
 
 
+class ITSMPromptRuleRequest(StrictModel):
+    ticket_type: str = Field(min_length=1, max_length=200)
+    prompt: str = Field(min_length=1, max_length=16_000)
+
+
+class ITSMPromptSettingsUpdateRequest(StrictModel):
+    rules: List[ITSMPromptRuleRequest] = Field(default_factory=list, max_length=100)
+
+
 class PluginValuesRequest(StrictModel):
     environment: str = Field(min_length=1, max_length=80)
     values: Dict[str, Any] = Field(default_factory=dict)

@@ -27,6 +27,7 @@ from webapp.models import (
     ActionRequest,
     DraftSaveRequest,
     EnvironmentActivationRequest,
+    ITSMPromptSettingsUpdateRequest,
     PluginActionRequest,
     PluginAIPolicyUpdateRequest,
     PluginValuesRequest,
@@ -94,6 +95,25 @@ def save_settings(body: SettingsUpdateRequest, request: Request):
             status_code=422,
             detail={"message": str(exc), "fields": list(exc.fields)},
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/settings/itsm-ai-prompts", tags=["settings", "ai"])
+def itsm_ai_prompt_settings(request: Request) -> dict[str, Any]:
+    """Return non-secret operator overrides for known corporate ticket types."""
+
+    return container(request).itsm_prompt_settings.snapshot()
+
+
+@router.put("/settings/itsm-ai-prompts", tags=["settings", "ai"])
+def save_itsm_ai_prompt_settings(
+    body: ITSMPromptSettingsUpdateRequest, request: Request
+) -> dict[str, Any]:
+    try:
+        return container(request).itsm_prompt_settings.update(
+            [item.model_dump() for item in body.rules]
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

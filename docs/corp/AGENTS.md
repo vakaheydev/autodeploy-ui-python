@@ -31,8 +31,9 @@
 - `fetch_from_itsm` сам выбирает `ITSMFetchResult.deterministic` или
   `ITSMFetchResult.ai`; перед его изменением читайте
   `docs/ITSM_FORM_FILLING.md`.
-- Общие AI-правила по типу заявки реализуются в ITSM-service через
-  `get_ai_prompt(ITSMAIPromptRequest)`, а не копируются по формам. Возвращайте
+- Тип заявки и fallback AI-правила реализуются в ITSM-service через
+  `get_ai_prompt(ITSMAIPromptRequest)`, а не копируются по формам. Оператор
+  может переопределить prompt через «Настройки → ITSM и AI». Возвращайте
   только статические проверенные инструкции из mapping; raw текст заявки в
   trusted prompt запрещён.
 - AI может подготовить persistent draft, но не может submit/deploy. Любой

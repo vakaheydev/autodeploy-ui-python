@@ -207,6 +207,20 @@ export interface SettingsDocument {
   reconnect_opencode?: boolean
 }
 
+export interface ITSMPromptRule {
+  ticket_type: string
+  prompt: string
+}
+
+export interface ITSMPromptSettingsDocument {
+  rules: ITSMPromptRule[]
+  warning: string
+  max_rules: number
+  max_ticket_type_chars: number
+  max_prompt_chars: number
+  precedence: 'ui_override_then_corporate_hook'
+}
+
 export interface PluginSummary {
   id: string
   title: string

@@ -20,6 +20,12 @@ operator
 Обычный вопрос или приветствие не запускает form search. Main session не
 получает полный catalog при инициализации и сохраняет history между turns.
 
+При явном прикреплении ITSM-заявки corporate service может вернуть стабильный
+тип и trusted fallback prompt. Точное операторское правило из **Настройки →
+ITSM и AI** заменяет этот fallback только для нового ticket context. Обычные
+сообщения без заявки не классифицируются по ITSM-типам и не получают эти
+инструкции. Контракт описан в [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md).
+
 `form-search` создаётся при первом semantic search в конкретном chat workflow,
 получает routing-only catalog один раз и живёт вместе с main session. В catalog
 есть только `form_id`, title/category, `purpose`, `use_when`, `avoid_when`; полей,

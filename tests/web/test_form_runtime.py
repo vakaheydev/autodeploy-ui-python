@@ -1201,6 +1201,10 @@ def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
             )
 
     prompt_itsm = PromptITSM()
+    container.itsm_prompt_settings.update([{
+        "ticket_type": "create_api_v2",
+        "prompt": "Use the operator-managed API mapping.",
+    }])
 
     def prompt_services(env_manager, http_client):
         services = original_service_provider(env_manager, http_client)
@@ -1229,7 +1233,7 @@ def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
         assert fake_ai.arguments["current_values"] == {"name": "Existing"}
         assert fake_ai.arguments["ticket_type"] == "create_api_v2"
         assert fake_ai.arguments["instruction"] == (
-            "Use summary as the proposed API name.\n\n"
+            "Use the operator-managed API mapping.\n\n"
             "Use the request summary"
         )
         assert fake_ai.arguments["source_context"] == {

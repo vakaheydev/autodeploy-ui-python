@@ -224,10 +224,12 @@ launcher payload. Если такой packaging не настроен, испо�
 packages не используются. Mutable `config/.env`, `data/` и `logs/` находятся
 вне version folder и переживают update.
 
-`data/plugin-ai-policy.json` относится к mutable operator state: release archive
-не должен включать или перезаписывать его. При первом запуске либо появлении
-новой операции policy автоматически остаётся `deny`, пока оператор явно не
-изменит её в UI.
+`data/plugin-ai-policy.json` и `data/itsm-ai-prompts.json` относятся к mutable
+operator state: release archive не должен включать или перезаписывать их. При
+первом запуске либо появлении новой plugin operation policy автоматически
+остаётся `deny`, пока оператор явно не изменит её в UI. Отсутствующий файл ITSM
+prompts означает использование corporate hook; повреждённый файл должен попасть
+в backup/диагностику, но не заменяться updater-ом.
 
 Activation — atomic pointer на installed version. Если новый server не проходит
 health check, launcher один раз возвращается на предыдущую version. Ручной

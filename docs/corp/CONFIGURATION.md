@@ -83,6 +83,38 @@ AI context limits и inline-reference limits также доступны на с
 OpenCode settings. Оставляйте public defaults, пока нет измеренного основания
 для изменения.
 
+## AI-инструкции по типам ITSM-заявок
+
+Многострочные правила `ticket_type → prompt` настраиваются во frontend:
+**Настройки → ITSM и AI**. Они сохраняются отдельно от секретов в
+`<AUTODEPLOY_DATA_DIR>/itsm-ai-prompts.json` и начинают действовать для
+следующей загружаемой заявки без restart.
+
+Корпоративный `ITSMService.get_ai_prompt(...)` остаётся источником
+`ticket_type` и fallback-инструкций. Полный контракт и порядок приоритетов:
+[ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md#настройка-prompt-через-frontend).
+
+Это отдельный typed settings API, а не произвольный редактор `.env` или JSON.
+Frontend разрешает добавить до 100 правил, подсвечивает несохранённые карточки,
+проверяет пустые/повторяющиеся типы и показывает server-side validation error.
+Сравнение типов выполняется без учёта регистра и внешних пробелов; сохранённое
+имя остаётся читаемым для оператора. Один prompt ограничен 16 000 символами.
+
+Файл относится к mutable operator state:
+
+- включайте его в backup вместе с `drafts/`, history и plugin AI policy;
+- не кладите его в release archive и не перезаписывайте updater-ом;
+- не редактируйте одновременно вручную и через UI;
+- при повреждении файла UI показывает warning, а runtime безопасно возвращается
+  к fallback prompt корпоративного hook;
+- удаление правила в UI не удаляет тип из corporate service, а лишь возвращает
+  поведение к code fallback.
+
+Prompt — доверенная инструкция модели, хотя secret setting им не является.
+Доступ к этой вкладке означает право менять поведение AI. Не помещайте туда raw
+текст заявки, персональные данные, токены, private URL с credentials или
+инструкции обхода preview/validation/confirmation.
+
 ## Frontend settings
 
 Страница **Настройки** работает только с whitelist public core. Она:
@@ -93,6 +125,7 @@ OpenCode settings. Оставляйте public defaults, пока нет изм�
 - показывает Save/Reset panel только после первого изменения;
 - использует file/directory picker для разрешённых path settings;
 - использует MCP pickers из фактической OpenCode configuration;
+- редактирует typed ITSM AI-prompts без ручной правки JSON;
 - сообщает, когда нужен restart или reconnect.
 
 Secret fields write-only. API возвращает только `configured: true/false`, но не

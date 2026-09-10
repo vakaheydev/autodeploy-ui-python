@@ -199,10 +199,13 @@ tfs.get_pull_request(reference, environment="") -> JSON-compatible value
 itsm.get_ai_prompt(ITSMAIPromptRequest) -> ITSMAIPrompt | None
 ```
 
-Он выбирает проверенные инструкции по корпоративному типу заявки. Capability
-обслуживает и главный Copilot, и exact-form AI fill; старым adapters добавлять
-его не обязательно. Полный контракт, trust boundary и пример mapping приведены
-в [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md#инструкции-по-типу-заявки).
+Он определяет стабильный корпоративный тип заявки и может вернуть проверенные
+fallback-инструкции. Оператор может переопределить prompt для возвращённого
+типа через **Настройки → ITSM и AI**; для этого adapter вправе вернуть пустые
+`instructions`, но обязан вернуть `ticket_type`. Capability обслуживает и
+главный Copilot, и exact-form AI fill; старым adapters добавлять его не
+обязательно. Полный контракт, trust boundary и порядок приоритетов приведены в
+[ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md#инструкции-по-типу-заявки).
 
 Полученные данные считаются недоверенными. До передачи AI нужно оставить только
 необходимые поля, ограничить размер и удалить secrets/confidential content.

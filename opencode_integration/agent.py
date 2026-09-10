@@ -73,12 +73,14 @@ class FormExtractorAgent:
         inline_reference_max_items: int = DEFAULT_INLINE_REFERENCE_MAX_ITEMS,
         inline_reference_max_bytes: int = DEFAULT_INLINE_REFERENCE_MAX_BYTES,
         inline_reference_total_bytes: int = DEFAULT_INLINE_REFERENCE_TOTAL_BYTES,
+        prompt_override: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
             itsm_service,
             tfs_service,
             max_context_chars=max_context_chars,
+            prompt_override=prompt_override,
         )
         self._reference_resolver = LocalReferenceResolver(reference_resolver)
         self._inline_reference_max_items = inline_reference_max_items

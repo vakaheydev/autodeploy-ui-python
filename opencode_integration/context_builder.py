@@ -149,6 +149,7 @@ def resolve_itsm_ai_prompt(
     environment: str,
     ticket_context: Any,
     form_id: str = "",
+    prompt_override: Optional[Callable[[str], Optional[str]]] = None,
 ) -> Optional[ITSMAIPrompt]:
     """Resolve optional trusted corporate guidance for one sanitized ticket.
 
@@ -178,7 +179,14 @@ def resolve_itsm_ai_prompt(
 
     ticket_type = unicodedata.normalize("NFKC", result.ticket_type)
     ticket_type = redact_text(ticket_type.replace("\x00", "")).strip()
-    instructions = unicodedata.normalize("NFKC", result.instructions)
+    instructions_source = result.instructions
+    if prompt_override is not None and ticket_type:
+        configured = prompt_override(ticket_type)
+        if configured is not None:
+            if not isinstance(configured, str):
+                raise TypeError("Настроенный ITSM AI prompt должен быть строкой")
+            instructions_source = configured
+    instructions = unicodedata.normalize("NFKC", instructions_source)
     instructions = redact_text(
         instructions.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     ).strip()
@@ -284,6 +292,7 @@ class ContextBuilder:
         itsm_service: ITSMDataSource,
         tfs_service: AzureDevOpsDataSource,
         max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+        prompt_override: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._itsm_service = itsm_service
         self._tfs_service = tfs_service
@@ -291,6 +300,7 @@ class ContextBuilder:
             HARD_MAX_CONTEXT_CHARS,
             max(10_000, int(max_context_chars)),
         )
+        self._prompt_override = prompt_override
 
     def build(
         self,
@@ -359,6 +369,7 @@ class ContextBuilder:
                 ticket_id=clean_ticket_id,
                 environment=environment,
                 ticket_context=clean_itsm,
+                prompt_override=self._prompt_override,
             )
         except Exception as exc:
             # The private hook is trusted code, but its exception/body may still
