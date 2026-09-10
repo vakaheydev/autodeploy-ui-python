@@ -1,6 +1,7 @@
 """Получение, нормализация и очистка недоверенного ITSM/ADO-контекста."""
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -11,6 +12,8 @@ from typing import Any, Callable, Dict, Iterable, Optional
 from opencode_integration.data_sources import (
     AzureDevOpsDataSource,
     DataSourceNotConfiguredError,
+    ITSMAIPrompt,
+    ITSMAIPromptRequest,
     ITSMDataSource,
 )
 from opencode_integration.request_loader import sanitize_request
@@ -21,6 +24,8 @@ HARD_MAX_CONTEXT_CHARS = 500_000
 MAX_STRING_CHARS = 20_000
 MAX_COLLECTION_ITEMS = 200
 MAX_DEPTH = 12
+MAX_ITSM_AI_INSTRUCTIONS_CHARS = 16_000
+MAX_ITSM_TICKET_TYPE_CHARS = 200
 
 _SECRET_KEY_RE = re.compile(
     r"(?:^|[_\-.])(api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?key|token|"
@@ -64,6 +69,8 @@ class BuiltContext:
     ado: Any
     warnings: list[str] = field(default_factory=list)
     pull_request_id: Optional[str] = None
+    ticket_type: str = ""
+    ai_instructions: str = ""
 
 
 def is_secret_key(key: str) -> bool:
@@ -133,6 +140,64 @@ def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
             result.append({"_truncated_items": len(items) - MAX_COLLECTION_ITEMS})
         return result
     return sanitize(str(value), key=key, depth=depth + 1)
+
+
+def resolve_itsm_ai_prompt(
+    itsm_service: Any,
+    *,
+    ticket_id: str,
+    environment: str,
+    ticket_context: Any,
+    form_id: str = "",
+) -> Optional[ITSMAIPrompt]:
+    """Resolve optional trusted corporate guidance for one sanitized ticket.
+
+    The capability is deliberately discovered with ``getattr`` so pre-existing
+    corporate adapters that only implement ``get_ticket`` remain compatible.
+    The hook result is bounded and secret-redacted before it reaches OpenCode.
+    """
+    hook = getattr(itsm_service, "get_ai_prompt", None)
+    if not callable(hook):
+        return None
+    result = hook(ITSMAIPromptRequest(
+        ticket_id=str(ticket_id).strip(),
+        environment=str(environment).strip(),
+        ticket_context=copy.deepcopy(ticket_context),
+        form_id=str(form_id).strip(),
+    ))
+    if result is None:
+        return None
+    if not isinstance(result, ITSMAIPrompt):
+        raise TypeError(
+            "ITSMService.get_ai_prompt должен вернуть ITSMAIPrompt или None"
+        )
+    if not isinstance(result.ticket_type, str):
+        raise TypeError("ITSMAIPrompt.ticket_type должен быть строкой")
+    if not isinstance(result.instructions, str):
+        raise TypeError("ITSMAIPrompt.instructions должен быть строкой")
+
+    ticket_type = unicodedata.normalize("NFKC", result.ticket_type)
+    ticket_type = redact_text(ticket_type.replace("\x00", "")).strip()
+    instructions = unicodedata.normalize("NFKC", result.instructions)
+    instructions = redact_text(
+        instructions.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    ).strip()
+    if not ticket_type and not instructions:
+        return None
+    if instructions and not ticket_type:
+        raise ValueError(
+            "ITSMAIPrompt.ticket_type обязателен, если заданы instructions"
+        )
+    if len(ticket_type) > MAX_ITSM_TICKET_TYPE_CHARS:
+        raise ValueError(
+            f"ITSMAIPrompt.ticket_type превышает {MAX_ITSM_TICKET_TYPE_CHARS} символов"
+        )
+    if len(instructions) > MAX_ITSM_AI_INSTRUCTIONS_CHARS:
+        raise ValueError(
+            "ITSMAIPrompt.instructions превышает "
+            f"{MAX_ITSM_AI_INSTRUCTIONS_CHARS} символов"
+        )
+    return ITSMAIPrompt(ticket_type=ticket_type, instructions=instructions)
 
 
 def _fit_to_budget(value: Any, max_chars: int) -> Any:
@@ -288,6 +353,21 @@ class ContextBuilder:
         clean_itsm = sanitize(raw_itsm)
         clean_ado = sanitize(raw_ado)
 
+        try:
+            ai_prompt = resolve_itsm_ai_prompt(
+                self._itsm_service,
+                ticket_id=clean_ticket_id,
+                environment=environment,
+                ticket_context=clean_itsm,
+            )
+        except Exception as exc:
+            # The private hook is trusted code, but its exception/body may still
+            # contain corporate data and therefore must not be reflected to UI.
+            raise ContextBuildError(
+                "Не удалось выбрать корпоративные AI-инструкции для заявки: "
+                f"{type(exc).__name__}"
+            ) from exc
+
         # Справочники сюда принципиально не входят: модель возвращает смысловые
         # кандидаты, а идентификаторы сопоставляются локальным Python-кодом.
         clean_itsm = _fit_to_budget(clean_itsm, int(self._max_context_chars * 0.53))
@@ -299,6 +379,8 @@ class ContextBuilder:
             ado=clean_ado,
             warnings=warnings,
             pull_request_id=pull_request_id(pr_reference, raw_ado),
+            ticket_type=ai_prompt.ticket_type if ai_prompt else "",
+            ai_instructions=ai_prompt.instructions if ai_prompt else "",
         )
 
     @staticmethod

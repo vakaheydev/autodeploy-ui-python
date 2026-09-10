@@ -407,6 +407,31 @@ def test_manual_draft_is_persistent_until_explicit_delete(
     assert FormDraftStore(container).get(draft.id) is None
 
 
+def test_late_autosave_cannot_recreate_a_deleted_draft(
+    container: ApplicationContainer,
+) -> None:
+    document = container.forms.describe("api.create", "test_int")
+    store = FormDraftStore(container)
+    draft = store.save_values(
+        form_id="api.create",
+        environment="test_int",
+        version=document["version"],
+        values={"name": "Отправляемый API"},
+    )
+    store.delete(draft.id)
+
+    with pytest.raises(KeyError, match="Черновик не найден"):
+        store.save_values(
+            form_id="api.create",
+            environment="test_int",
+            version=document["version"],
+            values={"name": "Запоздалое сохранение"},
+            draft_id=draft.id,
+        )
+
+    assert FormDraftStore(container).list_all() == []
+
+
 def test_ai_draft_survives_workflow_and_process_lifecycle(
     container: ApplicationContainer,
 ) -> None:

@@ -10,7 +10,17 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as _dc_field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Union,
+)
 
 if TYPE_CHECKING:
     from services.gravitee_service import GraviteeService
@@ -38,6 +48,58 @@ class CustomButton:
 
 
 @dataclass(frozen=True)
+class ServerDialogActionResult:
+    """Result of a button inside a server-rendered action dialog.
+
+    ``form_values`` is a patch for the owning form. ``dialog_values`` is a
+    patch for the still-open dialog. ``close_dialog=None`` uses the button's
+    ``close_on_success`` declaration.
+    """
+
+    message: str = "Действие выполнено"
+    form_values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    dialog_values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    data: Any = None
+    close_dialog: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class ServerDialogAction:
+    """One Python-owned button rendered in a :class:`ServerActionDialog`."""
+
+    action_id: str
+    label: str
+    handler: Callable[[str, Dict[str, Any], Dict[str, Any]], Any]
+    style: str = "Primary"
+    require_valid_dialog: bool = True
+    confirmation_text: str = ""
+    close_on_success: bool = True
+
+
+@dataclass(frozen=True)
+class ServerActionDialog:
+    """Interactive server-defined dialog launched by a form action.
+
+    Fields use the same Python contracts as the owning form. ``initial_values``
+    may be a mapping or a callable ``(environment, form_values) -> mapping``.
+    The optional validator receives ``(environment, form_values,
+    dialog_values)`` and returns the same issue shapes as ``BaseForm.validate``.
+    """
+
+    title: str
+    fields: Sequence[FieldDefinition]
+    actions: Sequence[ServerDialogAction]
+    description: str = ""
+    initial_values: Union[
+        Mapping[str, Any],
+        Callable[[str, Dict[str, Any]], Mapping[str, Any]],
+    ] = _dc_field(default_factory=dict)
+    validate: Optional[
+        Callable[[str, Dict[str, Any], Dict[str, Any]], Any]
+    ] = None
+
+
+@dataclass(frozen=True)
 class ServerAction:
     """UI-independent custom form action available through the web API.
 
@@ -48,10 +110,11 @@ class ServerAction:
 
     action_id: str
     label: str
-    handler: Callable[[str, Dict[str, Any]], Any]
+    handler: Optional[Callable[[str, Dict[str, Any]], Any]] = None
     style: str = "Secondary"
     require_valid_form: bool = False
     confirmation_text: str = ""
+    dialog: Optional[ServerActionDialog] = None
 
 
 @dataclass(frozen=True)

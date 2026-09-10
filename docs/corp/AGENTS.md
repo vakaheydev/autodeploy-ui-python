@@ -31,11 +31,16 @@
 - `fetch_from_itsm` сам выбирает `ITSMFetchResult.deterministic` или
   `ITSMFetchResult.ai`; перед его изменением читайте
   `docs/ITSM_FORM_FILLING.md`.
+- Общие AI-правила по типу заявки реализуются в ITSM-service через
+  `get_ai_prompt(ITSMAIPromptRequest)`, а не копируются по формам. Возвращайте
+  только статические проверенные инструкции из mapping; raw текст заявки в
+  trusted prompt запрещён.
 - AI может подготовить persistent draft, но не может submit/deploy. Любой
   внешний side effect проходит через обычный Python form lifecycle и явное
   подтверждение пользователя.
-- Новая web-функциональность не должна зависеть от `self.screen`, Tkinter widget
-  или dialog. Для кнопок используйте `ServerAction`; для окружения —
+- Новая web-функциональность не должна зависеть от Tkinter widget/dialog. Для
+  одной серверной кнопки используйте `ServerAction`; для интерактивного окна с
+  полями/справочниками — `ServerActionDialog`; для окружения —
   `self.current_environment` или аргумент hook.
 - Corporate custom pages объявляются через `PluginDefinition`. Не добавляйте
   private React/HTML: поля, виджеты и операции возвращаются публичному generic
@@ -70,6 +75,8 @@
   bool(values.get("flag"))`. Runtime вычисляет condition и на неполном состоянии.
 - `SELECT` хранит один `value_key`; `MULTISELECT` — список `value_key`.
   Никогда не подменяйте ID отображаемым `label_key`.
+- Справочник с несколькими входами объявляет минимальный allowlist через
+  `ReferenceDependency`; не передавайте reference handler всё состояние формы.
 - Domain errors возвращайте через `self.validation_error(field, message)`, чтобы
   web UI показал ошибку у поля и сфокусировал его.
 - Network errors должны сохранять диагностическую причину в server log, но

@@ -19,6 +19,11 @@ class CorporateITSM:
         # Вернуть dict/list с корпоративными данными.
         ...
 
+    def get_ai_prompt(self, request):
+        # Опционально: выбрать статические AI-инструкции по типу заявки.
+        # Полный typed пример — в ITSM_FORM_FILLING.md.
+        return None
+
 
 class CorporateTFS:
     def __init__(self, env_manager, http_client):
@@ -188,6 +193,17 @@ itsm.get_ticket(ticket_id, environment="") -> JSON-compatible value
 tfs.get_pull_request(reference, environment="") -> JSON-compatible value
 ```
 
+Опциональный typed capability ITSM-service:
+
+```text
+itsm.get_ai_prompt(ITSMAIPromptRequest) -> ITSMAIPrompt | None
+```
+
+Он выбирает проверенные инструкции по корпоративному типу заявки. Capability
+обслуживает и главный Copilot, и exact-form AI fill; старым adapters добавлять
+его не обязательно. Полный контракт, trust boundary и пример mapping приведены
+в [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md#инструкции-по-типу-заявки).
+
 Полученные данные считаются недоверенными. До передачи AI нужно оставить только
 необходимые поля, ограничить размер и удалить secrets/confidential content.
 Корпоративный service может возвращать богатый внутренний object для формы, но
@@ -214,6 +230,8 @@ server log — сохранять exception type/traceback для диагнос
 - factory возвращает три usable service object;
 - plugin context получает результат того же provider и выбранное environment;
 - ticket/PR happy path, timeout, 4xx/5xx, malformed/oversized response;
+- AI prompt hook: известный/неизвестный тип, main-chat/exact-form context,
+  неверный return type и redaction;
 - endpoint/auth selection для каждого environment;
 - TFS Basic header декодируется в пустой username + PAT;
 - parallel requests разных environments не смешивают auth;

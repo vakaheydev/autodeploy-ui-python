@@ -920,6 +920,8 @@ class UnifiedCopilot:
                 "itsm_data": context.itsm if context else None,
                 "ado_data": context.ado if context else None,
                 "context_warnings": context.warnings if context else (),
+                "ticket_type": context.ticket_type if context else "",
+                "ai_instructions": context.ai_instructions if context else "",
             }
             prompt = (
                 build_mcp_copilot_session_context(
@@ -964,6 +966,8 @@ class UnifiedCopilot:
                 itsm_data=context.itsm,
                 ado_data=context.ado,
                 context_warnings=context.warnings,
+                ticket_type=context.ticket_type,
+                ai_instructions=context.ai_instructions,
             ))
         if not updates:
             return

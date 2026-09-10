@@ -10,7 +10,11 @@ from typing import Any
 
 from core.env_manager import EnvManager
 from core.http_client import HttpClient
-from opencode_integration.data_sources import DataSourceNotConfiguredError
+from opencode_integration.data_sources import (
+    DataSourceNotConfiguredError,
+    ITSMAIPrompt,
+    ITSMAIPromptRequest,
+)
 
 
 class ITSMService:
@@ -25,3 +29,15 @@ class ITSMService:
             "Корпоративный источник ITSM не подключён. "
             "Реализуйте ITSMService.get_ticket() в закрытом модуле."
         )
+
+    def get_ai_prompt(
+        self, request: ITSMAIPromptRequest
+    ) -> ITSMAIPrompt | None:
+        """Return ticket-type-specific AI guidance in a corporate adapter.
+
+        The public implementation intentionally has no request-type knowledge.
+        Existing adapters may omit this optional method; the runtime then uses
+        its normal Copilot instructions.
+        """
+        del request
+        return None

@@ -34,6 +34,8 @@ handbook с документацией публичного ядра.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — структура пакета и extension points.
 3. Документ по задаче:
    - [FORMS.md](FORMS.md) — формы, actions, submit и совместимость;
+   - [ACTION_DIALOGS.md](ACTION_DIALOGS.md) — интерактивные form actions,
+     диалоги, кнопки и multi-dependent references;
    - [ITSM_FORM_FILLING.md](ITSM_FORM_FILLING.md) — deterministic/AI режимы
      кнопки заявки;
    - [PLUGINS.md](PLUGINS.md) — корпоративные custom pages, динамические
@@ -50,6 +52,7 @@ handbook с документацией публичного ядра.
 | Если меняется… | Сначала читать | Проверять в публичном ядре |
 |---|---|---|
 | Поля, validation, payload, submit | `FORMS.md` | `forms/base_form.py`, `forms/fields.py` |
+| Диалог кнопки формы, Swagger picker | `ACTION_DIALOGS.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
 | Заполнение формы из заявки | `ITSM_FORM_FILLING.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
 | Custom page, отчёт, график, plugin operation | `PLUGINS.md` | `plugins/`, `webapp/plugin_runtime.py` |
 | ITSM/TFS/Gravitee-клиент | `SERVICES_AND_ENVIRONMENT.md` | `webapp/extensions.py`, `services/submit_service.py` |

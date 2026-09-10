@@ -171,6 +171,8 @@ class FormExtractorAgent:
                 repository_mcp=active_repository_mcp,
                 allow_repository_git_pull=allow_repository_git_pull,
                 plan_guidance=plan_guidance,
+                ticket_type=context.ticket_type,
+                ai_instructions=context.ai_instructions,
             )
             self._on_progress("Агент анализирует данные для формы…")
             try:
@@ -246,6 +248,8 @@ class FormExtractorAgent:
                 ado_data=context.ado,
                 context_warnings=self._context_warnings,
                 field_proposals=field_proposals,
+                ticket_type=context.ticket_type,
+                ai_instructions=context.ai_instructions,
             )
             return self._finalize_locked(prompt=prompt, retry_count=0)
 

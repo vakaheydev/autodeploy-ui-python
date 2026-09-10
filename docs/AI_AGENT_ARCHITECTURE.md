@@ -118,6 +118,15 @@ untrusted data and is not returned to the browser. A typed
 `ITSMFetchResult.deterministic(values)` bypasses Copilot and applies the exact
 Python-produced patch; legacy mappings retain that deterministic meaning.
 
+Corporate ITSM adapters may also implement the optional
+`get_ai_prompt(ITSMAIPromptRequest) -> ITSMAIPrompt | None` capability. Public
+core invokes it with already sanitized ticket context and stores the bounded
+result in `TRUSTED_ITSM_AI_PROMPT`. This gives the model stable routing and field
+mapping rules per corporate request type without promoting ticket prose across
+the trust boundary. The returned instructions must be static, reviewed
+configuration selected by type; raw ticket fields stay inside `UNTRUSTED`
+sections. Adapters without this capability keep the default Copilot behavior.
+
 For ordinary conversation Copilot answers without loading the form catalog or
 calling form/repository tools. A request can create more than one draft; the
 chat returns a link for every form and labels the outcome as an execution plan.

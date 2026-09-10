@@ -6,14 +6,25 @@ import pytest
 
 from forms.base_form import (
     BaseForm,
+    FormValidationIssue,
     ITSMFetchMode,
     ITSMFetchResult,
     ServerAction,
+    ServerActionDialog,
+    ServerDialogAction,
+    ServerDialogActionResult,
 )
-from forms.fields import FieldDefinition, FieldType, ReferenceConfig
+from forms.fields import (
+    FieldDefinition,
+    FieldType,
+    ReferenceConfig,
+    ReferenceDependency,
+)
 from forms.loader import register_all_forms
 from forms.registry import FormRegistry
+from opencode_integration.data_sources import ITSMAIPrompt, ITSMAIPromptRequest
 from webapp.container import ApplicationContainer
+from webapp.extensions import RuntimeServices
 from webapp.form_runtime import form_version
 from webapp.settings import WebSettings
 from services.submit_service import SubmitService
@@ -486,6 +497,128 @@ class _ActionForm(BaseForm):
         return {"message": "Done"}
 
 
+class _DialogActionForm(BaseForm):
+    form_id = "test.dialog-action"
+    title = "Dialog action"
+    category = "other"
+    fields = [FieldDefinition("name", "Name", FieldType.TEXT)]
+
+    def build_payload(self, form_data):
+        return dict(form_data)
+
+    def get_submit_endpoint(self, environment: str) -> str:
+        return "https://example.invalid"
+
+    def get_server_actions(self):
+        dialog = ServerActionDialog(
+            title="Выбрать методы из Swagger",
+            description="Источники и действия принадлежат Python-форме.",
+            fields=(
+                FieldDefinition(
+                    "api",
+                    "API",
+                    FieldType.SELECT,
+                    reference=ReferenceConfig(
+                        source="test",
+                        resource="apis",
+                        value_key="id",
+                        label_key="name",
+                        search_keys=("name", "context_path"),
+                    ),
+                ),
+                FieldDefinition(
+                    "swagger_environment",
+                    "Окружение Swagger",
+                    FieldType.TEXT,
+                ),
+                FieldDefinition(
+                    "swagger_file",
+                    "Swagger file",
+                    FieldType.FILE,
+                    required=False,
+                    file_type=".json",
+                ),
+                FieldDefinition(
+                    "methods",
+                    "Методы",
+                    FieldType.MULTISELECT,
+                    reference=ReferenceConfig(
+                        source="test",
+                        resource="swagger_methods",
+                        value_key="id",
+                        label_key="label",
+                        required_params=("api_path", "swagger_environment"),
+                    ),
+                    reference_dependencies=(
+                        ReferenceDependency(
+                            "api",
+                            parameter="api_path",
+                            item_field="context_path",
+                        ),
+                        ReferenceDependency("swagger_environment"),
+                        ReferenceDependency(
+                            "swagger_file",
+                            parameter="swagger_document",
+                        ),
+                    ),
+                ),
+                FieldDefinition(
+                    "status",
+                    "Статус",
+                    FieldType.TEXT,
+                    required=False,
+                ),
+            ),
+            actions=(
+                ServerDialogAction(
+                    "inspect",
+                    "Проверить",
+                    self._inspect,
+                    require_valid_dialog=False,
+                    close_on_success=False,
+                ),
+                ServerDialogAction("apply", "Применить", self._apply),
+            ),
+            initial_values=self._initial_dialog_values,
+            validate=self._validate_dialog,
+        )
+        return [ServerAction(
+            action_id="choose_methods",
+            label="Выбрать методы из Swagger",
+            dialog=dialog,
+        )]
+
+    @staticmethod
+    def _initial_dialog_values(environment, form_values):
+        return {
+            "swagger_environment": environment,
+            "status": f"Для {form_values.get('name', '')}",
+        }
+
+    @staticmethod
+    def _validate_dialog(_environment, _form_values, dialog_values):
+        if not dialog_values.get("methods"):
+            return [FormValidationIssue("methods", "Выберите хотя бы один метод")]
+        return []
+
+    @staticmethod
+    def _inspect(_environment, _form_values, _dialog_values):
+        return ServerDialogActionResult(
+            message="Swagger прочитан",
+            dialog_values={"status": "Готово к применению"},
+        )
+
+    def _apply(self, environment, form_values, dialog_values):
+        assert self.current_environment == environment
+        assert self.screen.get_field_item("api")["id"] == dialog_values["api"]
+        return ServerDialogActionResult(
+            message="Методы перенесены",
+            form_values={
+                "name": f"{form_values['name']}:{','.join(dialog_values['methods'])}"
+            },
+        )
+
+
 class _ConditionalPatchForm(BaseForm):
     form_id = "test.conditional-patch"
     title = "Conditional patch"
@@ -786,6 +919,149 @@ def test_server_action_requires_one_time_confirmation(container: ApplicationCont
         register_all_forms()
 
 
+def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Resolver:
+        def __init__(self) -> None:
+            self.method_params = []
+
+        def resolve(self, reference, environment="", extra_params=None):
+            assert environment == "test_int"
+            if reference.resource == "apis":
+                return [{
+                    "id": "api-1",
+                    "name": "Orders",
+                    "context_path": "/orders",
+                }]
+            if reference.resource == "swagger_methods":
+                self.method_params.append(extra_params)
+                if extra_params == {
+                    "api_path": "/orders",
+                    "swagger_environment": "test_int",
+                    "swagger_document": '{"openapi":"3.0.0"}',
+                }:
+                    return [
+                        {"id": "GET /orders", "label": "GET /orders"},
+                        {"id": "POST /orders", "label": "POST /orders"},
+                    ]
+            return []
+
+    registry = FormRegistry()
+    registry.register(_DialogActionForm())
+    resolver = Resolver()
+    monkeypatch.setattr(container, "new_reference_resolver", lambda: resolver)
+    try:
+        document = container.forms.describe(
+            "test.dialog-action",
+            "test_int",
+            {"name": "Subscription"},
+        )
+        descriptor = document["custom_actions"][0]
+        assert descriptor["dialog"] is True
+        version = document["version"]
+
+        opened = container.forms.open_action_dialog(
+            "test.dialog-action",
+            "choose_methods",
+            "test_int",
+            {"name": "Subscription"},
+            version,
+        )
+        assert opened["success"] is True
+        assert opened["title"] == "Выбрать методы из Swagger"
+        assert opened["values"] == {
+            "swagger_environment": "test_int",
+            "status": "Для Subscription",
+        }
+        methods = next(field for field in opened["fields"] if field["key"] == "methods")
+        assert methods["reference"]["endpoint"].endswith(
+            "/actions/choose_methods/dialog/fields/methods/options"
+        )
+        assert methods["reference_dependencies"] == [
+            {"field": "api", "parameter": "api_path", "item_field": "context_path"},
+            {"field": "swagger_environment", "parameter": "swagger_environment", "item_field": None},
+            {"field": "swagger_file", "parameter": "swagger_document", "item_field": None},
+        ]
+
+        dialog_values = {
+            "api": "api-1",
+            "swagger_environment": "test_int",
+            "swagger_file": '{"openapi":"3.0.0"}',
+            "methods": ["GET /orders"],
+            "status": "",
+        }
+        options = container.forms.action_dialog_options(
+            "test.dialog-action",
+            "choose_methods",
+            "methods",
+            "test_int",
+            {"name": "Subscription"},
+            {
+                **dialog_values,
+                "browser_only_parameter": "must-not-reach-handler",
+            },
+            version,
+            "GET",
+            0,
+            50,
+            False,
+        )
+        assert options["items"] == [{
+            "id": "GET /orders",
+            "label": "GET /orders",
+        }]
+        assert resolver.method_params[-1] == {
+            "api_path": "/orders",
+            "swagger_environment": "test_int",
+            "swagger_document": '{"openapi":"3.0.0"}',
+        }
+
+        invalid = container.forms.run_action_dialog_button(
+            "test.dialog-action",
+            "choose_methods",
+            "apply",
+            "test_int",
+            {"name": "Subscription"},
+            {**dialog_values, "methods": []},
+            version,
+        )
+        assert invalid["success"] is False
+        assert invalid["validation_scope"] == "dialog"
+        assert invalid["validation"]["errors"][-1]["field"] == "methods"
+
+        inspected = container.forms.run_action_dialog_button(
+            "test.dialog-action",
+            "choose_methods",
+            "inspect",
+            "test_int",
+            {"name": "Subscription"},
+            dialog_values,
+            version,
+        )
+        assert inspected["close_dialog"] is False
+        assert inspected["values"]["status"] == "Готово к применению"
+
+        applied = container.forms.run_action_dialog_button(
+            "test.dialog-action",
+            "choose_methods",
+            "apply",
+            "test_int",
+            {"name": "Subscription"},
+            dialog_values,
+            version,
+        )
+        assert applied["success"] is True
+        assert applied["close_dialog"] is True
+        assert applied["form_values"] == {
+            "name": "Subscription:GET /orders",
+        }
+    finally:
+        registry.clear()
+        register_all_forms()
+
+
 def test_boolean_empty_marker_never_populates_conditional_text_field(
     container: ApplicationContainer,
 ) -> None:
@@ -912,6 +1188,29 @@ def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
     registry.register(_AITicketForm())
     fake_ai = FakeAI()
     container.ai = fake_ai
+    original_service_provider = container.service_provider
+
+    class PromptITSM:
+        request: ITSMAIPromptRequest | None = None
+
+        def get_ai_prompt(self, request: ITSMAIPromptRequest) -> ITSMAIPrompt:
+            self.request = request
+            return ITSMAIPrompt(
+                ticket_type="create_api_v2",
+                instructions="Use summary as the proposed API name.",
+            )
+
+    prompt_itsm = PromptITSM()
+
+    def prompt_services(env_manager, http_client):
+        services = original_service_provider(env_manager, http_client)
+        return RuntimeServices(
+            itsm=prompt_itsm,
+            tfs=services.tfs,
+            gravitee=services.gravitee,
+        )
+
+    container.service_provider = prompt_services
     try:
         version = form_version(container.forms.get_form("test.ticket-ai", "test_int"))
         result = container.forms.fetch_ticket(
@@ -928,12 +1227,24 @@ def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
         assert fake_ai.arguments["form_id"] == "test.ticket-ai"
         assert fake_ai.arguments["environment"] == "test_int"
         assert fake_ai.arguments["current_values"] == {"name": "Existing"}
+        assert fake_ai.arguments["ticket_type"] == "create_api_v2"
+        assert fake_ai.arguments["instruction"] == (
+            "Use summary as the proposed API name.\n\n"
+            "Use the request summary"
+        )
         assert fake_ai.arguments["source_context"] == {
+            "summary": "Create from REQ-42",
+            "access_token": "[REDACTED]",
+        }
+        assert prompt_itsm.request is not None
+        assert prompt_itsm.request.form_id == "test.ticket-ai"
+        assert prompt_itsm.request.ticket_context == {
             "summary": "Create from REQ-42",
             "access_token": "[REDACTED]",
         }
     finally:
         container.ai = None
+        container.service_provider = original_service_provider
         registry.clear()
         register_all_forms()
 

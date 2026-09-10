@@ -34,6 +34,27 @@ class ActionRequest(ValuesRequest):
     confirmation_token: str = Field(default="", max_length=300)
 
 
+class ActionDialogOpenRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    form_values: Dict[str, Any] = Field(default_factory=dict)
+    form_version: str = Field(default="", max_length=128)
+
+
+class ActionDialogStateRequest(ActionDialogOpenRequest):
+    dialog_values: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionDialogReferenceRequest(ActionDialogStateRequest):
+    query: str = Field(default="", max_length=500)
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    limit: int = Field(default=100, ge=1, le=500)
+    refresh: bool = False
+
+
+class ActionDialogExecuteRequest(ActionDialogStateRequest):
+    confirmation_token: str = Field(default="", max_length=300)
+
+
 class DraftSaveRequest(ValuesRequest):
     draft_id: str = Field(default="", max_length=200)
     clear_review: bool = False

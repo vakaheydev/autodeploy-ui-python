@@ -33,6 +33,127 @@ test('opens the bundled application and validates a Python form', async ({ page 
   await expect(page.getByRole('dialog')).toContainText('/orders/v1')
 })
 
+test('renders a Python-owned action dialog and applies its result', async ({ page }) => {
+  const actionId = 'e2e-swagger-methods'
+  const dialog = {
+    success: true,
+    id: actionId,
+    title: 'Выбор методов Swagger',
+    description: 'Поля и кнопки этого окна принадлежат Python-контракту.',
+    form_version: '',
+    values: { source: 'file', swagger_file: '{"openapi":"3.0.0"}', methods: [] },
+    fields: [
+      {
+        key: 'source', path: 'source', label: 'Источник', type: 'text',
+        required: true, visible: true, dynamic: false, placeholder: '',
+        default: '', hint: '', file_type: '', width: 1, plural: false,
+        plural_max: null, depends_on: null, depends_on_field: null,
+        reference_dependencies: [],
+      },
+      {
+        key: 'swagger_file', path: 'swagger_file', label: 'Swagger-файл', type: 'file',
+        required: true, visible: true, dynamic: false, placeholder: '',
+        default: '', hint: '', file_type: '.json', width: 1, plural: false,
+        plural_max: null, depends_on: null, depends_on_field: null,
+        reference_dependencies: [],
+      },
+      {
+        key: 'methods', path: 'methods', label: 'Методы', type: 'multiselect',
+        required: true, visible: true, dynamic: false, placeholder: '',
+        default: [], hint: '', file_type: '', width: 1, plural: false,
+        plural_max: null, depends_on: null, depends_on_field: null,
+        reference_dependencies: [
+          { field: 'source', parameter: 'source', item_field: null },
+          { field: 'swagger_file', parameter: 'document', item_field: null },
+        ],
+        reference: {
+          source: 'corp_swagger', resource: 'swagger_methods', value_key: 'id',
+          label_key: 'name', search_keys: ['name', 'path'], detail_keys: ['path'],
+          required_params: ['source', 'document'],
+          endpoint: `/api/v1/forms/api.create/actions/${actionId}/dialog/fields/methods/options`,
+        },
+      },
+    ],
+    actions: [{
+      id: 'apply', label: 'Применить методы', style: 'primary',
+      confirmation_required: false, requires_valid_dialog: true,
+      close_on_success: true,
+    }],
+  }
+  let version = ''
+  await page.route('**/api/v1/forms/api.create?environment=*', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json()
+    version = body.version
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        custom_actions: [...body.custom_actions, {
+          id: actionId,
+          label: 'Выбрать методы из Swagger',
+          available: true,
+          reason: '',
+          style: 'Secondary',
+          confirmation_required: false,
+          dialog: true,
+        }],
+      },
+    })
+  })
+  await page.route(`**/actions/${actionId}/dialog/fields/methods/options`, async (route) => {
+    const body = route.request().postDataJSON()
+    expect(body.dialog_values.swagger_file).toBe('{"openapi":"3.0.0"}')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [{ id: 'GET /orders', name: 'GET /orders', path: '/orders' }],
+        total: 1,
+        offset: 0,
+        limit: 500,
+        has_more: false,
+      }),
+    })
+  })
+  await page.route(`**/actions/${actionId}/dialog/state`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ...dialog, form_version: version }),
+  }))
+  await page.route(`**/actions/${actionId}/dialog/actions/apply`, async (route) => {
+    const body = route.request().postDataJSON()
+    expect(body.dialog_values.methods).toEqual(['GET /orders'])
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...dialog,
+        form_version: version,
+        values: body.dialog_values,
+        form_values: { name: 'API with Swagger methods' },
+        message: 'Методы перенесены',
+        close_dialog: true,
+      }),
+    })
+  })
+  await page.route(`**/actions/${actionId}/dialog`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ...dialog, form_version: version }),
+  }))
+
+  await page.goto('/forms/api.create')
+  await page.getByRole('button', { name: 'Выбрать методы из Swagger' }).click()
+  const modal = page.getByRole('dialog', { name: 'Выбор методов Swagger' })
+  await expect(modal).toContainText('Поля и кнопки этого окна принадлежат Python-контракту.')
+  await modal.getByRole('checkbox', { name: 'GET /orders' }).check()
+  await modal.getByRole('button', { name: 'Применить методы' }).click()
+
+  await expect(modal).toHaveCount(0)
+  await expect(page.getByPlaceholder('Введите название АПИ')).toHaveValue('API with Swagger methods')
+})
+
 test('renders on a narrow viewport without losing navigation', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/forms')

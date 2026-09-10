@@ -82,6 +82,8 @@ history, AI routing и внешних клиентов. Для переимен�
 - `plural=True` и optional `plural_max` для повторяемого поля;
 - `block_fields` для вложенной структуры;
 - `depends_on`/`depends_on_field` для зависимого справочника.
+- `reference_dependencies` для явной передачи нескольких соседних значений в
+  один справочник.
 
 `width` сохранён для desktop compatibility; web-формы отображаются вертикально
 и не должны кодировать бизнес-смысл шириной виджета.
@@ -177,8 +179,10 @@ normalization/state на сервере, затем применяется front
 операцией и логируются server-side.
 
 Legacy `CustomButton` остаётся только для Tkinter. Он отображается disabled в web
-и не должен использоваться для новой функциональности. Кастомные диалоги нужно
-выразить как поля формы, confirmation или параметры отдельного `ServerAction`.
+и не должен использоваться для новой функциональности. Если action требует
+дополнительных полей, файла, справочника, нескольких кнопок или промежуточного
+состояния, объявите `ServerActionDialog`. Точный контракт и полный пример
+Swagger picker описаны в [ACTION_DIALOGS.md](ACTION_DIALOGS.md).
 
 ## Загрузка заявки
 
@@ -265,8 +269,8 @@ def pre_submit(self, form_data, payload, environment):
 |---|---|---|
 | `self.current_environment` | во всех form hooks | основной способ |
 | `self.screen.app.current_environment.get()` | нет | заменить |
-| `self.screen.get_field_item(s)` | `pre_submit`, `ServerAction` | использовать только для полного reference item |
-| `self.apply_form_data()` | `ServerAction`, `fetch_from_itsm` | лучше явно вернуть `values` |
+| `self.screen.get_field_item(s)` | `pre_submit`, `ServerAction`, dialog button | использовать только для полного reference item |
+| `self.apply_form_data()` | `ServerAction`, dialog button, `fetch_from_itsm` | лучше явно вернуть `values`/`form_values` |
 | `self.screen.apply_form_data()` | те же два hook, compatibility | заменить на явный result |
 | Tkinter widget/dialog methods | нет | выразить через schema/action/confirmation |
 
@@ -285,7 +289,7 @@ def pre_submit(self, form_data, payload, environment):
 - точный preview payload;
 - endpoint, method, auth type и headers для каждого environment;
 - `pre_submit` mutation/error;
-- каждый ServerAction, ITSM patch и confirmation;
+- каждый ServerAction/ServerActionDialog, ITSM patch и confirmation;
 - result/poll termination.
 
 В integration smoke test запросите form document, отправьте initial `/state`,

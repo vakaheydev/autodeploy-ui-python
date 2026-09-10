@@ -28,6 +28,10 @@ interface FieldProps {
   onFieldChange?: (path: string) => void
   review?: Record<string, ReviewEntry>
   onReview?: (key: string, accept: boolean) => void
+  dialogContext?: {
+    formValues: Record<string, unknown>
+    formVersion: string
+  }
 }
 
 interface OptionsResponse {
@@ -61,8 +65,14 @@ function stringControlValue(value: unknown) {
     : ''
 }
 
+function emptyDependency(value: unknown) {
+  if (value === null || value === undefined || value === '') return true
+  if (Array.isArray(value)) return value.length === 0
+  return typeof value === 'object' && Object.keys(value as object).length === 0
+}
+
 function ReferenceField(props: FieldProps) {
-  const { field, values, rootValues, environment, formId, disabled, onChange } = props
+  const { field, values, rootValues, environment, disabled, onChange } = props
   const reference = field.reference!
   const invalid = errorsForField(field, props.errors).length > 0
   const errorId = invalid ? fieldErrorId(field) : undefined
@@ -74,7 +84,22 @@ function ReferenceField(props: FieldProps) {
   const [detailItem, setDetailItem] = useState<ReferenceItem | null>(null)
   const requestSequence = useRef(0)
   const itemCache = useRef(new Map<string, ReferenceItem>())
-  const dependency = field.depends_on ? values[field.depends_on] : undefined
+  const explicitDependencies = field.reference_dependencies ?? []
+  const dependencyValues = new Map(explicitDependencies.map((item) => [
+    item.parameter || item.field,
+    values[item.field],
+  ]))
+  const legacyDependency = field.depends_on ? values[field.depends_on] : undefined
+  const dependencySignature = JSON.stringify([
+    field.depends_on ? [field.depends_on, legacyDependency] : null,
+    ...explicitDependencies.map((item) => [item.field, values[item.field]]),
+  ])
+  const dependencyBlocked = Boolean(
+    (field.depends_on && emptyDependency(legacyDependency))
+    || explicitDependencies.length > 0 && reference.required_params.some(
+      (parameter) => emptyDependency(dependencyValues.get(parameter)),
+    ),
+  )
   const serverBacked = field.options === undefined
   const selectedValue = stringControlValue(props.value)
   const selectedValues = field.type === 'select'
@@ -92,7 +117,16 @@ function ReferenceField(props: FieldProps) {
     setLoading(true)
     setLoadError('')
     try {
-      const result = await post<OptionsResponse>(reference.endpoint, {
+      const result = await post<OptionsResponse>(reference.endpoint, props.dialogContext ? {
+        environment,
+        form_values: props.dialogContext.formValues,
+        dialog_values: rootValues,
+        form_version: props.dialogContext.formVersion,
+        query: requestedQuery,
+        offset: 0,
+        limit: 500,
+        refresh,
+      } : {
         environment,
         values: rootValues,
         query: requestedQuery,
@@ -124,20 +158,20 @@ function ReferenceField(props: FieldProps) {
       setLoadError('')
       return
     }
-    if (field.depends_on && (dependency === undefined || dependency === null || dependency === '')) {
+    if (dependencyBlocked) {
       setItems([])
       setTotal(0)
       setLoading(false)
       return
     }
-  }, [field.options, field.depends_on, dependency, environment, reference.endpoint])
+  }, [field.options, dependencyBlocked, dependencySignature, environment, reference.endpoint])
 
   useEffect(() => {
     if (!serverBacked) return
-    if (field.depends_on && (dependency === undefined || dependency === null || dependency === '')) return
+    if (dependencyBlocked) return
     const timer = window.setTimeout(() => void load(false, query), 260)
     return () => window.clearTimeout(timer)
-  }, [query, serverBacked, field.depends_on, environment, reference.endpoint, dependency, selectionSignature])
+  }, [query, serverBacked, dependencyBlocked, dependencySignature, environment, reference.endpoint, selectionSignature])
 
   const searchable = items.length > 8 || serverBacked
   const shown = useMemo(() => {
@@ -359,7 +393,7 @@ export function PluralField(props: FieldProps) {
   )
 }
 
-export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, review, onReview }: {
+export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, review, onReview, dialogContext }: {
   fields: FieldDocument[]
   values: Record<string, unknown>
   environment: string
@@ -370,6 +404,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
   onFieldChange?: (path: string) => void
   review?: FieldProps['review']
   onReview?: FieldProps['onReview']
+  dialogContext?: FieldProps['dialogContext']
 }) {
   const change = (key: string, value: unknown) => onValuesChange({ ...values, [key]: value })
   const remove = (key: string) => {
@@ -394,6 +429,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
       onFieldChange={onFieldChange}
       review={review}
       onReview={onReview}
+      dialogContext={dialogContext}
     />
   ))}</div>
 }

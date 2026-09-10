@@ -48,6 +48,25 @@ class ReferenceConfig:
 Condition = Callable[[Dict[str, Any]], bool]
 
 
+@dataclass(frozen=True)
+class ReferenceDependency:
+    """One explicitly allowed input for a dependent reference.
+
+    ``field`` is a sibling field key. ``parameter`` is the key passed to the
+    private :class:`BaseReferenceHandler` in ``extra_params`` and defaults to
+    ``field``. ``item_field`` optionally resolves a property from the selected
+    reference item instead of passing its stored identifier.
+
+    Keeping this allowlist on the field contract is deliberate: a reference
+    handler receives only the values it declared, never the complete form or
+    dialog state.
+    """
+
+    field: str
+    parameter: str = ""
+    item_field: str = ""
+
+
 @dataclass
 class FieldDefinition:
     """
@@ -72,3 +91,6 @@ class FieldDefinition:
     block_fields: List['FieldDefinition']  = dc_field(default_factory=list)  # вложенные поля для BLOCK
     depends_on:       str                   = ""    # ключ поля-родителя для зависимого справочника
     depends_on_field: str                   = ""    # поле из item родителя (по умолч. — value_key)
+    reference_dependencies: tuple[ReferenceDependency, ...] = ()
+    # Несколько явных sibling-зависимостей. Старые depends_on/depends_on_field
+    # остаются полностью совместимыми и могут использоваться одновременно.

@@ -52,8 +52,11 @@ update both sides of a public/private contract when its signature changes.
 ## Forms and references
 
 Preserve `form_id`, field keys, `FieldType`, `ReferenceConfig`, plural naming and
-the existing `BaseForm` lifecycle. Add web-capable custom actions through
-`ServerAction`; a raw Tkinter callback cannot execute in a headless server.
+the existing `BaseForm` lifecycle. Add one-step web actions through
+`ServerAction` and interactive field-based actions through `ServerActionDialog`;
+a raw Tkinter callback cannot execute in a headless server. Multi-input
+references must declare the minimal `ReferenceDependency` allowlist rather than
+receiving complete form state.
 Reference identifiers come from `value_key`, display text from `label_key`, and
 search from `search_keys`. A select returns one identifier; a multiselect returns
 an array. Do not load entire large dictionaries into the AI context or browser.

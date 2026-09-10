@@ -91,7 +91,15 @@ def test_health_catalog_openapi_and_spa(server: str) -> None:
     catalog = json.loads(content)
     assert status == 200
     assert any(form["id"] == "api.create" for category in catalog["categories"] for form in category["forms"])
-    assert request(server, "/api/openapi.json")[0] == 200
+    status, _, content = request(server, "/api/openapi.json")
+    assert status == 200
+    openapi_paths = json.loads(content)["paths"]
+    assert {
+        "/api/v1/forms/{form_id}/actions/{action_id}/dialog",
+        "/api/v1/forms/{form_id}/actions/{action_id}/dialog/state",
+        "/api/v1/forms/{form_id}/actions/{action_id}/dialog/fields/{field_path}/options",
+        "/api/v1/forms/{form_id}/actions/{action_id}/dialog/actions/{dialog_action_id}",
+    } <= set(openapi_paths)
     status, headers, content = request(server, "/forms/api.create")
     assert status == 200
     assert "text/html" in headers["content-type"]
@@ -216,6 +224,25 @@ def test_persistent_draft_api_lifecycle(server: str) -> None:
 
     assert request(server, f"/api/v1/drafts/{saved['id']}", method="DELETE")[0] == 204
     assert request(server, f"/api/v1/ai/drafts/{saved['id']}")[0] == 404
+    status, _, _ = request(
+        server,
+        "/api/v1/drafts/api.create",
+        method="PUT",
+        body={
+            "environment": "test_int",
+            "form_version": document["version"],
+            "values": {"name": "Запоздалое сохранение"},
+            "draft_id": saved["id"],
+            "clear_review": False,
+        },
+    )
+    assert status == 404
+
+    status, _, content = request(server, "/api/v1/drafts")
+    assert status == 200
+    assert all(
+        item["id"] != saved["id"] for item in json.loads(content)["items"]
+    )
 
 
 @pytest.mark.integration

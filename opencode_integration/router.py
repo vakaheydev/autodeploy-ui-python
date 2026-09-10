@@ -236,6 +236,8 @@ class FormRouter:
                     itsm_data=context.itsm,
                     ado_data=context.ado,
                     context_warnings=context.warnings,
+                    ticket_type=context.ticket_type,
+                    ai_instructions=context.ai_instructions,
                 ),
                 system=ROUTER_SYSTEM_RULES,
                 schema=build_routing_schema(self._form_ids),

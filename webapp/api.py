@@ -20,6 +20,10 @@ from webapp.form_runtime import (
     form_version,
 )
 from webapp.models import (
+    ActionDialogExecuteRequest,
+    ActionDialogOpenRequest,
+    ActionDialogReferenceRequest,
+    ActionDialogStateRequest,
     ActionRequest,
     DraftSaveRequest,
     EnvironmentActivationRequest,
@@ -294,6 +298,8 @@ def save_draft(form_id: str, body: DraftSaveRequest, request: Request):
             clear_review=body.clear_review,
             pending_review_fields=body.pending_review_fields,
         )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Черновик не найден") from exc
     except Exception as exc:
         _raise_runtime_error(exc)
 
@@ -406,6 +412,106 @@ def run_form_action(
             action_id,
             body.environment,
             body.values,
+            body.form_version,
+            body.confirmation_token,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/forms/{form_id}/actions/{action_id}/dialog",
+    tags=["forms"],
+)
+def open_form_action_dialog(
+    form_id: str,
+    action_id: str,
+    body: ActionDialogOpenRequest,
+    request: Request,
+):
+    try:
+        return container(request).forms.open_action_dialog(
+            form_id,
+            action_id,
+            body.environment,
+            body.form_values,
+            body.form_version,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/forms/{form_id}/actions/{action_id}/dialog/state",
+    tags=["forms"],
+)
+def calculate_form_action_dialog_state(
+    form_id: str,
+    action_id: str,
+    body: ActionDialogStateRequest,
+    request: Request,
+):
+    try:
+        return container(request).forms.action_dialog_state(
+            form_id,
+            action_id,
+            body.environment,
+            body.form_values,
+            body.dialog_values,
+            body.form_version,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/forms/{form_id}/actions/{action_id}/dialog/fields/{field_path:path}/options",
+    tags=["references"],
+)
+def form_action_dialog_reference_options(
+    form_id: str,
+    action_id: str,
+    field_path: str,
+    body: ActionDialogReferenceRequest,
+    request: Request,
+):
+    try:
+        return container(request).forms.action_dialog_options(
+            form_id,
+            action_id,
+            field_path,
+            body.environment,
+            body.form_values,
+            body.dialog_values,
+            body.form_version,
+            body.query,
+            body.offset,
+            body.limit,
+            body.refresh,
+        )
+    except Exception as exc:
+        _raise_runtime_error(exc)
+
+
+@router.post(
+    "/forms/{form_id}/actions/{action_id}/dialog/actions/{dialog_action_id}",
+    tags=["forms"],
+)
+def run_form_action_dialog_button(
+    form_id: str,
+    action_id: str,
+    dialog_action_id: str,
+    body: ActionDialogExecuteRequest,
+    request: Request,
+):
+    try:
+        return container(request).forms.run_action_dialog_button(
+            form_id,
+            action_id,
+            dialog_action_id,
+            body.environment,
+            body.form_values,
+            body.dialog_values,
             body.form_version,
             body.confirmation_token,
         )

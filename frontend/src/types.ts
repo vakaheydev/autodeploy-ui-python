@@ -26,6 +26,12 @@ export interface ReferenceDescriptor {
 
 export type ReferenceItem = Record<string, unknown>
 
+export interface ReferenceDependencyDescriptor {
+  field: string
+  parameter: string
+  item_field: string | null
+}
+
 export interface FieldDocument {
   key: string
   path: string
@@ -49,6 +55,7 @@ export interface FieldDocument {
   }
   depends_on: string | null
   depends_on_field: string | null
+  reference_dependencies?: ReferenceDependencyDescriptor[]
   reference?: ReferenceDescriptor
   options?: ReferenceItem[]
   fields?: FieldDocument[]
@@ -85,7 +92,36 @@ export interface FormDocument {
   http_method: string
   fields: FieldDocument[]
   initial_values: Record<string, unknown>
-  custom_actions: Array<{ id: string; label: string; available: boolean; reason: string; style: string; confirmation_required: boolean }>
+  custom_actions: Array<{ id: string; label: string; available: boolean; reason: string; style: string; confirmation_required: boolean; dialog?: boolean }>
+}
+
+export interface ActionDialogButtonDocument {
+  id: string
+  label: string
+  style: string
+  confirmation_required: boolean
+  requires_valid_dialog: boolean
+  close_on_success: boolean
+}
+
+export interface ActionDialogDocument {
+  success: boolean
+  id: string
+  title: string
+  description: string
+  form_version: string
+  values: Record<string, unknown>
+  fields: FieldDocument[]
+  actions: ActionDialogButtonDocument[]
+  message?: string
+  validation_scope?: 'form' | 'dialog'
+  validation?: ValidationResult
+  form_values?: Record<string, unknown>
+  data?: unknown
+  close_dialog?: boolean
+  confirmation_required?: boolean
+  confirmation_text?: string
+  confirmation_token?: string
 }
 
 export interface ValidationError {

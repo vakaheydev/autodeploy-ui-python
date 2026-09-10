@@ -5,7 +5,15 @@ import { ArrowLeft, Check, FileJson, LoaderCircle, RefreshCw, Send, Sparkles, X 
 import { ErrorBanner, Modal, Spinner } from '../components/Feedback'
 import { FormFields } from '../components/FormFields'
 import { useEnvironment } from '../environment'
-import type { FormDocument, PreviewResult, SubmitResult, ValidationError, ValidationResult } from '../types'
+import type {
+  ActionDialogButtonDocument,
+  ActionDialogDocument,
+  FormDocument,
+  PreviewResult,
+  SubmitResult,
+  ValidationError,
+  ValidationResult,
+} from '../types'
 
 interface LocationState { values?: Record<string, unknown>; handoffToken?: string; draftId?: string }
 interface AIFieldResult { key: string; proposed_value: unknown; confidence: string; source?: string | null; reason?: string | null; conflict?: string | null }
@@ -160,11 +168,22 @@ export function FormPage() {
   const [refineModal, setRefineModal] = useState(false)
   const [guidance, setGuidance] = useState('')
   const [actionConfirm, setActionConfirm] = useState<{ id: string; text: string; token: string } | null>(null)
+  const [actionDialog, setActionDialog] = useState<ActionDialogDocument | null>(null)
+  const [actionDialogValues, setActionDialogValues] = useState<Record<string, unknown>>({})
+  const [actionDialogErrors, setActionDialogErrors] = useState<ValidationError[]>([])
+  const [actionDialogError, setActionDialogError] = useState('')
+  const [actionDialogNotice, setActionDialogNotice] = useState('')
+  const [actionDialogBusy, setActionDialogBusy] = useState('')
+  const [actionDialogConfirm, setActionDialogConfirm] = useState<{ action: ActionDialogButtonDocument; text: string; token: string } | null>(null)
+  const actionDialogStateSequence = useRef(0)
   const [activeDraftId, setActiveDraftId] = useState(linkedDraftId)
   const activeDraftIdRef = useRef(linkedDraftId)
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(linkedDraftId ? 'saved' : 'idle')
   const [editRevision, setEditRevision] = useState(0)
   const latestValuesRef = useRef(values)
+  const draftSaveTimerRef = useRef<number | null>(null)
+  const draftSaveInFlightRef = useRef<Promise<void> | null>(null)
+  const submissionInProgressRef = useRef(false)
   const focusedValidationRef = useRef('')
 
   useEffect(() => { latestValuesRef.current = values }, [values])
@@ -234,8 +253,16 @@ export function FormPage() {
     setExtraction(null)
     setAIResource(null)
     setReview({})
+    setActionDialog(null)
+    setActionDialogValues({})
+    setActionDialogErrors([])
+    setActionDialogError('')
+    setActionDialogNotice('')
+    setActionDialogBusy('')
+    setActionDialogConfirm(null)
     setLoading(true)
     setError('')
+    setEditRevision(0)
     activeDraftIdRef.current = linkedDraftId
     setActiveDraftId(linkedDraftId)
     setDraftSaveState(linkedDraftId ? 'saved' : 'idle')
@@ -364,20 +391,58 @@ export function FormPage() {
   }, [values, environment, formId, document?.version])
 
   useEffect(() => {
-    if (!document || loading || editRevision === 0) return
-    const revision = editRevision
+    if (!document || !actionDialog) return
+    const sequence = ++actionDialogStateSequence.current
     const timer = window.setTimeout(() => {
+      post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionDialog.id)}/dialog/state`, {
+        environment,
+        form_values: values,
+        dialog_values: actionDialogValues,
+        form_version: document.version,
+      }).then((next) => {
+        if (sequence !== actionDialogStateSequence.current) return
+        setActionDialog((current) => current ? {
+          ...current,
+          fields: next.fields,
+          actions: next.actions,
+          form_version: next.form_version,
+        } : null)
+      }).catch((reason: unknown) => {
+        if (sequence === actionDialogStateSequence.current) {
+          setActionDialogError(reason instanceof Error ? reason.message : String(reason))
+        }
+      })
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [actionDialog?.id, actionDialog?.form_version, actionDialogValues, document, environment, formId, values])
+
+  useEffect(() => {
+    if (
+      !document
+      || loading
+      || editRevision === 0
+      || submitting
+      || submissionInProgressRef.current
+    ) return
+    const revision = editRevision
+    const scope = `${formId}|${environment}`
+    const timer = window.setTimeout(() => {
+      if (draftSaveTimerRef.current === timer) draftSaveTimerRef.current = null
+      if (submissionInProgressRef.current) return
       setDraftSaveState('saving')
-      api<ExtractionState>(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
+      const requestedDraftId = activeDraftIdRef.current
+      let operation: Promise<void>
+      operation = api<ExtractionState>(`/api/v1/drafts/${encodeURIComponent(formId)}`, {
         method: 'PUT',
         body: JSON.stringify({
           environment,
           values: latestValuesRef.current,
           form_version: document.version,
-          draft_id: activeDraftIdRef.current,
+          draft_id: requestedDraftId,
         }),
       }).then((saved) => {
-        const isNew = !activeDraftIdRef.current
+        if (loadedScope.current !== scope) return
+        const isNew = !requestedDraftId
         activeDraftIdRef.current = saved.id
         setActiveDraftId(saved.id)
         setDraftSaveState('saved')
@@ -393,10 +458,19 @@ export function FormPage() {
         // values stay in memory and the next edit retries autosave.
         if (revision === editRevision) setDraftSaveState('error')
         setError(reason instanceof Error ? reason.message : String(reason))
+      }).finally(() => {
+        if (draftSaveInFlightRef.current === operation) {
+          draftSaveInFlightRef.current = null
+        }
       })
+      draftSaveInFlightRef.current = operation
     }, 600)
-    return () => window.clearTimeout(timer)
-  }, [document, editRevision, environment, formId, loading, location.pathname, navigate])
+    draftSaveTimerRef.current = timer
+    return () => {
+      window.clearTimeout(timer)
+      if (draftSaveTimerRef.current === timer) draftSaveTimerRef.current = null
+    }
+  }, [document?.version, editRevision, environment, formId, loading, location.pathname, navigate, submitting])
 
   useEffect(() => {
     if (!result?.polling || !result.poll_interval_ms) return
@@ -438,6 +512,11 @@ export function FormPage() {
 
   const executeSubmit = async (prepared = preview) => {
     if (!document || !prepared) return
+    submissionInProgressRef.current = true
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current)
+      draftSaveTimerRef.current = null
+    }
     setBusy(true)
     setSubmitting(true)
     setError('')
@@ -462,12 +541,17 @@ export function FormPage() {
         setPreview(refreshed)
         submission = refreshed
       }
+      // If autosave had already reached the server, wait until its draft ID
+      // is known. The submit request can then delete that exact draft instead
+      // of racing a still-running PUT request.
+      await draftSaveInFlightRef.current
+      const submittedDraftId = activeDraftIdRef.current
       const submitted = await post<SubmitResult>(`/api/v1/forms/${encodeURIComponent(formId)}/submit`, {
         environment,
         values: submission.values,
         form_version: document.version,
         confirmation_token: submission.confirmation_token ?? '',
-        draft_id: activeDraftIdRef.current,
+        draft_id: submittedDraftId,
       })
       setValues(submission.values)
       setResult(submitted)
@@ -478,10 +562,12 @@ export function FormPage() {
       setExtraction(null)
       setAIResource(null)
       setReview({})
+      setEditRevision(0)
       navigate(location.pathname, { replace: true })
     } catch (reason) {
       reportSubmitFailure(reason)
     } finally {
+      submissionInProgressRef.current = false
       setSubmitting(false)
       setBusy(false)
     }
@@ -708,6 +794,108 @@ export function FormPage() {
     } catch (reason) { reportFailure(reason) } finally { setBusy(false) }
   }
 
+  const openActionDialog = async (actionId: string) => {
+    if (!document) return
+    setBusy(true)
+    setError('')
+    setActionDialogError('')
+    setActionDialogNotice('')
+    setActionDialogErrors([])
+    try {
+      const response = await post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionId)}/dialog`, {
+        environment,
+        form_values: values,
+        form_version: document.version,
+      })
+      if (!response.success) {
+        const actionErrors = response.validation?.errors ?? []
+        if (response.validation_scope === 'form') setErrors(actionErrors)
+        setError(actionErrors.length ? '' : response.message ?? 'Не удалось открыть диалог')
+        return
+      }
+      setActionDialog(response)
+      setActionDialogValues(response.values ?? {})
+    } catch (reason) {
+      reportFailure(reason)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resetActionDialog = () => {
+    actionDialogStateSequence.current += 1
+    setActionDialog(null)
+    setActionDialogValues({})
+    setActionDialogErrors([])
+    setActionDialogError('')
+    setActionDialogNotice('')
+    setActionDialogConfirm(null)
+  }
+
+  const closeActionDialog = () => {
+    if (actionDialogBusy) return
+    resetActionDialog()
+  }
+
+  const runActionDialogButton = async (
+    dialogAction: ActionDialogButtonDocument,
+    confirmationToken = '',
+  ) => {
+    if (!document || !actionDialog) return
+    setActionDialogBusy(dialogAction.id)
+    setActionDialogError('')
+    setActionDialogNotice('')
+    try {
+      const response = await post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionDialog.id)}/dialog/actions/${encodeURIComponent(dialogAction.id)}`, {
+        environment,
+        form_values: values,
+        dialog_values: actionDialogValues,
+        form_version: document.version,
+        confirmation_token: confirmationToken,
+      })
+      if (response.confirmation_required && response.confirmation_token) {
+        setActionDialogConfirm({
+          action: dialogAction,
+          text: response.confirmation_text ?? 'Подтвердите действие',
+          token: response.confirmation_token,
+        })
+        return
+      }
+      if (!response.success) {
+        const actionErrors = response.validation?.errors ?? []
+        if (response.validation_scope === 'form') setErrors(actionErrors)
+        else setActionDialogErrors(actionErrors)
+        if (!actionErrors.length) setActionDialogError(response.message ?? 'Действие не выполнено')
+        return
+      }
+      setActionDialogConfirm(null)
+      setActionDialogErrors([])
+      if (response.form_values && Object.keys(response.form_values).length) {
+        setValues((current) => ({ ...current, ...response.form_values }))
+        setEditRevision((current) => current + 1)
+      }
+      setActionDialogValues(response.values ?? actionDialogValues)
+      setActionDialog((current) => current ? {
+        ...current,
+        fields: response.fields ?? current.fields,
+        actions: response.actions ?? current.actions,
+        form_version: response.form_version ?? current.form_version,
+      } : null)
+      setActionDialogNotice(response.message ?? 'Действие выполнено')
+      if (response.close_dialog) {
+        const message = response.message ?? 'Действие выполнено'
+        resetActionDialog()
+        setResult({ success: true, message, submission_id: '', status: 'success', title: 'Действие выполнено', content: '', response: response.data ?? null, payload: null, polling: false, poll_interval_ms: null })
+      }
+    } catch (reason) {
+      const inlineErrors = validationErrorsFromApi(reason)
+      if (inlineErrors.length) setActionDialogErrors(inlineErrors)
+      else setActionDialogError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setActionDialogBusy('')
+    }
+  }
+
   if (loading) return <Spinner label="Загружаю описание Python-формы…" />
   if (!document) return <div className="page-stack"><ErrorBanner message={error || 'Форма не найдена'} /><Link to="/forms" className="button secondary"><ArrowLeft size={16} /> К каталогу</Link></div>
 
@@ -752,7 +940,7 @@ export function FormPage() {
         <div className="form-actions-secondary">
           <button className="button secondary" disabled={busy} onClick={() => void requestPreview('inspect')}><FileJson size={17} /> Просмотр JSON</button>
           {document.itsm_support && <button className="button secondary" disabled={busy} onClick={() => { setTicketError(''); setTicketModal(true) }}><Sparkles size={17} /> Подтянуть заявку</button>}
-          {document.custom_actions.map((action) => <button className={`button ${action.style.toLowerCase() === 'primary' ? 'primary' : 'secondary'}`} disabled={!action.available || busy} title={action.reason} onClick={() => void runAction(action.id)} key={action.id}>{action.label}</button>)}
+          {document.custom_actions.map((action) => <button className={`button ${action.style.toLowerCase() === 'primary' ? 'primary' : 'secondary'}`} disabled={!action.available || busy} title={action.reason} onClick={() => void (action.dialog ? openActionDialog(action.id) : runAction(action.id))} key={action.id}>{action.label}</button>)}
           <button className="button ghost" disabled={busy} onClick={() => { setValues(document.initial_values); setEditRevision((current) => current + 1); setErrors([]); setResult(null) }}><RefreshCw size={16} /> Сбросить</button>
         </div>
         <button className="button primary large" disabled={busy} onClick={() => void requestPreview('submit')}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />} Отправить</button>
@@ -777,6 +965,23 @@ export function FormPage() {
       </Modal>}
       {refineModal && <Modal title="Уточнить AI-предложения" onClose={() => setRefineModal(false)} footer={<><button className="button secondary" onClick={() => setRefineModal(false)}>Отмена</button><button className="button primary" disabled={!guidance.trim()} onClick={() => void refine()}><Sparkles size={17} /> Отправить агенту</button></>}><label className="form-field"><span className="field-label">Что нужно изменить?</span><textarea rows={6} autoFocus value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Например: оставь текущего владельца, а context path замени на /payments/v2" /></label></Modal>}
       {actionConfirm && <Modal title="Подтвердите дополнительное действие" onClose={() => setActionConfirm(null)} footer={<><button className="button secondary" onClick={() => setActionConfirm(null)}>Отмена</button><button className="button primary" disabled={busy} onClick={() => void runAction(actionConfirm.id, actionConfirm.token)}><Check size={17} /> Подтвердить</button></>}><p>{actionConfirm.text}</p></Modal>}
+      {actionDialog && <Modal className="action-dialog-modal" title={actionDialog.title} onClose={closeActionDialog} closeDisabled={Boolean(actionDialogBusy)} footer={<><button className="button secondary" disabled={Boolean(actionDialogBusy)} onClick={closeActionDialog}>Отмена</button>{actionDialog.actions.map((dialogAction) => <button className={`button ${['primary', 'secondary', 'success', 'danger'].includes(dialogAction.style) ? dialogAction.style : 'secondary'}`} disabled={Boolean(actionDialogBusy)} key={dialogAction.id} onClick={() => void runActionDialogButton(dialogAction)}>{actionDialogBusy === dialogAction.id ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{actionDialogBusy === dialogAction.id ? 'Выполняю…' : dialogAction.label}</button>)}</>}>
+        {actionDialog.description && <p className="action-dialog-description">{actionDialog.description}</p>}
+        {actionDialogError && <ErrorBanner message={actionDialogError} onClose={() => setActionDialogError('')} />}
+        {actionDialogNotice && <div className="alert success"><Check size={17} /><span>{actionDialogNotice}</span></div>}
+        <FormFields
+          fields={actionDialog.fields}
+          values={actionDialogValues}
+          environment={environment}
+          formId={`${formId}:${actionDialog.id}`}
+          errors={actionDialogErrors}
+          disabled={Boolean(actionDialogBusy)}
+          onValuesChange={setActionDialogValues}
+          onFieldChange={(path) => setActionDialogErrors((current) => current.filter((item) => item.field !== path))}
+          dialogContext={{ formValues: values, formVersion: document.version }}
+        />
+      </Modal>}
+      {actionDialogConfirm && <Modal title="Подтвердите действие в диалоге" onClose={() => !actionDialogBusy && setActionDialogConfirm(null)} closeDisabled={Boolean(actionDialogBusy)} footer={<><button className="button secondary" disabled={Boolean(actionDialogBusy)} onClick={() => setActionDialogConfirm(null)}>Назад</button><button className="button danger" disabled={Boolean(actionDialogBusy)} onClick={() => void runActionDialogButton(actionDialogConfirm.action, actionDialogConfirm.token)}>{actionDialogBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Подтвердить</button></>}><p>{actionDialogConfirm.text}</p></Modal>}
     </div>
   )
 }

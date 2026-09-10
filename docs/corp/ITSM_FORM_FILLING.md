@@ -96,6 +96,93 @@ credentials, полную историю заявки или unrelated attachmen
 `instruction` необязателен. Он уточняет только правила сопоставления конкретной
 формы; endpoint, credentials, вызовы write API и секреты туда не помещаются.
 
+## Инструкции по типу заявки
+
+Общие корпоративные правила не нужно дублировать во всех формах. ITSM-service
+может реализовать опциональный публичный capability `get_ai_prompt`. Он получает
+уже очищенный контекст, определяет корпоративный тип заявки и возвращает
+типизированный результат:
+
+```python
+from opencode_integration import ITSMAIPrompt, ITSMAIPromptRequest
+
+
+PROMPTS_BY_TYPE = {
+    "create_api_v2": """
+        Поле service_name является предлагаемым названием API.
+        contextPath брать только из секции requested_api.
+        Если owner отсутствует, оставь значение неподтверждённым.
+    """.strip(),
+    "enable_ingress": """
+        requested_ingresses сопоставляй с полным inline-справочником формы.
+        Не ищи типы ingress в JSON Repository.
+    """.strip(),
+}
+
+
+class CorporateITSM:
+    def get_ticket(self, ticket_id: str, environment: str = ""):
+        ...
+
+    def get_ai_prompt(
+        self,
+        request: ITSMAIPromptRequest,
+    ) -> ITSMAIPrompt | None:
+        # В main chat request.form_id == "". При заполнении уже открытой
+        # формы здесь находится её стабильный form_id.
+        ticket_type = str(
+            request.ticket_context.get("request_type", "")
+        ).strip()
+        instructions = PROMPTS_BY_TYPE.get(ticket_type)
+        if instructions is None:
+            return None
+        return ITSMAIPrompt(
+            ticket_type=ticket_type,
+            instructions=instructions,
+        )
+```
+
+Поля `ITSMAIPromptRequest`:
+
+| Поле | Значение |
+|---|---|
+| `ticket_id` | нормализованный номер заявки |
+| `environment` | выбранный key окружения, например `test_int` |
+| `ticket_context` | уже secret-redacted JSON-контекст заявки |
+| `form_id` | пусто при выборе формы главным Copilot; exact ID при `fetch_from_itsm` |
+
+`get_ai_prompt` — опциональная возможность, а не новый обязательный метод
+`ITSMDataSource`. Старые adapters только с `get_ticket` продолжают работать.
+Public `ITSMService` также содержит no-op реализацию, возвращающую `None`.
+
+Результат добавляется в отдельный `TRUSTED_ITSM_AI_PROMPT`:
+
+- при первом прикреплении заявки в главный Copilot;
+- при добавлении новой заявки в уже живую chat session;
+- в legacy router и form extractor;
+- при AI-режиме `fetch_from_itsm` конкретной формы.
+
+В последнем сценарии hook получает именно очищенный `context`, который форма
+вернула через `ITSMFetchResult.ai`. Поэтому включите туда стабильный ключ типа
+заявки. Runtime объединяет общую инструкцию service с дополнительным
+`ITSMFetchResult.ai(..., instruction=...)`: сначала общая политика типа, затем
+правило конкретной формы.
+
+### Граница доверия
+
+`instructions` считается доверенной корпоративной конфигурацией. Возвращайте
+только заранее проверенный статический текст из mapping по типу. Никогда не
+вставляйте туда `description`, комментарии, ответы пользователя или иной raw
+текст заявки через f-string: тогда недоверенные данные ошибочно станут частью
+доверенного prompt. Факты заявки уже передаются отдельно и остаются внутри
+`BEGIN_UNTRUSTED_*` / `END_UNTRUSTED_*`.
+
+Инструкции не могут разрешить новые tools, submit/deploy, обход Python validation
+или human confirmation. Public core удаляет похожие на секреты присваивания,
+ограничивает `ticket_type` 200 символами и суммарные инструкции 16 000
+символами. Неверный return type или exception hook останавливает именно
+ITSM→AI операцию с безопасной ошибкой; traceback остаётся в server log.
+
 Сервер выполняет AI-режим так:
 
 ```text
@@ -149,10 +236,13 @@ def fetch_from_itsm(self, environment: str, ticket_id: str):
 1. deterministic-заявку и точный patch;
 2. AI-заявку, состав и размер context, отсутствие секретов;
 3. выбор режима для каждого поддержанного типа заявки;
-4. исключение ITSM/TFS без частичного изменения формы;
-5. сохранение уже введённых значений, если patch их не меняет;
-6. AI draft в том же `form_id` и environment;
-7. conditional, SELECT, MULTISELECT и повторяемые BLOCK после применения.
+4. `get_ai_prompt` для известного и неизвестного типа, а также `form_id=""` и
+   exact-form вызов;
+5. отсутствие raw ticket text/secrets в `instructions`;
+6. исключение ITSM/TFS/prompt hook без частичного изменения формы;
+7. сохранение уже введённых значений, если patch их не меняет;
+8. AI draft в том же `form_id` и environment;
+9. conditional, SELECT, MULTISELECT и повторяемые BLOCK после применения.
 
 Сам `fetch_from_itsm` тестируйте как обычный Python-метод с fake корпоративными
 services. Отдельным integration-тестом вызовите `POST

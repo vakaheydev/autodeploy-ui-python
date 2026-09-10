@@ -22,14 +22,30 @@ from forms.base_form import (
     FormValidationIssue,
     ITSMFetchMode,
     ITSMFetchResult,
+    ServerAction,
+    ServerActionDialog,
+    ServerDialogAction,
+    ServerDialogActionResult,
 )
-from forms.fields import FieldDefinition, FieldType, ReferenceConfig
+from forms.fields import (
+    FieldDefinition,
+    FieldType,
+    ReferenceConfig,
+    ReferenceDependency,
+)
 from forms.registry import FormRegistry
-from opencode_integration.context_builder import is_secret_key, redact_text, sanitize
+from opencode_integration.context_builder import (
+    MAX_ITSM_AI_INSTRUCTIONS_CHARS,
+    is_secret_key,
+    redact_text,
+    resolve_itsm_ai_prompt,
+    sanitize,
+)
 
 
 _log = logging.getLogger("web.forms")
 _PLURAL_RE = re.compile(r"^(.+)_(\d+)$")
+_ACTION_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _INLINE_REFERENCE_MAX_ITEMS = 99
 _INLINE_REFERENCE_MAX_BYTES = 64 * 1024
 _STRING_FIELD_TYPES = {
@@ -101,6 +117,14 @@ def _field_shape(field: FieldDefinition) -> dict[str, Any]:
         "plural_max": field.plural_max,
         "depends_on": field.depends_on,
         "depends_on_field": field.depends_on_field,
+        "reference_dependencies": [
+            {
+                "field": item.field,
+                "parameter": item.parameter,
+                "item_field": item.item_field,
+            }
+            for item in field.reference_dependencies
+        ],
         "condition": _condition_identity(field.condition),
         "reference": (
             {
@@ -257,6 +281,156 @@ class FormRuntime:
         form.current_environment = str(environment)
         return form
 
+    @staticmethod
+    def _validate_server_actions(actions: Iterable[ServerAction]) -> None:
+        values = tuple(actions)
+        if not all(isinstance(action, ServerAction) for action in values):
+            raise TypeError("get_server_actions должен возвращать ServerAction")
+        identifiers = [str(action.action_id) for action in values]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("ServerAction должны иметь уникальные action_id")
+        for action in values:
+            if not _ACTION_ID_RE.fullmatch(str(action.action_id)):
+                raise ValueError(
+                    f"Некорректный ServerAction action_id {action.action_id!r}"
+                )
+            if not str(action.label).strip():
+                raise ValueError("ServerAction label не может быть пустым")
+            has_handler = callable(action.handler)
+            has_dialog = action.dialog is not None
+            if has_handler == has_dialog:
+                raise ValueError(
+                    f"ServerAction {action.action_id!r} должен объявлять ровно "
+                    "один handler или dialog"
+                )
+            if action.dialog is None:
+                continue
+            if action.confirmation_text:
+                raise ValueError(
+                    f"ServerAction {action.action_id!r} с dialog должен задавать "
+                    "confirmation_text у конкретной кнопки диалога"
+                )
+            dialog = action.dialog
+            if not str(dialog.title).strip():
+                raise ValueError(
+                    f"Диалог ServerAction {action.action_id!r} должен иметь title"
+                )
+            if not isinstance(dialog.initial_values, Mapping) and not callable(
+                dialog.initial_values
+            ):
+                raise TypeError("ServerActionDialog.initial_values должен быть mapping или callable")
+            if dialog.validate is not None and not callable(dialog.validate):
+                raise TypeError("ServerActionDialog.validate должен быть callable или None")
+            if not all(isinstance(field, FieldDefinition) for field in dialog.fields):
+                raise TypeError("ServerActionDialog.fields должен содержать FieldDefinition")
+            field_keys = [field.key for field in dialog.fields]
+            if len(field_keys) != len(set(field_keys)):
+                raise ValueError("Поля ServerActionDialog должны иметь уникальные key")
+            FormRuntime._validate_reference_dependencies(
+                dialog.fields,
+                scope=f"ServerActionDialog {action.action_id!r}",
+            )
+            if not dialog.actions:
+                raise ValueError("ServerActionDialog должен содержать хотя бы одну кнопку")
+            if not all(isinstance(item, ServerDialogAction) for item in dialog.actions):
+                raise TypeError("ServerActionDialog.actions должен содержать ServerDialogAction")
+            dialog_ids = [item.action_id for item in dialog.actions]
+            if len(dialog_ids) != len(set(dialog_ids)):
+                raise ValueError("Кнопки ServerActionDialog должны иметь уникальные action_id")
+            for item in dialog.actions:
+                if not _ACTION_ID_RE.fullmatch(str(item.action_id)):
+                    raise ValueError(
+                        f"Некорректный action_id кнопки диалога {item.action_id!r}"
+                    )
+                if not str(item.label).strip() or not callable(item.handler):
+                    raise TypeError(
+                        "Каждая кнопка ServerActionDialog должна иметь label и handler"
+                    )
+
+    @staticmethod
+    def _validate_reference_dependencies(
+        fields: Iterable[FieldDefinition],
+        *,
+        scope: str,
+    ) -> None:
+        """Fail early for ambiguous or unusable multi-input references."""
+        siblings = tuple(fields)
+        sibling_keys = {field.key for field in siblings}
+        for field in siblings:
+            dependencies = tuple(field.reference_dependencies)
+            if dependencies and field.reference is None:
+                raise ValueError(
+                    f"{scope}: поле {field.key!r} объявляет зависимости без reference"
+                )
+            if not all(
+                isinstance(item, ReferenceDependency) for item in dependencies
+            ):
+                raise TypeError(
+                    f"{scope}: reference_dependencies поля {field.key!r} "
+                    "должен содержать ReferenceDependency"
+                )
+            parameters: set[str] = (
+                {field.depends_on} if field.depends_on else set()
+            )
+            for dependency in dependencies:
+                parameter = dependency.parameter or dependency.field
+                if dependency.field not in sibling_keys:
+                    raise ValueError(
+                        f"{scope}: зависимость {dependency.field!r} поля "
+                        f"{field.key!r} не является соседним полем"
+                    )
+                if dependency.field == field.key:
+                    raise ValueError(
+                        f"{scope}: поле {field.key!r} не может зависеть от себя"
+                    )
+                if not str(parameter).strip():
+                    raise ValueError(
+                        f"{scope}: параметр зависимости поля {field.key!r} пуст"
+                    )
+                repeats_legacy = (
+                    dependency.field == field.depends_on
+                    and parameter == field.depends_on
+                )
+                if parameter in parameters and not repeats_legacy:
+                    raise ValueError(
+                        f"{scope}: параметр зависимости {parameter!r} поля "
+                        f"{field.key!r} объявлен несколько раз"
+                    )
+                parameters.add(parameter)
+                if dependency.item_field:
+                    parent = next(
+                        item for item in siblings
+                        if item.key == dependency.field
+                    )
+                    if parent.reference is None:
+                        raise ValueError(
+                            f"{scope}: item_field зависимости "
+                            f"{dependency.field!r} требует reference у поля-источника"
+                        )
+            if field.reference is not None:
+                missing = set(field.reference.required_params) - parameters
+                if dependencies and missing:
+                    raise ValueError(
+                        f"{scope}: для поля {field.key!r} не объявлены зависимости "
+                        "required_params: " + ", ".join(sorted(missing))
+                    )
+            if field.field_type == FieldType.BLOCK:
+                FormRuntime._validate_reference_dependencies(
+                    field.block_fields,
+                    scope=f"{scope}.{field.key}",
+                )
+
+    def _server_action(self, form: BaseForm, action_id: str) -> ServerAction:
+        actions = tuple(form.get_server_actions())
+        self._validate_server_actions(actions)
+        action = next(
+            (item for item in actions if item.action_id == action_id),
+            None,
+        )
+        if action is None:
+            raise FormNotFoundError(action_id)
+        return action
+
     def list_forms(self, category: str = "") -> list[dict[str, Any]]:
         forms = FormRegistry().all_forms()
         if category:
@@ -305,6 +479,8 @@ class FormRuntime:
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         current = self._with_defaults(form.fields, dict(values or {}))
+        actions = tuple(form.get_server_actions())
+        self._validate_server_actions(actions)
         fields = [
             self._field_document(
                 form, field, environment, current, siblings=form.fields
@@ -331,8 +507,9 @@ class FormRuntime:
                     "reason": "",
                     "style": action.style,
                     "confirmation_required": bool(action.confirmation_text),
+                    "dialog": action.dialog is not None,
                 }
-                for action in form.get_server_actions()
+                for action in actions
             ] + [
                 {
                     "id": f"legacy-{index}",
@@ -341,6 +518,7 @@ class FormRuntime:
                     "reason": "Tkinter callback необходимо перенести в server action hook",
                     "style": button.style,
                     "confirmation_required": False,
+                    "dialog": False,
                 }
                 for index, button in enumerate(form.get_custom_buttons())
             ],
@@ -358,12 +536,11 @@ class FormRuntime:
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = next(
-            (item for item in form.get_server_actions() if item.action_id == action_id),
-            None,
-        )
-        if action is None:
-            raise FormNotFoundError(action_id)
+        action = self._server_action(form, action_id)
+        if action.dialog is not None:
+            raise ValueError(
+                "Это действие открывает диалог; используйте dialog endpoint"
+            )
         validation = self.validate(
             form_id,
             environment,
@@ -404,7 +581,8 @@ class FormRuntime:
             ),
         )
         form.screen = context
-        result = action.handler(environment, copy.deepcopy(validation.values))
+        # Contract validation above guarantees a callable direct handler.
+        result = action.handler(environment, copy.deepcopy(validation.values))  # type: ignore[misc]
         if result is None:
             result = {}
         if not isinstance(result, Mapping):
@@ -447,6 +625,518 @@ class FormRuntime:
             "data": _json_safe(result.get("data")),
         }
 
+    def open_action_dialog(
+        self,
+        form_id: str,
+        action_id: str,
+        environment: str,
+        form_values: Mapping[str, Any],
+        version: str,
+    ) -> dict[str, Any]:
+        """Create a fresh server-rendered dialog document for one form action."""
+        self._ensure_environment(environment)
+        form = self.get_form(form_id, environment)
+        self._check_version(form, version)
+        action = self._server_action(form, action_id)
+        dialog = self._require_action_dialog(action)
+        form_validation = self.validate(
+            form_id,
+            environment,
+            form_values,
+            version,
+            validate_references=action.require_valid_form,
+        )
+        if action.require_valid_form and not form_validation.valid:
+            return {
+                "success": False,
+                "validation_scope": "form",
+                "validation": asdict(form_validation),
+                "message": "Форма не прошла валидацию",
+            }
+
+        resolver = self.container.new_reference_resolver()
+        form.screen = _WebFormContext(
+            self._selected_reference_items(
+                form.fields,
+                form_validation.values,
+                environment,
+                resolver,
+            ),
+            environment=environment,
+        )
+        raw_initial = (
+            dialog.initial_values(
+                environment,
+                copy.deepcopy(form_validation.values),
+            )
+            if callable(dialog.initial_values)
+            else dialog.initial_values
+        )
+        if not isinstance(raw_initial, Mapping):
+            raise TypeError("ServerActionDialog.initial_values вернул не mapping")
+        initial = self._validate_dialog(
+            dialog,
+            environment,
+            form_validation.values,
+            raw_initial,
+            validate_references=False,
+            run_custom_validator=False,
+        )
+        contract_errors = [
+            item for item in initial.errors
+            if item["code"] in {"unknown_field", "invalid_type", "plural_limit"}
+        ]
+        if contract_errors:
+            raise ValueError(
+                "Некорректные initial_values диалога: "
+                + "; ".join(item["message"] for item in contract_errors)
+            )
+        return self._dialog_document(
+            form,
+            action,
+            environment,
+            form_validation.values,
+            initial.values,
+        )
+
+    def action_dialog_state(
+        self,
+        form_id: str,
+        action_id: str,
+        environment: str,
+        form_values: Mapping[str, Any],
+        dialog_values: Mapping[str, Any],
+        version: str,
+    ) -> dict[str, Any]:
+        """Recompute conditions and inline options after dialog field changes."""
+        self._ensure_environment(environment)
+        form = self.get_form(form_id, environment)
+        self._check_version(form, version)
+        action = self._server_action(form, action_id)
+        dialog = self._require_action_dialog(action)
+        normalised = self._validate_dialog(
+            dialog,
+            environment,
+            form_values,
+            dialog_values,
+            validate_references=False,
+            run_custom_validator=False,
+        )
+        return self._dialog_document(
+            form,
+            action,
+            environment,
+            form_values,
+            normalised.values,
+        )
+
+    def action_dialog_options(
+        self,
+        form_id: str,
+        action_id: str,
+        field_path: str,
+        environment: str,
+        form_values: Mapping[str, Any],
+        dialog_values: Mapping[str, Any],
+        version: str,
+        query: str,
+        offset: int,
+        limit: int,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        """Resolve one dialog reference using only explicitly declared inputs."""
+        self._ensure_environment(environment)
+        form = self.get_form(form_id, environment)
+        self._check_version(form, version)
+        action = self._server_action(form, action_id)
+        dialog = self._require_action_dialog(action)
+        field, siblings = self._find_field_context(dialog.fields, field_path)
+        if field.reference is None:
+            raise ValueError("Поле диалога не связано со справочником")
+        if refresh:
+            self.container.reference_cache.invalidate(
+                field.reference.resource,
+                environment,
+            )
+        # form_values are intentionally not merged into this mapping. A
+        # handler receives only sibling fields declared by ReferenceDependency.
+        # Normalise the browser payload before any value (including uploaded
+        # FILE content) is exposed to a private reference handler. This also
+        # strips undeclared keys instead of turning the dialog endpoint into a
+        # generic parameter tunnel.
+        normalised = self._validate_dialog(
+            dialog,
+            environment,
+            form_values,
+            dialog_values,
+            validate_references=False,
+            run_custom_validator=False,
+        )
+        scoped_values = self._values_for_field_path(
+            normalised.values,
+            field_path,
+        )
+        if not _visible(field, scoped_values):
+            return {
+                "items": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+            }
+        all_items = self._resolve_reference(
+            field,
+            environment,
+            scoped_values,
+            siblings=siblings,
+        )
+        keys = field.reference.search_keys or (field.reference.label_key,)
+        needle = str(query).strip().casefold()
+        items = [
+            item for item in all_items
+            if not needle or any(
+                needle in str(item.get(key, "")).casefold() for key in keys
+            )
+        ]
+        selected_values: list[Any] = []
+        for key, value in scoped_values.items():
+            if key == field.key or (
+                key.startswith(f"{field.key}_")
+                and key[len(field.key) + 1:].isdigit()
+            ):
+                selected_values.extend(value if isinstance(value, list) else [value])
+        selected_ids = {
+            str(value) for value in selected_values if not self._empty(value)
+        }
+        if selected_ids:
+            pinned = [
+                item for item in all_items
+                if str(item.get(field.reference.value_key, "")) in selected_ids
+            ]
+            items = pinned + [
+                item for item in items
+                if str(item.get(field.reference.value_key, "")) not in selected_ids
+            ]
+        total = len(items)
+        page = items[offset:offset + limit]
+        return {
+            "items": [_public_item(item, field.reference) for item in page],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < total,
+        }
+
+    def run_action_dialog_button(
+        self,
+        form_id: str,
+        action_id: str,
+        dialog_action_id: str,
+        environment: str,
+        form_values: Mapping[str, Any],
+        dialog_values: Mapping[str, Any],
+        version: str,
+        confirmation_token: str = "",
+    ) -> dict[str, Any]:
+        """Execute one dialog button and return authoritative UI patches."""
+        self._ensure_environment(environment)
+        form = self.get_form(form_id, environment)
+        self._check_version(form, version)
+        action = self._server_action(form, action_id)
+        dialog = self._require_action_dialog(action)
+        button = next(
+            (item for item in dialog.actions if item.action_id == dialog_action_id),
+            None,
+        )
+        if button is None:
+            raise FormNotFoundError(dialog_action_id)
+
+        form_validation = self.validate(
+            form_id,
+            environment,
+            form_values,
+            version,
+            validate_references=action.require_valid_form,
+        )
+        if action.require_valid_form and not form_validation.valid:
+            return {
+                "success": False,
+                "validation_scope": "form",
+                "validation": asdict(form_validation),
+                "message": "Форма не прошла валидацию",
+            }
+        dialog_validation = self._validate_dialog(
+            dialog,
+            environment,
+            form_validation.values,
+            dialog_values,
+            validate_references=button.require_valid_dialog,
+            run_custom_validator=button.require_valid_dialog,
+        )
+        if button.require_valid_dialog and not dialog_validation.valid:
+            return {
+                "success": False,
+                "validation_scope": "dialog",
+                "validation": asdict(dialog_validation),
+                "message": "Поля диалога не прошли валидацию",
+            }
+
+        fingerprint = self.container.fingerprint(
+            f"{form_id}:action:{action_id}:dialog:{dialog_action_id}",
+            environment,
+            {
+                "form": form_validation.values,
+                "dialog": dialog_validation.values,
+            },
+            form_version(form),
+        )
+        if button.confirmation_text and not self.container.confirmations.consume(
+            confirmation_token,
+            fingerprint,
+        ):
+            return {
+                "success": False,
+                "confirmation_required": True,
+                "confirmation_text": button.confirmation_text,
+                "confirmation_token": self.container.confirmations.issue(fingerprint),
+            }
+
+        resolver = self.container.new_reference_resolver()
+        selected = self._selected_reference_items(
+            form.fields,
+            form_validation.values,
+            environment,
+            resolver,
+        )
+        # Dialog keys intentionally win on collisions: handlers invoked by a
+        # dialog naturally expect self.screen.get_field_item("...") to refer
+        # to the control the operator just used.
+        selected.update(self._selected_reference_items(
+            dialog.fields,
+            dialog_validation.values,
+            environment,
+            resolver,
+        ))
+        context = _WebFormContext(
+            selected,
+            environment=environment,
+            writable_fields=form.fields,
+        )
+        form.screen = context
+        raw_result = button.handler(
+            environment,
+            copy.deepcopy(form_validation.values),
+            copy.deepcopy(dialog_validation.values),
+        )
+        result = self._dialog_action_result(raw_result)
+
+        context.apply_form_data(result.form_values)
+        form_patch = context.applied_values
+        combined_form = copy.deepcopy(form_validation.values)
+        combined_form.update(copy.deepcopy(form_patch))
+        patch_errors: list[dict[str, Any]] = []
+        normalized_form = self._normalize_object(
+            form.fields,
+            combined_form,
+            patch_errors,
+            environment,
+            prefix="",
+        )
+        if any(item["code"] == "invalid_type" for item in patch_errors):
+            raise ValueError(
+                "Кнопка диалога вернула значение неверного типа: "
+                + "; ".join(
+                    item["message"] for item in patch_errors
+                    if item["code"] == "invalid_type"
+                )
+            )
+        normalized_form = {
+            key: value
+            for key, value in normalized_form.items()
+            if self._top_level_visible(form.fields, key, normalized_form)
+        }
+        form_patch = {
+            key: copy.deepcopy(normalized_form[key])
+            for key in form_patch
+            if key in normalized_form
+        }
+
+        combined_dialog = copy.deepcopy(dialog_validation.values)
+        combined_dialog.update(copy.deepcopy(dict(result.dialog_values)))
+        next_dialog = self._validate_dialog(
+            dialog,
+            environment,
+            normalized_form,
+            combined_dialog,
+            validate_references=False,
+            run_custom_validator=False,
+        )
+        close_dialog = (
+            button.close_on_success
+            if result.close_dialog is None
+            else bool(result.close_dialog)
+        )
+        response = self._dialog_document(
+            form,
+            action,
+            environment,
+            normalized_form,
+            next_dialog.values,
+        )
+        response.update({
+            "success": True,
+            "message": str(result.message or "Действие выполнено"),
+            "form_values": _json_safe(form_patch),
+            "data": _json_safe(result.data),
+            "close_dialog": close_dialog,
+        })
+        return response
+
+    @staticmethod
+    def _require_action_dialog(action: ServerAction) -> ServerActionDialog:
+        if action.dialog is None:
+            raise ValueError("ServerAction не содержит кастомный диалог")
+        return action.dialog
+
+    def _dialog_document(
+        self,
+        form: BaseForm,
+        action: ServerAction,
+        environment: str,
+        form_values: Mapping[str, Any],
+        dialog_values: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        dialog = self._require_action_dialog(action)
+        reference_base = (
+            f"/api/v1/forms/{form.form_id}/actions/{action.action_id}/dialog"
+        )
+        return {
+            "success": True,
+            "id": action.action_id,
+            "title": dialog.title,
+            "description": dialog.description,
+            "form_version": form_version(form),
+            "values": _json_safe(dict(dialog_values)),
+            "fields": [
+                self._field_document(
+                    form,
+                    field,
+                    environment,
+                    dialog_values,
+                    siblings=dialog.fields,
+                    reference_base=reference_base,
+                )
+                for field in dialog.fields
+            ],
+            "actions": [
+                {
+                    "id": item.action_id,
+                    "label": item.label,
+                    "style": str(item.style).strip().casefold(),
+                    "confirmation_required": bool(item.confirmation_text),
+                    "requires_valid_dialog": item.require_valid_dialog,
+                    "close_on_success": item.close_on_success,
+                }
+                for item in dialog.actions
+            ],
+        }
+
+    def _validate_dialog(
+        self,
+        dialog: ServerActionDialog,
+        environment: str,
+        form_values: Mapping[str, Any],
+        dialog_values: Mapping[str, Any],
+        *,
+        validate_references: bool,
+        run_custom_validator: bool,
+    ) -> RuntimeValidation:
+        errors: list[dict[str, Any]] = []
+        canonical = self._normalize_object(
+            dialog.fields,
+            self._with_defaults(dialog.fields, dict(dialog_values)),
+            errors,
+            environment,
+            prefix="",
+        )
+        visible = tuple(
+            field.key for field in dialog.fields if _visible(field, canonical)
+        )
+        canonical = {
+            key: value
+            for key, value in canonical.items()
+            if self._top_level_visible(dialog.fields, key, canonical)
+        }
+        if validate_references:
+            self._validate_references(
+                dialog.fields,
+                canonical,
+                environment,
+                errors,
+            )
+        if run_custom_validator and dialog.validate is not None:
+            raw_issues = dialog.validate(
+                environment,
+                copy.deepcopy(dict(form_values)),
+                copy.deepcopy(canonical),
+            )
+            if isinstance(raw_issues, (str, FormValidationIssue, Mapping)):
+                issues: Iterable[Any] = (raw_issues,)
+            else:
+                issues = tuple(raw_issues or ())
+            existing = {item["message"] for item in errors}
+            for issue in issues:
+                field, code, message = self._domain_validation_issue(
+                    issue,
+                    dialog.fields,
+                    canonical,
+                )
+                if message and message not in existing:
+                    errors.append({"field": field, "code": code, "message": message})
+                    existing.add(message)
+        return RuntimeValidation(not errors, canonical, tuple(errors), visible)
+
+    @staticmethod
+    def _dialog_action_result(value: Any) -> ServerDialogActionResult:
+        if value is None:
+            return ServerDialogActionResult()
+        if isinstance(value, ServerDialogActionResult):
+            return value
+        if not isinstance(value, Mapping):
+            return ServerDialogActionResult(data=value)
+        known = {
+            "message",
+            "form_values",
+            "values",
+            "dialog_values",
+            "data",
+            "close_dialog",
+        }
+        unexpected = set(value) - known
+        if unexpected:
+            raise ValueError(
+                "Кнопка диалога вернула неизвестные поля: "
+                + ", ".join(sorted(str(item) for item in unexpected))
+            )
+        if "form_values" in value and "values" in value:
+            raise ValueError("Используйте form_values или values, но не оба сразу")
+        form_values = value.get("form_values", value.get("values", {})) or {}
+        dialog_values = value.get("dialog_values") or {}
+        if not isinstance(form_values, Mapping):
+            raise TypeError("form_values результата диалога должен быть mapping")
+        if not isinstance(dialog_values, Mapping):
+            raise TypeError("dialog_values результата диалога должен быть mapping")
+        raw_close = value.get("close_dialog")
+        if raw_close is not None and not isinstance(raw_close, bool):
+            raise TypeError("close_dialog результата диалога должен быть bool или None")
+        return ServerDialogActionResult(
+            message=str(value.get("message") or "Действие выполнено"),
+            form_values=form_values,
+            dialog_values=dialog_values,
+            data=value.get("data"),
+            close_dialog=raw_close,
+        )
+
     def _field_document(
         self,
         form: BaseForm,
@@ -457,6 +1147,7 @@ class FormRuntime:
         prefix: str = "",
         siblings: Optional[Iterable[FieldDefinition]] = None,
         reference_namespace: str = "forms",
+        reference_base: str = "",
     ) -> dict[str, Any]:
         path = f"{prefix}.{field.key}" if prefix else field.key
         visible = _visible(field, values)
@@ -477,6 +1168,14 @@ class FormRuntime:
             "plural_max": field.plural_max,
             "depends_on": field.depends_on or None,
             "depends_on_field": field.depends_on_field or None,
+            "reference_dependencies": [
+                {
+                    "field": item.field,
+                    "parameter": item.parameter or item.field,
+                    "item_field": item.item_field or None,
+                }
+                for item in field.reference_dependencies
+            ],
         }
         if field.plural:
             document["plural_contract"] = {
@@ -496,8 +1195,12 @@ class FormRuntime:
                 "detail_keys": list(ref.detail_keys),
                 "required_params": list(ref.required_params),
                 "endpoint": (
-                    f"/api/v1/{reference_namespace}/{form.form_id}"
-                    f"/fields/{path}/options"
+                    (
+                        reference_base.rstrip("/")
+                        if reference_base
+                        else f"/api/v1/{reference_namespace}/{form.form_id}"
+                    )
+                    + f"/fields/{path}/options"
                 ),
             }
             if ref.source == "local" and visible:
@@ -534,6 +1237,7 @@ class FormRuntime:
                         prefix=instance_path,
                         siblings=field.block_fields,
                         reference_namespace=reference_namespace,
+                        reference_base=reference_base,
                     )
                     for nested in field.block_fields
                 ]
@@ -831,13 +1535,50 @@ class FormRuntime:
             if not isinstance(safe_context, Mapping):
                 raise ValueError("ITSM AI context должен быть JSON-объектом")
             try:
+                corporate_prompt = resolve_itsm_ai_prompt(
+                    form.itsm_service,
+                    ticket_id=ticket_id,
+                    environment=environment,
+                    ticket_context=safe_context,
+                    form_id=form_id,
+                )
+            except Exception as exc:
+                _log.warning(
+                    "corporate ITSM AI prompt failed form=%s environment=%s "
+                    "error_type=%s",
+                    form_id,
+                    environment,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                raise ValueError(
+                    "Не удалось выбрать корпоративные AI-инструкции для "
+                    f"заявки: {type(exc).__name__}"
+                ) from exc
+            instructions = "\n\n".join(
+                item
+                for item in (
+                    corporate_prompt.instructions if corporate_prompt else "",
+                    redact_text(result.instruction),
+                )
+                if item
+            )
+            if len(instructions) > MAX_ITSM_AI_INSTRUCTIONS_CHARS:
+                raise ValueError(
+                    "Суммарные ITSM AI-инструкции превышают "
+                    f"{MAX_ITSM_AI_INSTRUCTIONS_CHARS} символов"
+                )
+            try:
                 return self.container.ai.start_form_ticket_fill(
                     form_id=form_id,
                     environment=environment,
                     form_version=form_version(form),
                     ticket_id=ticket_id,
                     source_context=safe_context,
-                    instruction=redact_text(result.instruction),
+                    ticket_type=(
+                        corporate_prompt.ticket_type if corporate_prompt else ""
+                    ),
+                    instruction=instructions,
                     current_values=current_values or {},
                 )
             except RuntimeError as exc:
@@ -1242,42 +1983,60 @@ class FormRuntime:
         environment: str,
         resolver: Any,
     ) -> Optional[dict[str, Any]]:
-        if not field.depends_on:
+        dependencies = list(field.reference_dependencies)
+        if field.depends_on:
+            legacy = ReferenceDependency(
+                field=field.depends_on,
+                parameter=field.depends_on,
+                item_field=field.depends_on_field,
+            )
+            if not any(
+                item.field == legacy.field
+                and (item.parameter or item.field) == legacy.parameter
+                for item in dependencies
+            ):
+                dependencies.insert(0, legacy)
+        if not dependencies:
             return None
-        parent_value = values.get(field.depends_on)
-        if field.depends_on_field:
-            if isinstance(parent_value, Mapping):
-                parent_value = parent_value.get(field.depends_on_field)
-            elif not self._empty(parent_value):
-                parent = next(
-                    (item for item in siblings if item.key == field.depends_on),
-                    None,
-                )
-                if parent is None or parent.reference is None:
-                    parent_value = None
-                else:
-                    parent_items = self._resolve_reference(
-                        parent,
-                        environment,
-                        values,
-                        siblings=siblings,
-                        resolver=resolver,
+
+        params: dict[str, Any] = {}
+        sibling_definitions = tuple(siblings)
+        for dependency in dependencies:
+            parent_value = values.get(dependency.field)
+            if dependency.item_field:
+                if isinstance(parent_value, Mapping):
+                    parent_value = parent_value.get(dependency.item_field)
+                elif not self._empty(parent_value):
+                    parent = next(
+                        (
+                            item for item in sibling_definitions
+                            if item.key == dependency.field
+                        ),
+                        None,
                     )
-                    selected = next((
-                        item for item in parent_items
-                        if str(item.get(parent.reference.value_key, ""))
-                        == str(parent_value)
-                    ), None)
-                    parent_value = (
-                        selected.get(field.depends_on_field)
-                        if selected is not None
-                        else None
-                    )
-        return (
-            {field.depends_on: parent_value}
-            if not self._empty(parent_value)
-            else None
-        )
+                    if parent is None or parent.reference is None:
+                        parent_value = None
+                    else:
+                        parent_items = self._resolve_reference(
+                            parent,
+                            environment,
+                            values,
+                            siblings=sibling_definitions,
+                            resolver=resolver,
+                        )
+                        selected = next((
+                            item for item in parent_items
+                            if str(item.get(parent.reference.value_key, ""))
+                            == str(parent_value)
+                        ), None)
+                        parent_value = (
+                            selected.get(dependency.item_field)
+                            if selected is not None
+                            else None
+                        )
+            if not self._empty(parent_value):
+                params[dependency.parameter or dependency.field] = parent_value
+        return params or None
 
     @staticmethod
     def _values_for_field_path(

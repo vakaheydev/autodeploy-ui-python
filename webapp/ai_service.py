@@ -38,6 +38,7 @@ from opencode_integration.copilot import (
 from opencode_integration.context_builder import (
     DEFAULT_MAX_CONTEXT_CHARS,
     HARD_MAX_CONTEXT_CHARS,
+    MAX_ITSM_AI_INSTRUCTIONS_CHARS,
     BuiltContext,
     fit_context_to_budget,
     redact_text,
@@ -1200,6 +1201,7 @@ class WebAIService:
         ticket_id: str,
         source_context: Mapping[str, Any],
         current_values: Mapping[str, Any],
+        ticket_type: str = "",
         instruction: str = "",
     ) -> dict[str, Any]:
         """Start an exact-form Copilot fill from a corporate ITSM hook."""
@@ -1242,7 +1244,10 @@ class WebAIService:
                     sanitize(dict(source_context)),
                     max(1_000, int(context_limit * 0.75)),
                 )),
-                "form_instruction": redact_text(str(instruction).strip()),
+                "ticket_type": redact_text(str(ticket_type).strip())[:200],
+                "ticket_ai_instructions": redact_text(
+                    str(instruction).strip()
+                )[:MAX_ITSM_AI_INSTRUCTIONS_CHARS],
             }
             started = self.start_message(
                 workflow_id,

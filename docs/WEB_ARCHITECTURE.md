@@ -40,7 +40,10 @@ application. There is no Node process on a user's machine.
    so a new search cannot silently clear SELECT/MULTISELECT values.
    For a dependent reference, `depends_on_field` is resolved server-side from
    the full selected parent record; the browser still stores only its
-   `value_key` and never has to reproduce that lookup rule.
+   `value_key` and never has to reproduce that lookup rule. A reference that
+   needs several sibling inputs uses an explicit `ReferenceDependency`
+   allowlist. This supports scalar, FILE and selected-item attributes without
+   exposing the complete form state to a private handler.
 5. `/validate` and `/preview` execute server validation and `build_payload()`.
    Structural errors already carry their field path. Custom validators should
    return `self.validation_error("field_key", "message")`; legacy strings are
@@ -101,6 +104,28 @@ def get_server_actions(self):
 
 The handler stays in Python and can return `{"message": ..., "values": ...,
 "data": ...}`. Returned values are merged into the rendered form.
+
+When an action needs an interactive modal, it declares
+`ServerAction(dialog=ServerActionDialog(...))`. Dialog fields reuse the complete
+`FieldDefinition` renderer and Python runtime, including conditions, FILE,
+SELECT/MULTISELECT, blocks and server-side reference validation. Each
+`ServerDialogAction` is an independently named Python handler and may patch the
+dialog, patch the owning form, keep the modal open, close it, or request an
+additional one-use confirmation. No handler, service, URL or callable is sent
+to React.
+
+The browser flow is:
+
+```text
+POST /forms/{form}/actions/{action}/dialog
+  -> POST .../dialog/state
+  -> POST .../dialog/fields/{path}/options
+  -> POST .../dialog/actions/{button}
+```
+
+Closing the modal never mutates the form. A successful button may return a
+server-normalized `form_values` patch, but it never submits the form; preview
+and submit remain explicit operations.
 
 ## Corporate isolation points
 
@@ -178,6 +203,8 @@ Important resources are:
 - `/forms/{id}/state|validate|preview|submit`;
 - `/forms/{id}/fields/{path}/options` and `/ticket`;
 - `/forms/{id}/actions/{action_id}`;
+- `/forms/{id}/actions/{action_id}/dialog`, `/dialog/state`,
+  `/dialog/fields/{path}/options` and `/dialog/actions/{button_id}`;
 - `/runs`, `/submissions/{id}/poll`, `/search`;
 - `/opencode/*` and `/ai/*` for OpenCode chat, draft review and compatibility
   extraction endpoints;

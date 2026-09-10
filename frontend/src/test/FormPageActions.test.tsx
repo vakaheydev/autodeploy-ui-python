@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EnvironmentProvider } from '../environment'
 import { ApiError } from '../api'
 import { FormPage, validationErrorsFromApi } from '../pages/FormPage'
-import type { FormDocument } from '../types'
+import type { ActionDialogDocument, FormDocument } from '../types'
 
 const document: FormDocument = {
   id: 'api.create',
@@ -60,6 +60,119 @@ describe('FormPage custom actions', () => {
     expect(screen.queryByText('api.create')).not.toBeInTheDocument()
     expect(screen.queryByText(/версия схемы/)).not.toBeInTheDocument()
     expect(screen.queryByText('Python runtime')).not.toBeInTheDocument()
+  })
+
+  it('renders a server action dialog and applies its Python result to the form', async () => {
+    const user = userEvent.setup()
+    const formDocument: FormDocument = {
+      ...document,
+      itsm_support: false,
+      fields: [{
+        key: 'name', path: 'name', label: 'Название', type: 'text', required: false,
+        visible: true, dynamic: false, placeholder: '', default: '', hint: '',
+        file_type: '', width: 1, plural: false, plural_max: null,
+        depends_on: null, depends_on_field: null,
+      }],
+      initial_values: { name: 'Subscription' },
+      custom_actions: [{
+        id: 'choose-methods', label: 'Выбрать методы из Swagger', available: true,
+        reason: '', style: 'Secondary', confirmation_required: false, dialog: true,
+      }],
+    }
+    const dialogDocument: ActionDialogDocument = {
+      success: true,
+      id: 'choose-methods',
+      title: 'Методы Swagger',
+      description: 'Выберите методы',
+      form_version: 'version-1',
+      values: { swagger_environment: 'test_int', methods: [] },
+      fields: [{
+        key: 'swagger_environment', path: 'swagger_environment', label: 'Окружение Swagger',
+        type: 'text', required: true, visible: true, dynamic: false,
+        placeholder: '', default: '', hint: '', file_type: '', width: 1,
+        plural: false, plural_max: null, depends_on: null, depends_on_field: null,
+      }, {
+        key: 'methods', path: 'methods', label: 'Методы', type: 'multiselect',
+        required: true, visible: true, dynamic: false, placeholder: '', default: [],
+        hint: '', file_type: '', width: 1, plural: false, plural_max: null,
+        depends_on: null, depends_on_field: null,
+        reference_dependencies: [{ field: 'swagger_environment', parameter: 'environment', item_field: null }],
+        reference: {
+          source: 'corp_swagger', resource: 'methods', value_key: 'id', label_key: 'label',
+          search_keys: ['label', 'path'], detail_keys: ['label', 'path'],
+          required_params: ['environment'],
+          endpoint: '/api/v1/forms/api.create/actions/choose-methods/dialog/fields/methods/options',
+        },
+      }],
+      actions: [{
+        id: 'apply', label: 'Применить', style: 'primary',
+        confirmation_required: false, requires_valid_dialog: true, close_on_success: true,
+      }],
+    }
+    let optionBody: Record<string, unknown> | null = null
+    let actionBody: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/dialog/fields/methods/options')) {
+        optionBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+          items: [{ id: 'GET /orders', label: 'GET /orders', path: '/orders' }],
+          total: 1,
+          has_more: false,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/dialog/actions/apply')) {
+        actionBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(JSON.stringify({
+          ...dialogDocument,
+          values: { swagger_environment: 'test_int', methods: ['GET /orders'] },
+          form_values: { name: 'Subscription:GET /orders' },
+          close_dialog: true,
+          message: 'Методы перенесены',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/dialog/state')) {
+        return new Response(JSON.stringify(dialogDocument), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/dialog')) {
+        return new Response(JSON.stringify(dialogDocument), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify(formDocument), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }))
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes><Route path="/forms/:formId" element={<FormPage />} /></Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Выбрать методы из Swagger' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Методы Swagger' })
+    expect(within(dialog).getByText('Выберите методы')).toBeVisible()
+    const method = await within(dialog).findByRole('checkbox', { name: 'GET /orders' })
+    await user.click(method)
+    await user.click(within(dialog).getByRole('button', { name: 'Применить' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Методы Swagger' })).not.toBeInTheDocument())
+    expect(screen.getByRole('textbox', { name: 'Название' })).toHaveValue('Subscription:GET /orders')
+    expect(optionBody).toMatchObject({
+      environment: 'test_int',
+      form_values: { name: 'Subscription' },
+      dialog_values: { swagger_environment: 'test_int', methods: [] },
+      form_version: 'version-1',
+    })
+    expect(actionBody).toMatchObject({
+      form_values: { name: 'Subscription' },
+      dialog_values: { swagger_environment: 'test_int', methods: ['GET /orders'] },
+    })
   })
 
   it('opens the existing inline review when the ITSM hook selects AI mode', async () => {
@@ -191,6 +304,83 @@ describe('FormPage custom actions', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
     expect(input.closest('.form-field')).toHaveClass('invalid')
     expect(screen.getByRole('alert')).toHaveTextContent('Поле обязательно')
+  })
+
+  it('does not recreate an autosaved draft after a successful submit', async () => {
+    const user = userEvent.setup()
+    const draftWrites: Array<Record<string, unknown>> = []
+    const submitBodies: Array<Record<string, unknown>> = []
+    const fieldDocument: FormDocument = {
+      ...document,
+      itsm_support: false,
+      custom_actions: [],
+      fields: [{
+        key: 'name', path: 'name', label: 'Название API', type: 'text', required: true,
+        visible: true, dynamic: false, placeholder: 'Введите название АПИ', default: '', hint: '',
+        file_type: '', width: 1, plural: false, plural_max: null,
+        depends_on: null, depends_on_field: null,
+      }],
+      initial_values: { name: '' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/drafts/api.create') && init?.method === 'PUT') {
+        draftWrites.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return new Response(JSON.stringify({ id: 'draft-submitted' }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/preview')) {
+        const body = JSON.parse(String(init?.body)) as { values: Record<string, unknown> }
+        return new Response(JSON.stringify({
+          valid: true,
+          values: body.values,
+          errors: [],
+          visible_fields: ['name'],
+          payload: body.values,
+          confirmation_required: false,
+          confirmation_text: '',
+          confirmation_token: '',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/submit')) {
+        submitBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'API создан',
+          submission_id: 'submission-draft',
+          status: 'success',
+          title: 'Создание API',
+          content: 'Готово',
+          response: {},
+          payload: {},
+          polling: false,
+          poll_interval_ms: null,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(fieldDocument), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }))
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes><Route path="/forms/:formId" element={<FormPage />} /></Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.type(await screen.findByRole('textbox', { name: /Название API/ }), 'Orders')
+    await waitFor(() => expect(draftWrites).toHaveLength(1), { timeout: 2000 })
+    await user.click(screen.getByRole('button', { name: /^Отправить$/ }))
+    expect(await screen.findByText('API создан')).toBeVisible()
+
+    await new Promise((resolve) => window.setTimeout(resolve, 850))
+    expect(submitBodies).toHaveLength(1)
+    expect(submitBodies[0]).toMatchObject({ draft_id: 'draft-submitted' })
+    expect(draftWrites).toHaveLength(1)
+    expect(screen.queryByText('черновик сохранён')).not.toBeInTheDocument()
   })
 
   it('keeps submit progress and failures in the dialog and refreshes confirmation before retry', async () => {

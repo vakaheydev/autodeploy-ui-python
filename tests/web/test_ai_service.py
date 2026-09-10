@@ -329,7 +329,8 @@ def test_form_ticket_fill_reuses_exact_draft_and_skips_generic_ticket_loading(
         "ticket_id": "REQ-42",
         "current_values": {"name": ""},
         "source_context": {"summary": "Create API"},
-        "form_instruction": "",
+        "ticket_type": "",
+        "ticket_ai_instructions": "",
     }
 
 

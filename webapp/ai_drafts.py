@@ -544,6 +544,11 @@ class FormDraftStore:
         )
         now = time.time()
         existing = self.get(draft_id) if draft_id else None
+        if draft_id and existing is None:
+            # An explicit identifier means "update this exact draft". Never
+            # turn a late autosave for an already submitted/deleted draft into
+            # a brand-new draft with another identifier.
+            raise KeyError("Черновик не найден")
         if existing is not None and (
             existing.form_id != form_id or existing.environment != environment
         ):

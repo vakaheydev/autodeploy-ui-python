@@ -152,6 +152,39 @@ parent value уже является dict, поле берётся прямо и
 `depends_on` независимы: чтобы скрывать child целиком, дополнительно задайте
 безопасную `condition`.
 
+### Несколько входных полей
+
+Когда options зависят от двух и более соседних полей, не передавайте handler всю
+форму. Объявите минимальный allowlist:
+
+```python
+from forms.fields import ReferenceDependency
+
+FieldDefinition(
+    key="methods",
+    label="Методы",
+    field_type=FieldType.MULTISELECT,
+    reference=ReferenceConfig(
+        source="corp_swagger",
+        resource="swagger_methods",
+        value_key="id",
+        label_key="name",
+        required_params=("api_id", "source"),
+    ),
+    reference_dependencies=(
+        ReferenceDependency("api", parameter="api_id", item_field="id"),
+        ReferenceDependency("source"),
+        ReferenceDependency("swagger_file", parameter="document"),
+    ),
+)
+```
+
+Runtime нормализует значения и передаёт в `extra_params` только эти поля.
+`FILE` передаётся как содержимое, `SELECT` — как сохранённый `value_key`, а
+`item_field` явно запрашивает атрибут полного выбранного item. Все зависимости
+должны быть sibling fields. Полный сценарий action dialog со Swagger находится
+в [ACTION_DIALOGS.md](ACTION_DIALOGS.md).
+
 ## Cache
 
 Factory получает public persistent `ReferenceCache`. Corporate handler сам
