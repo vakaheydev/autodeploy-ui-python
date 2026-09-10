@@ -111,6 +111,34 @@ class UILogBuffer(logging.Handler):
 
 UI_LOG_BUFFER = UILogBuffer()
 _configured = False
+OPENCODE_LOG_LEVELS = ("OFF", "ERROR", "WARNING", "INFO", "DEBUG")
+_OPENCODE_LEVEL_VALUES: dict[str, int | None] = {
+    "OFF": None,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+_opencode_log_threshold: int | None = logging.INFO
+
+
+def normalize_opencode_log_level(value: object) -> str:
+    """Return a canonical OpenCode log level or reject an invalid setting."""
+    normalized = str(value or "INFO").strip().upper()
+    if normalized not in _OPENCODE_LEVEL_VALUES:
+        raise ValueError(
+            "AUTODEPLOY_OPENCODE_LOG_LEVEL должен быть одним из: "
+            + ", ".join(OPENCODE_LOG_LEVELS)
+        )
+    return normalized
+
+
+def set_opencode_log_level(value: object) -> str:
+    """Change filtering for all OpenCode terminal, file and UI log channels."""
+    global _opencode_log_threshold
+    normalized = normalize_opencode_log_level(value)
+    _opencode_log_threshold = _OPENCODE_LEVEL_VALUES[normalized]
+    return normalized
 
 
 class _OpenCodeOnly(logging.Filter):
@@ -118,9 +146,31 @@ class _OpenCodeOnly(logging.Filter):
         return record.name == "opencode" or record.name.startswith("opencode.")
 
 
-def configure_logging(log_dir: Path | None = None) -> Path:
+class _ChannelLevel(logging.Filter):
+    """Use one operator-selected threshold for every ``opencode.*`` record."""
+
+    def __init__(self, default_level: int) -> None:
+        super().__init__()
+        self.default_level = default_level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        is_opencode = record.name == "opencode" or record.name.startswith("opencode.")
+        threshold = _opencode_log_threshold if is_opencode else self.default_level
+        return threshold is not None and record.levelno >= threshold
+
+
+def configure_logging(
+    log_dir: Path | None = None,
+    *,
+    opencode_level: object | None = None,
+) -> Path:
     """Настраивает handlers один раз и возвращает путь текущего файла лога."""
     global _configured
+    set_opencode_log_level(
+        opencode_level
+        if opencode_level is not None
+        else os.environ.get("AUTODEPLOY_OPENCODE_LOG_LEVEL", "INFO")
+    )
     target_dir = Path(log_dir or Path(__file__).resolve().parent.parent / "logs")
     target_dir.mkdir(parents=True, exist_ok=True)
     log_path = target_dir / "autodeploy.log"
@@ -136,8 +186,11 @@ def configure_logging(log_dir: Path | None = None) -> Path:
         datefmt="%H:%M:%S",
     )
     stream = logging.StreamHandler()
-    stream.setLevel(logging.INFO)
+    # Handler levels stay at DEBUG so the filter can independently apply the
+    # selected OpenCode threshold while retaining INFO for other console logs.
+    stream.setLevel(logging.DEBUG)
     stream.setFormatter(compact)
+    stream.addFilter(_ChannelLevel(logging.INFO))
     rotating = logging.handlers.RotatingFileHandler(
         log_path,
         maxBytes=5 * 1024 * 1024,
@@ -146,6 +199,7 @@ def configure_logging(log_dir: Path | None = None) -> Path:
     )
     rotating.setLevel(logging.DEBUG)
     rotating.setFormatter(detailed)
+    rotating.addFilter(_ChannelLevel(logging.DEBUG))
     # Logs can contain internal identifiers and error details.  Keep them
     # private on POSIX; Windows applies the user's ACL to the profile folder.
     try:
@@ -154,6 +208,7 @@ def configure_logging(log_dir: Path | None = None) -> Path:
         pass
     UI_LOG_BUFFER.setFormatter(compact)
     UI_LOG_BUFFER.addFilter(_OpenCodeOnly())
+    UI_LOG_BUFFER.addFilter(_ChannelLevel(logging.DEBUG))
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)

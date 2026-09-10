@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import socket
 import sys
@@ -15,7 +16,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from core.logging_setup import redact_log_text, sanitize_server_log_line
+from core.logging_setup import (
+    _ChannelLevel,
+    redact_log_text,
+    sanitize_server_log_line,
+    set_opencode_log_level,
+)
 from config.mcp_profiles import (
     AUTODEPLOY_COPILOT_TOOLS,
     AUTODEPLOY_MCP_NAME,
@@ -119,6 +125,9 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
 class LoggingTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        set_opencode_log_level("INFO")
+
     def test_plain_json_and_authorization_secrets_are_redacted(self) -> None:
         rendered = redact_log_text(
             'OPENCODE_SERVER_PASSWORD=plain-secret {"client_secret":"json-secret"} '
@@ -145,6 +154,27 @@ class LoggingTests(unittest.TestCase):
             "server started",
             sanitize_server_log_line("server started on 127.0.0.1"),
         )
+
+    def test_opencode_level_filters_every_channel_without_affecting_other_logs(self) -> None:
+        channel = _ChannelLevel(logging.DEBUG)
+        opencode_debug = logging.LogRecord(
+            "opencode.http", logging.DEBUG, "", 0, "request", (), None
+        )
+        opencode_error = logging.LogRecord(
+            "opencode.http", logging.ERROR, "", 0, "failed", (), None
+        )
+        other_debug = logging.LogRecord(
+            "web.server", logging.DEBUG, "", 0, "request", (), None
+        )
+
+        set_opencode_log_level("ERROR")
+        self.assertFalse(channel.filter(opencode_debug))
+        self.assertTrue(channel.filter(opencode_error))
+        self.assertTrue(channel.filter(other_debug))
+
+        set_opencode_log_level("OFF")
+        self.assertFalse(channel.filter(opencode_error))
+        self.assertTrue(channel.filter(other_debug))
 
 
 def _local_sockets_available() -> bool:

@@ -52,7 +52,10 @@ def create_app(
     container_factory: Callable[[WebSettings], ApplicationContainer] = ApplicationContainer,
 ) -> FastAPI:
     runtime_settings = settings or WebSettings.load()
-    configure_logging(runtime_settings.log_dir)
+    configure_logging(
+        runtime_settings.log_dir,
+        opencode_level=runtime_settings.opencode_log_level,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

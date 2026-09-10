@@ -188,7 +188,7 @@ export interface SettingField {
   key: string
   label: string
   group: string
-  kind: 'text' | 'secret' | 'number' | 'boolean' | 'path'
+  kind: 'text' | 'secret' | 'number' | 'boolean' | 'path' | 'select'
   picker?: '' | 'file' | 'directory' | 'mcp' | 'mcp_multi'
   default: string
   description: string
@@ -196,6 +196,7 @@ export interface SettingField {
   restart_required: boolean
   minimum: number | null
   maximum: number | null
+  choices?: string[]
   configured: boolean
   value: string | boolean | null
 }

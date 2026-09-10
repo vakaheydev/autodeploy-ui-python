@@ -32,6 +32,7 @@ AUTODEPLOY_ENV_FILE=/absolute/path/to/.env
 # Runtime
 AUTODEPLOY_PORT=8765
 AUTODEPLOY_OPENCODE_AUTO_CONNECT=true
+AUTODEPLOY_OPENCODE_LOG_LEVEL=INFO
 AUTODEPLOY_OPEN_BROWSER=true
 AUTODEPLOY_MAX_REQUEST_BYTES=2097152
 AUTODEPLOY_MCP_ENABLED=false
@@ -157,6 +158,12 @@ AutoDeploy, он также binds localhost. Один OpenCode server может
 При `AUTODEPLOY_OPENCODE_AUTO_CONNECT=true` server делает попытку подключиться к
 `OPENCODE_SERVER_URL` при startup. Это не означает автоматически «создать
 OpenCode process»: подключение и создание — разные явные действия UI.
+
+`AUTODEPLOY_OPENCODE_LOG_LEVEL` управляет всеми записями `opencode.*` в
+терминале, `autodeploy.log` и UI-журнале. Допустимые значения: `OFF`, `ERROR`,
+`WARNING`, `INFO`, `DEBUG`. Изменение через frontend применяется сразу. При
+`OFF` stdout/stderr дочернего `opencode serve` продолжают читаться и молча
+отбрасываются, чтобы заполненный pipe не остановил процесс.
 
 Всегда выбирайте provider/model явно при создании session, даже если UI показывает
 default. Thinking variant должен быть одним из вариантов фактической model

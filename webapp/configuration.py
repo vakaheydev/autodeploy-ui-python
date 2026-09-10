@@ -21,6 +21,7 @@ from config.environments import (
     OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_CONNECT_TIMEOUT_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
+    OPENCODE_LOG_LEVEL_KEY,
     OPENCODE_MODEL_ID_KEY,
     OPENCODE_PROVIDER_ID_KEY,
     OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
@@ -37,6 +38,7 @@ from config.environments import (
     gravitee_token_key,
 )
 from core.env_manager import EnvManager
+from core.logging_setup import OPENCODE_LOG_LEVELS, set_opencode_log_level
 from opencode_integration.manager import DEFAULT_SERVER_URL, OpenCodeManager
 from webapp.extensions import (
     ENVIRONMENT_HOOK_KEY,
@@ -54,7 +56,7 @@ class SettingSpec:
     key: str
     label: str
     group: str
-    kind: str = "text"  # text | secret | number | boolean | path
+    kind: str = "text"  # text | secret | number | boolean | path | select
     default: str = ""
     description: str = ""
     required: bool = False
@@ -62,6 +64,7 @@ class SettingSpec:
     minimum: float | None = None
     maximum: float | None = None
     picker: str = ""  # file | directory | mcp | mcp_multi
+    choices: tuple[str, ...] = ()
 
 
 class SettingsValidationError(ValueError):
@@ -123,6 +126,15 @@ def _specs() -> tuple[SettingSpec, ...]:
             "boolean", "false",
             "Публикует инструменты AutoDeploy на /api/mcp и подключает их к Copilot.",
             restart_required=True,
+        ),
+        SettingSpec(
+            OPENCODE_LOG_LEVEL_KEY,
+            "Уровень логирования OpenCode",
+            "OpenCode",
+            "select",
+            "INFO",
+            "Один уровень для терминала, файла и UI. OFF отключает записи, но не чтение stdout/stderr.",
+            choices=OPENCODE_LOG_LEVELS,
         ),
         SettingSpec(
             OPENCODE_SERVER_URL_KEY, "Адрес сервера", "OpenCode", "text",
@@ -289,6 +301,8 @@ def update_settings(
     merged.update(normalized)
     _validate_relations(merged)
     env_manager.save(normalized)
+    if OPENCODE_LOG_LEVEL_KEY in normalized:
+        set_opencode_log_level(merged[OPENCODE_LOG_LEVEL_KEY])
     _configure_opencode(manager, merged)
     restart_required = any(
         SETTING_BY_KEY[key].restart_required for key in normalized
@@ -338,6 +352,17 @@ def _normalize(spec: SettingSpec, value: Any) -> str:
             )
         return text
     text = text.strip()
+    if spec.choices:
+        canonical = next(
+            (choice for choice in spec.choices if choice.casefold() == text.casefold()),
+            None,
+        )
+        if canonical is None:
+            raise SettingsValidationError(
+                f"{spec.label}: выберите одно из значений: {', '.join(spec.choices)}",
+                spec.key,
+            )
+        text = canonical
     if spec.required and not text:
         raise SettingsValidationError(f"{spec.label}: обязательное значение", spec.key)
     if spec.kind == "number":

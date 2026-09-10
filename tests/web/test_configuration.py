@@ -67,6 +67,7 @@ def test_secret_requires_explicit_clear(tmp_path: Path) -> None:
         ({"OPENCODE_SERVER_URL": "https://remote.example:4096"}, "localhost"),
         ({"OPENCODE_PROVIDER_ID": "corp", "OPENCODE_MODEL_ID": ""}, "задаются вместе"),
         ({"OPENCODE_CONNECT_TIMEOUT": "0"}, "минимум"),
+        ({"AUTODEPLOY_OPENCODE_LOG_LEVEL": "TRACE"}, "выберите одно"),
     ],
 )
 def test_settings_validation(tmp_path: Path, updates: dict[str, object], message: str) -> None:
@@ -100,18 +101,21 @@ def test_web_settings_reads_restart_values_from_env_file(
         "AUTODEPLOY_OPENCODE_AUTO_CONNECT": "false",
         "AUTODEPLOY_OPEN_BROWSER": "false",
         "AUTODEPLOY_MCP_ENABLED": "true",
+        "AUTODEPLOY_OPENCODE_LOG_LEVEL": "warning",
     })
     monkeypatch.setenv("AUTODEPLOY_ENV_FILE", str(env_file))
     monkeypatch.delenv("AUTODEPLOY_PORT", raising=False)
     monkeypatch.delenv("AUTODEPLOY_OPENCODE_AUTO_CONNECT", raising=False)
     monkeypatch.delenv("AUTODEPLOY_OPEN_BROWSER", raising=False)
     monkeypatch.delenv("AUTODEPLOY_MCP_ENABLED", raising=False)
+    monkeypatch.delenv("AUTODEPLOY_OPENCODE_LOG_LEVEL", raising=False)
 
     settings = WebSettings.load()
     assert settings.port == 9876
     assert settings.auto_connect_opencode is False
     assert settings.open_browser is False
     assert settings.mcp_enabled is True
+    assert settings.opencode_log_level == "WARNING"
 
 
 def test_snapshot_never_contains_saved_secrets(tmp_path: Path) -> None:
@@ -120,6 +124,19 @@ def test_snapshot_never_contains_saved_secrets(tmp_path: Path) -> None:
     snapshot = json.dumps(settings_snapshot(env))
     assert "itsm-password" not in snapshot
     assert '"token"' not in snapshot
+
+
+def test_opencode_log_level_is_canonical_and_does_not_require_restart(tmp_path: Path) -> None:
+    env = EnvManager(tmp_path / ".env")
+    result = update_settings(
+        env,
+        ManagerStub(),  # type: ignore[arg-type]
+        {"AUTODEPLOY_OPENCODE_LOG_LEVEL": "debug"},
+        [],
+    )
+
+    assert env.get("AUTODEPLOY_OPENCODE_LOG_LEVEL") == "DEBUG"
+    assert result["restart_required"] is False
 
 
 def test_settings_expose_server_driven_path_and_mcp_pickers(tmp_path: Path) -> None:
@@ -135,6 +152,10 @@ def test_settings_expose_server_driven_path_and_mcp_pickers(tmp_path: Path) -> N
     assert fields["OPENCODE_ALLOWED_MCP"]["picker"] == "mcp_multi"
     assert fields["OPENCODE_REPOSITORY_MCP"]["picker"] == "mcp"
     assert fields["AUTODEPLOY_OPENCODE_AUTO_CONNECT"]["group"] == "OpenCode"
+    assert fields["AUTODEPLOY_OPENCODE_LOG_LEVEL"]["kind"] == "select"
+    assert fields["AUTODEPLOY_OPENCODE_LOG_LEVEL"]["choices"] == (
+        "OFF", "ERROR", "WARNING", "INFO", "DEBUG",
+    )
     assert fields["AUTODEPLOY_SEARCH_CATALOG_FACTORY"]["group"] == "Расширения"
     assert fields["AUTODEPLOY_SEARCH_CATALOG_FACTORY"]["restart_required"] is True
     assert fields["AUTODEPLOY_ENVIRONMENT_HOOK"]["group"] == "Расширения"

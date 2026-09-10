@@ -4,6 +4,7 @@ import { ApiError, api } from '../api'
 import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
 import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
+import { SearchableSelect } from '../components/SearchableSelect'
 import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
 import { PluginAISettings } from '../components/PluginAISettings'
 import { ITSMPromptSettings } from '../components/ITSMPromptSettings'
@@ -243,6 +244,8 @@ export function SettingsPage() {
                 <span className="configuration-label"><label htmlFor={inputId}>{field.label}{field.required && <b>*</b>}</label><span>{isChanged && <small className="changed-badge">изменено</small>}{field.restart_required && <small>restart</small>}</span></span>
                 {field.kind === 'boolean'
                   ? <label className="settings-switch" htmlFor={inputId}><input id={inputId} type="checkbox" checked={Boolean(draft[field.key])} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? errorId : undefined} onChange={(event) => changeValue(field, event.target.checked)} /><span className="switch" /><span>{Boolean(draft[field.key]) ? 'Включено' : 'Выключено'}</span></label>
+                  : field.kind === 'select'
+                    ? <SearchableSelect id={inputId} ariaLabel={field.label} clearable={false} value={String(draft[field.key] ?? field.default)} options={(field.choices ?? []).map((choice) => ({ value: choice, label: choice }))} onChange={(value) => changeValue(field, value)} ariaInvalid={Boolean(fieldError)} ariaDescribedBy={fieldError ? errorId : undefined} searchPlaceholder="Найти уровень…" />
                   : field.picker === 'mcp'
                     ? <McpSinglePicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
                     : field.picker === 'mcp_multi'

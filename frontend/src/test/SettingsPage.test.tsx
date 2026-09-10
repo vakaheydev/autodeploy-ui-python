@@ -91,6 +91,30 @@ describe('SettingsPage', () => {
     expect(screen.getByLabelText(/Адрес сервера/)).toHaveValue('http://127.0.0.1:4096')
   })
 
+  it('selects the OpenCode log level from server-declared choices', async () => {
+    const document = { groups: [{ name: 'OpenCode', fields: [{
+      key: 'AUTODEPLOY_OPENCODE_LOG_LEVEL', label: 'Уровень логирования OpenCode', group: 'OpenCode', kind: 'select', default: 'INFO',
+      choices: ['OFF', 'ERROR', 'WARNING', 'INFO', 'DEBUG'], description: '', required: true, restart_required: false,
+      minimum: null, maximum: null, configured: true, value: 'INFO',
+    }] }] }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.includes('/opencode/status')) return new Response(JSON.stringify({ state: 'stopped', message: '', version: '', address: '', pid: null, agent_loaded: false, ownership: 'none', runtime_dir: '' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (path.includes('/opencode/mcp')) return new Response(JSON.stringify({ connected: false, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify(document), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/settings?section=OpenCode']}><SettingsPage /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'Уровень логирования OpenCode' }))
+    await user.click(screen.getByRole('option', { name: 'OFF' }))
+    await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }))
+
+    const request = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ values: { AUTODEPLOY_OPENCODE_LOG_LEVEL: 'OFF' }, clear: [] })
+  })
+
   it('edits ticket-type prompts as typed server-side settings', async () => {
     const promptSettings = {
       rules: [{ ticket_type: 'create_api_v2', prompt: 'Use service_name as name.' }],

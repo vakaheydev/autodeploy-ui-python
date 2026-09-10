@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.env_manager import ENV_FILE_OVERRIDE, EnvManager
+from core.logging_setup import normalize_opencode_log_level
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +46,7 @@ class WebSettings:
     auto_connect_opencode: bool
     open_browser: bool
     mcp_enabled: bool = False
+    opencode_log_level: str = "INFO"
 
     @classmethod
     def load(cls) -> "WebSettings":
@@ -101,4 +103,7 @@ class WebSettings:
             not in {"0", "false", "no", "off"},
             mcp_enabled=configured("AUTODEPLOY_MCP_ENABLED", "false").strip().casefold()
             not in {"0", "false", "no", "off"},
+            opencode_log_level=normalize_opencode_log_level(
+                configured("AUTODEPLOY_OPENCODE_LOG_LEVEL", "INFO")
+            ),
         )
