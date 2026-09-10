@@ -135,6 +135,7 @@ export function ITSMPromptSettings() {
           <label>
             <span>Стабильный ticket_type</span>
             <input
+              className="itsm-prompt-control"
               aria-label={`Стабильный ticket_type ${index + 1}`}
               value={rule.ticket_type}
               maxLength={document.max_ticket_type_chars}
@@ -147,6 +148,7 @@ export function ITSMPromptSettings() {
           <label>
             <span>Prompt для AI</span>
             <textarea
+              className="itsm-prompt-control"
               aria-label={`Prompt для AI ${index + 1}`}
               value={rule.prompt}
               maxLength={document.max_prompt_chars}
