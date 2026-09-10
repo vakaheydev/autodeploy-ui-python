@@ -19,26 +19,75 @@ callable, endpoint или credentials.
 
 ## Подключение
 
-Добавьте модуль `src/corp_autodeploy/tickets.py` и настройку:
+Добавьте модуль `src/corp_autodeploy/tickets.py`. Корпоративный ITSM adapter
+подключается как часть общего container сервисов, а ticket provider — отдельной
+factory:
 
 ```dotenv
+AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 AUTODEPLOY_TICKET_PROVIDER=corp_autodeploy.tickets:create_ticket_provider
 ```
 
-Factory вызывается один раз при старте:
+Factory `create_ticket_provider` вызывается ровно один раз при старте Python
+server. Возвращённый provider живёт до остановки процесса, поэтому не храните в
+нём данные конкретного пользователя, заявки или окружения:
 
 ```python
-def create_ticket_provider(env_manager):
+from core.env_manager import EnvManager
+
+
+def create_ticket_provider(env_manager: EnvManager) -> "CorporateTicketProvider":
     return CorporateTicketProvider()
 ```
+
+`create_ticket_provider` не должен создавать `ITSMService`. Public core создаёт
+`TicketContext` перед каждым вызовом provider и передаёт уже подключённые
+корпоративные сервисы. Получайте ITSM adapter только так:
+
+```python
+def load_current_tickets(self, context, request):
+    itsm = context.services.itsm
+    raw_page = itsm.load_current_tickets(request)
+    return self._to_ticket_page(raw_page)
+```
+
+Таким образом `CorporateTicketProvider` — stateless adapter между private ITSM
+DTO и public `Ticket*` view models. Он не владеет соединением и не знает, как
+создаётся ITSM service.
+
+`AUTODEPLOY_SERVICE_PROVIDER` вызывается при создании request context. Если
+корпоративному клиенту действительно нужен application-wide singleton,
+реализуйте кэширование внутри private service factory. Такой singleton обязан:
+
+- быть thread-safe, потому что несколько HTTP requests выполняются параллельно;
+- не хранить mutable `current_environment`, пользователя или текущую заявку;
+- принимать environment явно в каждом ITSM-методе либо из переданного request;
+- не менять credentials одного запроса под влиянием другого;
+- закрывать свой connection pool при остановке процесса, если библиотека этого
+  требует.
+
+Обычно безопаснее сделать request-scoped façade, а разделять только дорогой
+thread-safe transport/connection pool и read-only cache. Для самого ticket
+provider singleton уже обеспечен public core.
 
 После изменения import path нужен полный restart Python server. Если настройка
 пуста, пункт меню остаётся доступным, но показывает безопасное состояние
 «Раздел заявок не подключён» и не делает корпоративных сетевых запросов.
 
-## Обязательный интерфейс
+## Обязательный интерфейс: реализовать все четыре метода
 
-Provider реализует четыре метода:
+Ни один из методов ниже не является опциональным. При старте public core
+проверяет их наличие; отсутствие хотя бы одного метода не даст серверу
+инициализировать corporate extension.
+
+| Метод | Когда вызывается | Обязан вернуть | Ответственность corporate-кода |
+|---|---|---|---|
+| `get_list_configuration(context)` | Перед показом каталога и перед каждым query | `TicketListConfiguration` | Объявить фильтры, сортировки, page size, описание и empty state |
+| `load_current_tickets(context, request)` | Query пустой | `TicketPage` | Вернуть текущие заявки с фильтрами, сортировкой и пагинацией из `request` |
+| `find_tickets(context, request)` | Query непустой | `TicketPage` | Найти заявки по `request.query` и одновременно применить остальные параметры `request` |
+| `load_ticket_card_by_id(context, ticket_id)` | Открытие карточки и повторная проверка перед action | `TicketCard` | Загрузить актуальную карточку, секции и доступные сейчас кнопки |
+
+Точные сигнатуры:
 
 ```python
 from tickets import (
@@ -73,6 +122,19 @@ class CorporateTicketProvider:
 ```
 
 `load_ticket_card_by_id` — правильное имя метода; `by_jd` не используется.
+Отдельный обязательный метод для выполнения кнопки не нужен: каждая кнопка
+задаётся как `TicketAction(handler=...)` внутри `TicketCard.actions`.
+
+Если корпоративный ITSM не различает «текущий список» и «поиск», оба метода всё
+равно должны существовать. Допустимо делегировать их одному private helper:
+
+```python
+def load_current_tickets(self, context, request):
+    return self._query(context.services.itsm, request, search=False)
+
+def find_tickets(self, context, request):
+    return self._query(context.services.itsm, request, search=True)
+```
 
 `TicketContext` создаётся заново на запрос и содержит:
 
@@ -83,6 +145,39 @@ class CorporateTicketProvider:
   `services.itsm`, `services.tfs` и `services.gravitee`.
 
 Provider не должен сохранять `TicketContext` или token в singleton state.
+
+### Что именно обязан делать каждый метод
+
+`get_list_configuration`:
+
+- не загружает сами заявки;
+- возвращает только `TicketListConfiguration`;
+- объявляет уникальные `key` фильтров и сортировок;
+- для `select`/`multiselect` возвращает допустимые options;
+- может учитывать `context.environment`.
+
+`load_current_tickets`:
+
+- вызывается только при пустом `request.query`;
+- применяет `request.filters`, `sort_key`, `sort_direction`, `offset`, `limit`;
+- преобразует private DTO в `TicketListItem`;
+- возвращает `TicketPage(items=..., total=...)`, где `total` считается до
+  пагинации.
+
+`find_tickets`:
+
+- вызывается только при непустом `request.query`;
+- применяет query вместе с теми же filters/sort/pagination;
+- возвращает тот же тип `TicketPage`;
+- не возвращает raw ITSM JSON во frontend.
+
+`load_ticket_card_by_id`:
+
+- загружает заявку заново по переданному `ticket_id`;
+- при отсутствии выбрасывает `TicketNotFound(ticket_id)`;
+- возвращает `TicketCard` с тем же `ticket_id`;
+- формирует секции и актуальный набор `TicketAction`;
+- не выполняет action и не возвращает credentials.
 
 ## Точная последовательность вызовов
 
