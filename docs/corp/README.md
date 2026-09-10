@@ -10,6 +10,7 @@
 gravitee-autodeploy (public core)       corp-autodeploy (private package)
 ├── FastAPI + React                     ├── корпоративные формы
 ├── form/plugin runtime contracts       ├── custom page плагины
+├── ticket workspace contracts          ├── ITSM list/card/action provider
 ├── generic UI renderer                 ├── ITSM/TFS/Gravitee adapters
 ├── AI, MCP, drafts                     ├── HTTP/local справочники
 ├── launcher/updater                    ├── environment/update hooks
@@ -40,6 +41,8 @@ handbook с документацией публичного ядра.
      кнопки заявки, определение типа и prompts из frontend;
    - [PLUGINS.md](PLUGINS.md) — корпоративные custom pages, динамические
      виджеты, операции и AI policy;
+   - [TICKETS.md](TICKETS.md) — список заявок, фильтры, карточки и
+     корпоративные кнопки;
    - [REFERENCES_AND_SEARCH.md](REFERENCES_AND_SEARCH.md) — справочники и поиск;
    - [SERVICES_AND_ENVIRONMENT.md](SERVICES_AND_ENVIRONMENT.md) — интеграции,
      авторизация и переключение окружения;
@@ -56,6 +59,7 @@ handbook с документацией публичного ядра.
 | Заполнение формы из заявки | `ITSM_FORM_FILLING.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
 | Новый тип заявки или изменение AI prompt | `ITSM_FORM_FILLING.md`, `CONFIGURATION.md` | `opencode_integration/context_builder.py`, `webapp/itsm_prompt_settings.py` |
 | Custom page, отчёт, график, plugin operation | `PLUGINS.md` | `plugins/`, `webapp/plugin_runtime.py` |
+| Список/поиск заявок, карточка, ITSM-кнопка | `TICKETS.md` | `tickets/`, `webapp/ticket_runtime.py` |
 | ITSM/TFS/Gravitee-клиент | `SERVICES_AND_ENVIRONMENT.md` | `webapp/extensions.py`, `services/submit_service.py` |
 | SELECT/MULTISELECT, remote dictionary | `REFERENCES_AND_SEARCH.md` | `handlers/`, `webapp/form_runtime.py` |
 | Выбор формы Copilot | `AI_AND_MCP.md` | `config/form_routing.py` |

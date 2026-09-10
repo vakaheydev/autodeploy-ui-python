@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Boxes, CircleAlert, History, Home, LoaderCircle, Moon, Puzzle, Search, Settings, Sparkles, Sun, X } from './Icons'
+import { Boxes, CircleAlert, ClipboardList, History, Home, LoaderCircle, Moon, Puzzle, Search, Settings, Sparkles, Sun, X } from './Icons'
 import { useEnvironment } from '../environment'
 import { useTheme } from '../theme'
 import { SearchableSelect } from './SearchableSelect'
@@ -7,6 +7,7 @@ import { SearchableSelect } from './SearchableSelect'
 const links = [
   { to: '/', label: 'Главная', icon: Home },
   { to: '/forms', label: 'Формы', icon: Boxes },
+  { to: '/tickets', label: 'Заявки', icon: ClipboardList },
   { to: '/plugins', label: 'Плагины', icon: Puzzle },
   { to: '/search', label: 'Поиск', icon: Search },
   { to: '/runs', label: 'История', icon: History },

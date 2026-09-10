@@ -141,6 +141,8 @@ def test_settings_expose_server_driven_path_and_mcp_pickers(tmp_path: Path) -> N
     assert fields["AUTODEPLOY_ENVIRONMENT_HOOK"]["restart_required"] is True
     assert fields["AUTODEPLOY_PLUGIN_REGISTRAR"]["group"] == "Расширения"
     assert fields["AUTODEPLOY_PLUGIN_REGISTRAR"]["restart_required"] is True
+    assert fields["AUTODEPLOY_TICKET_PROVIDER"]["group"] == "Расширения"
+    assert fields["AUTODEPLOY_TICKET_PROVIDER"]["restart_required"] is True
 
 
 def test_filesystem_picker_lists_names_without_reading_contents(tmp_path: Path) -> None:

@@ -42,6 +42,7 @@ include = [
   "opencode_integration*",
   "plugins*",
   "services*",
+  "tickets*",
   "ui*",
   "webapp*",
 ]

@@ -221,6 +221,107 @@ export interface ITSMPromptSettingsDocument {
   precedence: 'ui_override_then_corporate_hook'
 }
 
+export type TicketTone = 'default' | 'info' | 'success' | 'warning' | 'danger'
+
+export interface TicketFilterOption {
+  value: string
+  label: string
+}
+
+export interface TicketFilterDefinition {
+  key: string
+  label: string
+  kind: 'text' | 'select' | 'multiselect' | 'date' | 'boolean'
+  options: TicketFilterOption[]
+  placeholder: string
+  default: unknown
+}
+
+export interface TicketSortDefinition {
+  key: string
+  label: string
+}
+
+export interface TicketListConfiguration {
+  enabled: boolean
+  description: string
+  filters: TicketFilterDefinition[]
+  sorts: TicketSortDefinition[]
+  default_sort: string
+  default_direction: 'asc' | 'desc'
+  page_size: number
+  empty_title: string
+  empty_text: string
+}
+
+export interface TicketAttribute {
+  key: string
+  label: string
+  value: unknown
+  kind: 'text' | 'multiline' | 'code' | 'datetime' | 'badge' | 'json'
+  url: string
+  copyable: boolean
+  tone: TicketTone
+}
+
+export interface TicketListItem {
+  id: string
+  title: string
+  subtitle: string
+  status: string
+  status_tone: TicketTone
+  updated_at: string
+  attributes: TicketAttribute[]
+}
+
+export interface TicketListDocument {
+  items: TicketListItem[]
+  total: number
+  offset: number
+  limit: number
+  has_more: boolean
+}
+
+export interface TicketSection {
+  id: string
+  title: string
+  attributes: TicketAttribute[]
+}
+
+export interface TicketActionDocument {
+  id: string
+  label: string
+  description: string
+  style: 'primary' | 'secondary' | 'success' | 'danger' | 'warning'
+  color: string
+  confirmation_required: boolean
+  disabled_reason: string
+}
+
+export interface TicketCardDocument {
+  id: string
+  title: string
+  subtitle: string
+  description: string
+  status: string
+  status_tone: TicketTone
+  updated_at: string
+  environment: string
+  version: string
+  sections: TicketSection[]
+  actions: TicketActionDocument[]
+}
+
+export interface TicketActionResponse {
+  success: boolean
+  message?: string
+  card?: TicketCardDocument
+  data?: unknown
+  confirmation_required?: boolean
+  confirmation_text?: string
+  confirmation_token?: string
+}
+
 export interface PluginSummary {
   id: string
   title: string

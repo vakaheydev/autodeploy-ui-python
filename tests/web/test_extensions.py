@@ -103,6 +103,39 @@ def test_plugin_registrar_receives_public_registry(
     assert registry.get("corp.status").title == "Статус"
 
 
+def test_ticket_provider_factory_receives_env_manager_and_validates_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = EnvManager(tmp_path / ".env")
+    env.save({
+        extensions.TICKET_PROVIDER_KEY:
+            "corp_autodeploy.tickets:create_ticket_provider",
+    })
+
+    class Provider:
+        def get_list_configuration(self, _context): ...
+        def load_current_tickets(self, _context, _request): ...
+        def find_tickets(self, _context, _request): ...
+        def load_ticket_card_by_id(self, _context, _ticket_id): ...
+
+    provider = Provider()
+
+    def factory(received_env: EnvManager):
+        assert received_env is env
+        return provider
+
+    monkeypatch.setattr(extensions, "import_callable", lambda _path: factory)
+    assert extensions.load_ticket_provider(env) is provider
+
+    monkeypatch.setattr(
+        extensions,
+        "import_callable",
+        lambda _path: lambda _env: object(),
+    )
+    with pytest.raises(TypeError, match="load_current_tickets"):
+        extensions.load_ticket_provider(env)
+
+
 @pytest.mark.parametrize(
     ("configured", "message"),
     [

@@ -99,6 +99,10 @@ def test_health_catalog_openapi_and_spa(server: str) -> None:
         "/api/v1/forms/{form_id}/actions/{action_id}/dialog/state",
         "/api/v1/forms/{form_id}/actions/{action_id}/dialog/fields/{field_path}/options",
         "/api/v1/forms/{form_id}/actions/{action_id}/dialog/actions/{dialog_action_id}",
+        "/api/v1/tickets/configuration",
+        "/api/v1/tickets/query",
+        "/api/v1/tickets/card",
+        "/api/v1/tickets/actions/{action_id}",
     } <= set(openapi_paths)
     status, headers, content = request(server, "/forms/api.create")
     assert status == 200
@@ -116,6 +120,29 @@ def test_health_catalog_openapi_and_spa(server: str) -> None:
         "plugins": [],
         "requires_new_session": True,
     }
+
+    status, _, content = request(
+        server, "/api/v1/tickets/configuration?environment=test_int"
+    )
+    assert status == 200
+    assert json.loads(content)["enabled"] is False
+
+    status, _, content = request(
+        server,
+        "/api/v1/tickets/query",
+        method="POST",
+        body={
+            "environment": "test_int",
+            "query": "",
+            "filters": {},
+            "sort_key": "",
+            "sort_direction": "desc",
+            "offset": 0,
+            "limit": 25,
+        },
+    )
+    assert status == 503
+    assert "не подключён" in json.loads(content)["detail"]
 
 
 @pytest.mark.integration

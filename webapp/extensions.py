@@ -23,6 +23,7 @@ REFERENCE_HANDLER_FACTORY_KEY = "AUTODEPLOY_REFERENCE_HANDLER_FACTORY"
 SEARCH_CATALOG_FACTORY_KEY = "AUTODEPLOY_SEARCH_CATALOG_FACTORY"
 ENVIRONMENT_HOOK_KEY = "AUTODEPLOY_ENVIRONMENT_HOOK"
 PLUGIN_REGISTRAR_KEY = "AUTODEPLOY_PLUGIN_REGISTRAR"
+TICKET_PROVIDER_KEY = "AUTODEPLOY_TICKET_PROVIDER"
 
 _SEARCH_KINDS = frozenset({"api", "application"})
 
@@ -105,6 +106,27 @@ def register_extension_plugins(env_manager: EnvManager, registry: Any) -> None:
     path = env_manager.get(PLUGIN_REGISTRAR_KEY, "").strip()
     if path:
         import_callable(path)(registry)
+
+
+def load_ticket_provider(env_manager: EnvManager) -> Any | None:
+    """Load ``factory(env_manager) -> TicketProvider`` from the private package."""
+
+    path = env_manager.get(TICKET_PROVIDER_KEY, "").strip()
+    if not path:
+        return None
+    provider = import_callable(path)(env_manager)
+    required = (
+        "get_list_configuration",
+        "load_current_tickets",
+        "find_tickets",
+        "load_ticket_card_by_id",
+    )
+    missing = [name for name in required if not callable(getattr(provider, name, None))]
+    if missing:
+        raise TypeError(
+            "Фабрика заявок вернула объект без методов: " + ", ".join(missing)
+        )
+    return provider
 
 
 def extension_reference_handlers(

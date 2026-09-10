@@ -16,6 +16,7 @@ corp-autodeploy/
 │       ├── references.py
 │       ├── search_catalogs.py
 │       ├── environment.py
+│       ├── tickets.py
 │       ├── plugins/
 │       │   ├── __init__.py
 │       │   ├── registrar.py
@@ -71,7 +72,7 @@ release вместе с private wheel должны войти wheel всех е�
 4. регистрирует private custom page плагины в отдельном registry;
 5. ставит private reference handlers перед встроенными fallback handlers;
 6. загружает ровно два global search catalog;
-7. создаёт environment hook;
+7. создаёт environment hook и optional private ticket provider;
 8. загружает mutable operator settings, включая AI prompts по типам заявок;
 9. публикует один REST API, React SPA и optional MCP на localhost.
 
@@ -97,6 +98,7 @@ package создал JSON schema.
 | `AUTODEPLOY_REFERENCE_HANDLER_FACTORY` | `create_handlers(env_manager, http_client, cache) -> Iterable[handler]` | один раз при startup |
 | `AUTODEPLOY_SEARCH_CATALOG_FACTORY` | `create_search_catalogs(env_manager) -> Mapping[str, ReferenceConfig]` | один раз при startup |
 | `AUTODEPLOY_ENVIRONMENT_HOOK` | `create_environment_hook(env_manager) -> hook(previous, current)` | factory один раз, hook при реальной смене environment |
+| `AUTODEPLOY_TICKET_PROVIDER` | `create_ticket_provider(env_manager) -> TicketProvider` | factory один раз; методы provider на каждый list/search/card/action request |
 | `AUTODEPLOY_UPDATE_PROVIDER` | `create_provider(paths, values) -> provider` | отдельный launcher process; callable должен быть доступен его Python, не только app `.venv` |
 
 Основные типы импортируются из public wheel:
@@ -106,6 +108,7 @@ from forms.base_form import BaseForm, ServerAction
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 from handlers.base_reference_handler import BaseReferenceHandler
 from plugins import PluginDefinition, PluginOperation, PluginRegistry
+from tickets import TicketAction, TicketCard, TicketListConfiguration, TicketPage
 from webapp.extensions import (
     EnvironmentChangeRejected,
     RuntimeServices,
@@ -152,6 +155,9 @@ def register_plugins(registry) -> None:
 Полный plugin contract, виджеты и отдельная AI policy описаны в
 [PLUGINS.md](PLUGINS.md).
 
+Раздел заявок регистрируется не через form/plugin registry, а отдельной factory.
+Полный list/card/action contract описан в [TICKETS.md](TICKETS.md).
+
 Если добавляется новая категория, registrar обновляет оба public registry:
 
 ```python
@@ -169,6 +175,7 @@ if "security" not in CATEGORY_ORDER:
 | HTTP API и validation pipeline | Конкретные формы и domain rules |
 | Generic React renderer | Корпоративные подписи/описания полей |
 | Plugin REST/MCP runtime и generic widgets | Custom page definitions и operation handlers |
+| Ticket REST runtime и generic list/card UI | ITSM list/search, карточки и action handlers |
 | Secrets whitelist и write-only transport | Значения secrets в пользовательском `.env` |
 | Reference paging/search engine | URL, auth и преобразование private dictionaries |
 | Submit/auth framework | Endpoint, auth type, payload и pre-submit logic формы |

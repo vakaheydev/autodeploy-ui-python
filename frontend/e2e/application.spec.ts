@@ -33,6 +33,70 @@ test('opens the bundled application and validates a Python form', async ({ page 
   await expect(page.getByRole('dialog')).toContainText('/orders/v1')
 })
 
+test('renders the corporate ticket workspace and executes a confirmed action', async ({ page }) => {
+  const configuration = {
+    enabled: true,
+    description: 'Назначенные пользователю заявки',
+    filters: [{
+      key: 'status', label: 'Статус', kind: 'select', options: [
+        { value: 'active', label: 'Активные' }, { value: 'done', label: 'Завершённые' },
+      ], placeholder: 'Все статусы', default: '',
+    }],
+    sorts: [{ key: 'updated', label: 'По обновлению' }],
+    default_sort: 'updated', default_direction: 'desc', page_size: 25,
+    empty_title: 'Заявок пока нет', empty_text: 'Измените фильтры.',
+  }
+  const ticketCard = (status = 'В работе') => ({
+    id: 'REQ-42', title: 'Создать API Orders', subtitle: 'Новая точка входа',
+    description: 'Описание корпоративной заявки', status, status_tone: 'info',
+    updated_at: '2026-09-10 10:30', environment: 'test_int', version: 'version-1',
+    sections: [{ id: 'main', title: 'Основное', attributes: [
+      { key: 'author', label: 'Автор', value: 'Иван', kind: 'text', url: '', copyable: true, tone: 'default' },
+    ] }],
+    actions: [{
+      id: 'take', label: 'Взять в работу', description: 'Назначить на себя',
+      style: 'success', color: '#147D64', confirmation_required: true, disabled_reason: '',
+    }],
+  })
+  await page.route('**/api/v1/tickets/configuration?*', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(configuration),
+  }))
+  await page.route('**/api/v1/tickets/query', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({
+      items: [{
+        id: 'REQ-42', title: 'Создать API Orders', subtitle: 'Новая точка входа',
+        status: 'В работе', status_tone: 'info', updated_at: '2026-09-10 10:30',
+        attributes: [{ key: 'type', label: 'Тип', value: 'Создание API', kind: 'text', url: '', copyable: false, tone: 'default' }],
+      }],
+      total: 1, offset: 0, limit: 25, has_more: false,
+    }),
+  }))
+  await page.route('**/api/v1/tickets/card', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(ticketCard()),
+  }))
+  await page.route('**/api/v1/tickets/actions/take', async (route) => {
+    const body = route.request().postDataJSON()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body.confirmation_token
+        ? { success: true, message: 'Заявка назначена', card: ticketCard('Назначена мне') }
+        : { success: false, confirmation_required: true, confirmation_text: 'Взять заявку в работу?', confirmation_token: 'confirm-1' }),
+    })
+  })
+
+  await page.goto('/tickets')
+  await expect(page.getByRole('heading', { name: 'Заявки' })).toBeVisible()
+  await page.getByRole('link', { name: /Создать API Orders/ }).click()
+  await expect(page.getByRole('heading', { name: /Создать API Orders/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Взять в работу' }).click()
+  const confirmation = page.getByRole('dialog', { name: 'Подтвердите действие' })
+  await expect(confirmation).toContainText('Взять заявку в работу?')
+  await confirmation.getByRole('button', { name: 'Подтвердить' }).click()
+  await expect(page.getByText('Заявка назначена')).toBeVisible()
+  await expect(page.getByText('Назначена мне')).toBeVisible()
+})
+
 test('renders a Python-owned action dialog and applies its result', async ({ page }) => {
   const actionId = 'e2e-swagger-methods'
   const dialog = {

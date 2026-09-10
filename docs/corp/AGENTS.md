@@ -19,10 +19,10 @@
   validation, references, payload, endpoint, auth, actions, submit и polling.
 - React — generic renderer. Корпоративный package не содержит fork frontend и
   не передаёт браузеру URL, credentials или callable.
-- Private code подключается только через публичные import contracts и шесть
-  runtime extension points: form registrar, plugin registrar, services,
-  reference handlers, search catalogs и environment hook. Update provider
-  является отдельной launcher границей.
+- Private code подключается только через публичные import contracts и семь
+  runtime extension points: form registrar, plugin registrar, ticket provider,
+  services, reference handlers, search catalogs и environment hook. Update
+  provider является отдельной launcher границей.
 - Реальные ITSM/TFS/Gravitee реализации, справочники и формы находятся только в
   private package. Публичное ядро не редактируется из корпоративной задачи.
 - Секреты читаются только server-side из пользовательского `.env`. Они не
@@ -48,6 +48,9 @@
   renderer, а интеграции доступны только через `PluginContext.services`.
 - Plugin AI policy закрыта по умолчанию. Агент не должен сам включать видимость
   или менять `deny/manual/allow`; это операторская настройка.
+- Раздел заявок реализуется одним private `TicketProvider`. Список, поиск,
+  фильтрация, сортировка, карточка и handlers кнопок принадлежат Python-коду;
+  перед изменением читайте `docs/TICKETS.md`. Не возвращайте raw ITSM response.
 
 ## Владение файлами
 
@@ -60,6 +63,7 @@
 | Регистрация и AI routing | `corp_autodeploy.registrar` |
 | Формы | `corp_autodeploy.forms.*` |
 | Custom page плагины | `corp_autodeploy.plugins.*` |
+| Список и карточки ITSM-заявок | `corp_autodeploy.tickets` |
 | ITSM/TFS/Gravitee adapters | `corp_autodeploy.services` или `integrations/` |
 | Справочники | `corp_autodeploy.references` + private package data |
 | Глобальный поиск | `corp_autodeploy.search_catalogs` |
@@ -101,6 +105,10 @@
 
 Для plugin change дополнительно проверьте dynamic widgets, operation
 confirmation и все три AI policy (`deny`, `manual`, `allow`).
+
+Для ticket change дополнительно проверьте `load_current_tickets`,
+`find_tickets`, карточку, pagination, visibility/disabled state каждой кнопки,
+confirmation и повторную загрузку карточки после side effect.
 
 Не заявляйте готовность только по импорту модуля. Для form change сравните
 ожидаемый payload, auth type и endpoint; для AI routing проверьте хотя бы один

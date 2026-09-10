@@ -58,11 +58,13 @@ AUTODEPLOY_SERVICE_PROVIDER=corp_autodeploy.services:create_services
 
 Форма получает объекты как `self.itsm_service`, `self.tfs_service` и
 `self.gravitee_service`. Плагин получает тот же результат provider через
-`PluginContext.services`; private provider также может вернуть собственный
+`PluginContext.services`, а раздел заявок — через `TicketContext.services`.
+Private provider также может вернуть собственный
 typed container с дополнительными сервисами, например `analytics`. Конкретные
 дополнительные методы являются private contract между формами/плагинами и
 adapters и должны тестироваться внутри одного package. Полный contract custom
 pages описан в [PLUGINS.md](PLUGINS.md).
+Контракт списка/карточки ITSM описан в [TICKETS.md](TICKETS.md).
 
 Factory может создавать lightweight clients на запрос. Connection pool или
 shared cache разрешён только при thread-safe реализации; mutable auth state

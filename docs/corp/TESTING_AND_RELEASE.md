@@ -50,6 +50,7 @@ Private tests без сети проверяют:
 
 - `build_payload`, `validate`, endpoints и routing descriptions;
 - plugin render/validate, operation handlers и безопасную сериализацию widgets;
+- ticket list/search mapping, карточки и handlers корпоративных кнопок;
 - parsing/mapping ITSM, TFS, Gravitee responses;
 - reference handler transformation, params и redaction;
 - environment/update factories;
@@ -66,6 +67,8 @@ Private tests без сети проверяют:
 - registrar не оставляет missing/unknown form routing;
 - plugin registrar возвращает уникальные definitions, а страницы и операции
   соответствуют публичному contract;
+- ticket provider загружается, принимает фильтры/sort/pagination и возвращает
+  валидные `TicketPage`/`TicketCard` без raw ITSM/secrets;
 - form documents JSON-serializable;
 - initial `/state`, every condition branch, `/validate` и `/preview`;
 - reference options, selected-first behavior и dependencies;
@@ -89,6 +92,7 @@ release.
 - AI semantic routing, reference resolution и persistent draft;
 - plugin catalog, shared fields/references/widgets, browser confirmation и
   operation в светлой и тёмной теме;
+- ticket list, search/filter/sort, card, disabled actions и confirmation;
 - light/dark UI только через public frontend E2E, без private frontend fork.
 
 ## Обязательный pre-release gate
@@ -99,8 +103,8 @@ release.
 4. Собрать offline archive с private wheels.
 5. Установить archive в пустой temp directory.
 6. Запустить server из установленной version и проверить health, SPA, catalog,
-   одну representative preview, одну representative plugin page и private
-   package import.
+   одну representative preview, одну representative plugin page, одну ticket
+   card и private package import.
 7. Проверить rollback.
 8. Опубликовать immutable archive.
 9. Проверить его SHA-256.

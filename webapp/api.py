@@ -13,6 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from config.categories import CATEGORIES, CATEGORY_ORDER
 from config.environments import ENVIRONMENTS
 from forms.registry import FormRegistry
+from tickets import TicketNotFound, TicketUserError
+from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
+from webapp.extensions import EnvironmentChangeRejected
 from webapp.form_runtime import (
     FormAIUnavailableError,
     FormNotFoundError,
@@ -36,15 +39,22 @@ from webapp.models import (
     SearchStatusRequest,
     SettingsUpdateRequest,
     SubmitRequest,
+    TicketActionExecuteRequest,
+    TicketCardRequest,
+    TicketListQueryRequest,
     TicketRequest,
     ValuesRequest,
 )
-from webapp.extensions import EnvironmentChangeRejected
-from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
+from webapp.ticket_runtime import (
+    TicketCardVersionConflict,
+    TicketContractError,
+    TicketsNotConfiguredError,
+)
 
 
 router = APIRouter(prefix="/api/v1")
 _log = logging.getLogger("web.drafts")
+_ticket_log = logging.getLogger("web.tickets")
 
 
 def container(request: Request):
@@ -61,6 +71,38 @@ def _raise_runtime_error(exc: Exception) -> None:
     raise exc
 
 
+def _raise_ticket_runtime_error(exc: Exception) -> None:
+    if isinstance(exc, TicketNotFound):
+        raise HTTPException(
+            status_code=404, detail="Заявка или действие не найдено"
+        ) from exc
+    if isinstance(exc, TicketCardVersionConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, TicketUserError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, TicketsNotConfiguredError):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(exc, TicketContractError):
+        _ticket_log.error(
+            "Corporate ticket provider returned an invalid document error_type=%s",
+            type(exc).__name__,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Корпоративный сервис заявок вернул некорректные данные",
+        ) from exc
+    _ticket_log.error(
+        "Corporate ticket provider failed error_type=%s",
+        type(exc).__name__,
+        exc_info=True,
+    )
+    raise HTTPException(
+        status_code=502,
+        detail="Не удалось выполнить запрос к корпоративному сервису заявок",
+    ) from exc
+
+
 @router.get("/health", tags=["system"])
 def health(request: Request) -> dict[str, Any]:
     app_container = container(request)
@@ -70,6 +112,7 @@ def health(request: Request) -> dict[str, Any]:
         "version": request.app.version,
         "forms": len(FormRegistry().all_forms()),
         "plugins": len(app_container.plugin_registry.all_plugins()),
+        "tickets": "enabled" if app_container.tickets.enabled else "disabled",
         "opencode": app_container.opencode_manager.status.state,
         "mcp": "enabled" if app_container.settings.mcp_enabled else "disabled",
     }
@@ -173,6 +216,59 @@ def catalog(request: Request) -> dict[str, Any]:
         "categories": categories,
         "environments": [dataclasses.asdict(value) for value in ENVIRONMENTS],
     }
+
+
+@router.get("/tickets/configuration", tags=["tickets"])
+def ticket_configuration(
+    request: Request,
+    environment: str = Query(default="test_int", max_length=80),
+):
+    try:
+        return container(request).tickets.configuration(environment)
+    except Exception as exc:
+        _raise_ticket_runtime_error(exc)
+
+
+@router.post("/tickets/query", tags=["tickets"])
+def query_tickets(body: TicketListQueryRequest, request: Request):
+    try:
+        return container(request).tickets.query(
+            environment=body.environment,
+            query=body.query,
+            filters=body.filters,
+            sort_key=body.sort_key,
+            sort_direction=body.sort_direction,
+            offset=body.offset,
+            limit=body.limit,
+        )
+    except Exception as exc:
+        _raise_ticket_runtime_error(exc)
+
+
+@router.post("/tickets/card", tags=["tickets"])
+def ticket_card(body: TicketCardRequest, request: Request):
+    try:
+        return container(request).tickets.card(body.ticket_id, body.environment)
+    except Exception as exc:
+        _raise_ticket_runtime_error(exc)
+
+
+@router.post("/tickets/actions/{action_id}", tags=["tickets"])
+def run_ticket_action(
+    action_id: str,
+    body: TicketActionExecuteRequest,
+    request: Request,
+):
+    try:
+        return container(request).tickets.run_action(
+            action_id=action_id,
+            ticket_id=body.ticket_id,
+            environment=body.environment,
+            card_version=body.card_version,
+            confirmation_token=body.confirmation_token,
+        )
+    except Exception as exc:
+        _raise_ticket_runtime_error(exc)
 
 
 @router.get("/plugins", tags=["plugins"])

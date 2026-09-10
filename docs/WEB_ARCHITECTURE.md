@@ -20,6 +20,11 @@ The same separation also supports corporate custom pages. A private
 Python operations. `PluginRuntime` owns conditions, references, validation,
 service injection and operation execution; React remains a generic renderer.
 
+The `/tickets` workspace follows the same boundary. A private `TicketProvider`
+owns current-ticket loading, search, filters, sorting, card projection and
+button handlers. `TicketRuntime` validates and serializes its view models;
+React renders the resulting generic list/card and never calls ITSM directly.
+
 The same FastAPI process serves both `/api/v1/*` and the prebuilt static React
 application. There is no Node process on a user's machine.
 
@@ -146,10 +151,11 @@ kept in a separate wheel and selected from server-side `.env`:
 - `AUTODEPLOY_REFERENCE_HANDLER_FACTORY=corp.references:create_handlers`
 - `AUTODEPLOY_SEARCH_CATALOG_FACTORY=corp.search:create_search_catalogs`
 - `AUTODEPLOY_ENVIRONMENT_HOOK=corp.environment:create_environment_hook`
+- `AUTODEPLOY_TICKET_PROVIDER=corp.tickets:create_ticket_provider`
 
-Последняя граница выполняет корпоративную подготовку до фиксации выбранного
-окружения в браузере. Полный private-package handbook, включая точные контракты
-форм, сервисов, справочников и environment hook, изолирован в
+`AUTODEPLOY_ENVIRONMENT_HOOK` выполняет корпоративную подготовку до фиксации
+выбранного окружения в браузере. Полный private-package handbook, включая
+точные контракты форм, заявок, сервисов, справочников и environment hook, изолирован в
 [corp/](corp/README.md).
 
 An extension wheel can be added to a release with
@@ -214,6 +220,8 @@ Important resources are:
 - `/forms/{id}/actions/{action_id}/dialog`, `/dialog/state`,
   `/dialog/fields/{path}/options` and `/dialog/actions/{button_id}`;
 - `/runs`, `/submissions/{id}/poll`, `/search`;
+- `/tickets/configuration`, `/tickets/query`, `/tickets/card` and
+  `/tickets/actions/{action_id}` for the private server-driven ITSM workspace;
 - `/opencode/*` and `/ai/*` for OpenCode chat, draft review and compatibility
   extraction endpoints;
 - `/settings` for whitelisted configuration with write-only secrets;

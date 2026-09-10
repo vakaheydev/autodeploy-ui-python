@@ -29,6 +29,7 @@ from webapp.extensions import (
     extension_reference_handlers,
     load_search_catalogs,
     load_service_provider,
+    load_ticket_provider,
     register_extension_forms,
     register_extension_plugins,
 )
@@ -39,6 +40,7 @@ from webapp.plugin_policy import PluginAIPolicyStore
 from webapp.plugin_runtime import PluginRuntime
 from webapp.security import ConfirmationStore, SubmissionStore, request_fingerprint
 from webapp.settings import WebSettings
+from webapp.ticket_runtime import TicketRuntime
 
 
 class ApplicationContainer:
@@ -55,6 +57,7 @@ class ApplicationContainer:
         self.confirmations = ConfirmationStore()
         self.submissions = SubmissionStore()
         self.service_provider = load_service_provider(self.env_manager)
+        self.ticket_provider = load_ticket_provider(self.env_manager)
         self.search_catalogs = load_search_catalogs(self.env_manager)
         registry = FormRegistry()
         # The registry is a desktop-compatible singleton.  Reset it at the web
@@ -64,6 +67,7 @@ class ApplicationContainer:
         register_all_forms()
         register_extension_forms(self.env_manager, registry)
         self.forms = FormRuntime(self)
+        self.tickets = TicketRuntime(self)
         self.plugin_registry = PluginRegistry()
         register_extension_plugins(self.env_manager, self.plugin_registry)
         self.plugins = PluginRuntime(self, self.plugin_registry)

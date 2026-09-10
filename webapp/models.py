@@ -157,6 +157,26 @@ class ITSMPromptSettingsUpdateRequest(StrictModel):
     rules: List[ITSMPromptRuleRequest] = Field(default_factory=list, max_length=100)
 
 
+class TicketListQueryRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    query: str = Field(default="", max_length=500)
+    filters: Dict[str, Any] = Field(default_factory=dict, max_length=30)
+    sort_key: str = Field(default="", max_length=100)
+    sort_direction: Literal["asc", "desc"] = "desc"
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    limit: int = Field(default=25, ge=1, le=200)
+
+
+class TicketCardRequest(StrictModel):
+    environment: str = Field(min_length=1, max_length=80)
+    ticket_id: str = Field(min_length=1, max_length=500)
+
+
+class TicketActionExecuteRequest(TicketCardRequest):
+    card_version: str = Field(min_length=1, max_length=128)
+    confirmation_token: str = Field(default="", max_length=300)
+
+
 class PluginValuesRequest(StrictModel):
     environment: str = Field(min_length=1, max_length=80)
     values: Dict[str, Any] = Field(default_factory=dict)

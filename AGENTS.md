@@ -26,7 +26,8 @@ example package as source code in this repository.
   Connect that package only through `AUTODEPLOY_FORM_REGISTRAR`,
   `AUTODEPLOY_SERVICE_PROVIDER`, `AUTODEPLOY_REFERENCE_HANDLER_FACTORY`,
   `AUTODEPLOY_SEARCH_CATALOG_FACTORY`, `AUTODEPLOY_ENVIRONMENT_HOOK`, and
-  `AUTODEPLOY_PLUGIN_REGISTRAR`.
+  `AUTODEPLOY_PLUGIN_REGISTRAR`. The server-driven ticket workspace has its
+  own `AUTODEPLOY_TICKET_PROVIDER` boundary.
   Keep these boundaries stable.
 - Frontend and API are served by one localhost-only Python process on one port.
   The production wheel includes prebuilt `webapp/static`; end users do not need
@@ -36,6 +37,7 @@ example package as source code in this repository.
 
 - `forms/`: public form contracts and examples; no corporate network logic.
 - `plugins/`: public contracts for private server-driven custom pages.
+- `tickets/`: public contracts for the private ITSM ticket workspace.
 - `services/`: public/default service abstractions.
 - `handlers/`: reference handlers used by Python forms.
 - `webapp/`: FastAPI application, API contracts, form runtime, MCP and AI façade.

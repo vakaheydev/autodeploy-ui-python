@@ -45,6 +45,7 @@ from webapp.extensions import (
     REFERENCE_HANDLER_FACTORY_KEY,
     SEARCH_CATALOG_FACTORY_KEY,
     SERVICE_PROVIDER_KEY,
+    TICKET_PROVIDER_KEY,
 )
 
 
@@ -215,6 +216,15 @@ def _specs() -> tuple[SettingSpec, ...]:
             "text",
             "",
             "package.module:callable; регистрирует серверные custom pages",
+            restart_required=True,
+        ),
+        SettingSpec(
+            TICKET_PROVIDER_KEY,
+            "Фабрика раздела заявок",
+            "Расширения",
+            "text",
+            "",
+            "package.module:callable; factory(env_manager) возвращает TicketProvider",
             restart_required=True,
         ),
         SettingSpec(
