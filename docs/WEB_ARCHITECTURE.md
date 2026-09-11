@@ -125,7 +125,9 @@ SELECT/MULTISELECT, blocks and server-side reference validation. Each
 `ServerDialogAction` is an independently named Python handler and may patch the
 dialog, patch the owning form, keep the modal open, close it, or request an
 additional one-use confirmation. No handler, service, URL or callable is sent
-to React.
+to React. A reference inside the dialog can explicitly read an owning-form
+field through `ReferenceDependency(..., scope="form")`; the handler receives
+only that declared value, never the complete browser state.
 
 The browser flow is:
 

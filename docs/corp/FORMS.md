@@ -82,8 +82,9 @@ history, AI routing и внешних клиентов. Для переимен�
 - `plural=True` и optional `plural_max` для повторяемого поля;
 - `block_fields` для вложенной структуры;
 - `depends_on`/`depends_on_field` для зависимого справочника.
-- `reference_dependencies` для явной передачи нескольких соседних значений в
-  один справочник.
+- `reference_dependencies` для явной передачи нескольких значений в один
+  справочник; в `ServerActionDialog` значение может приходить из соседнего
+  поля (`scope="current"`) или корневого поля основной формы (`scope="form"`).
 
 `width` сохранён для desktop compatibility; web-формы отображаются вертикально
 и не должны кодировать бизнес-смысл шириной виджета.

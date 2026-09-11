@@ -76,6 +76,76 @@ handler(
 попадают в браузер. Для опасной операции задайте `confirmation_text`: public
 runtime выдаст и проверит одноразовый confirmation token.
 
+## Доступ к значениям основной формы
+
+Диалог не изолирован от своей формы. Public runtime передаёт актуальный
+нормализованный снимок основной формы во все серверные callbacks:
+
+- `initial_values(environment, form_values)`;
+- `validate(environment, form_values, dialog_values)`;
+- `ServerDialogAction.handler(environment, form_values, dialog_values)`.
+
+Например, кнопка может прочитать `form_values["api"]` и вернуть patch другого
+поля через `ServerDialogActionResult(form_values={...})`. Значения являются
+копиями: изменение словаря аргумента само по себе не изменяет открытую форму.
+
+Справочник внутри диалога вызывается отдельно от button handler. Чтобы дать
+его corporate `BaseReferenceHandler` доступ к конкретному полю основной формы,
+объявите это поле в `ReferenceDependency` с `scope="form"`:
+
+```python
+FieldDefinition(
+    key="methods",
+    label="Методы Swagger",
+    field_type=FieldType.MULTISELECT,
+    reference=ReferenceConfig(
+        source="corp_swagger",
+        resource="swagger_methods",
+        value_key="operation_id",
+        label_key="display_name",
+        required_params=("api_id", "swagger_document"),
+    ),
+    reference_dependencies=(
+        # Поле api находится в самом диалоге.
+        ReferenceDependency(
+            field="api",
+            parameter="api_id",
+            item_field="id",
+        ),
+        # swagger_file находится в основной форме.
+        ReferenceDependency(
+            field="swagger_file",
+            parameter="swagger_document",
+            scope="form",
+        ),
+    ),
+)
+```
+
+Значения `scope`:
+
+- `"current"` — значение соседнего поля диалога; используется по умолчанию и
+  полностью совместимо с прежним контрактом;
+- `"form"` — значение корневого поля формы, которой принадлежит диалог.
+
+Для reference-поля основной формы можно одновременно задать `item_field`:
+runtime разрешит сохранённый ID через справочник формы и передаст handler нужное
+поле полного объекта. Например:
+
+```python
+ReferenceDependency(
+    "api",
+    parameter="context_path",
+    item_field="context_path",
+    scope="form",
+)
+```
+
+Доступ остаётся явным и минимальным: reference handler получает в
+`extra_params` только перечисленные зависимости, а не полный `form_values`.
+Это позволяет использовать поля формы, не раскрывая справочнику остальные
+значения, FILE-контент или секретные поля.
+
 ## Несколько зависимостей справочника
 
 Legacy `depends_on="api"` и `depends_on_field="id"` поддерживаются без
@@ -119,10 +189,12 @@ FieldDefinition(
 
 У каждой зависимости:
 
-- `field` — ключ соседнего поля этого же объекта/блока;
+- `field` — ключ поля выбранного scope;
 - `parameter` — имя в `extra_params`; по умолчанию равно `field`;
 - `item_field` — взять атрибут полного выбранного reference item, а не его
   сохранённый `value_key`.
+- `scope` — `"current"` для соседнего поля или `"form"` для корневого поля
+  основной формы внутри `ServerActionDialog`.
 
 Для `FILE` отдельный `item_field` не нужен: handler получает
 нормализованное содержимое файла. Runtime никогда не передаёт handler весь
@@ -312,6 +384,7 @@ operator clicks form action
   -> POST .../dialog/state after field changes
   -> POST .../dialog/fields/{path}/options for a reference
   -> Python resolves only declared ReferenceDependency values
+     from dialog fields and explicitly allowed owning-form fields
   -> operator clicks a dialog button
   -> POST .../dialog/actions/{button}
   -> Python validation + optional confirmation + handler
@@ -350,4 +423,6 @@ action автоматически не отправляет форму: обыч
 7. keep-open button и его `dialog_values` patch;
 8. confirmation token опасной кнопки;
 9. итоговый `form_values` patch и отсутствие submit;
-10. отсутствие secret/необъявленных значений в handler и server log.
+10. точные `scope="form"` зависимости и отсутствие прочих значений формы в
+    `extra_params` reference handler;
+11. отсутствие secret/необъявленных значений в handler и server log.

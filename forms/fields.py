@@ -52,7 +52,10 @@ Condition = Callable[[Dict[str, Any]], bool]
 class ReferenceDependency:
     """One explicitly allowed input for a dependent reference.
 
-    ``field`` is a sibling field key. ``parameter`` is the key passed to the
+    ``field`` is a field key. With the default ``scope="current"`` it refers
+    to a sibling field in the object that owns the dependent reference. Inside
+    a :class:`ServerActionDialog`, ``scope="form"`` explicitly reads the field
+    from the owning form instead. ``parameter`` is the key passed to the
     private :class:`BaseReferenceHandler` in ``extra_params`` and defaults to
     ``field``. ``item_field`` optionally resolves a property from the selected
     reference item instead of passing its stored identifier.
@@ -65,6 +68,7 @@ class ReferenceDependency:
     field: str
     parameter: str = ""
     item_field: str = ""
+    scope: str = "current"
 
 
 @dataclass

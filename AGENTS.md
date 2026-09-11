@@ -58,7 +58,9 @@ the existing `BaseForm` lifecycle. Add one-step web actions through
 `ServerAction` and interactive field-based actions through `ServerActionDialog`;
 a raw Tkinter callback cannot execute in a headless server. Multi-input
 references must declare the minimal `ReferenceDependency` allowlist rather than
-receiving complete form state.
+receiving complete form state. Inside a `ServerActionDialog`, use
+`scope="form"` only for the exact owning-form fields required by that reference;
+the default `scope="current"` addresses sibling dialog fields.
 Reference identifiers come from `value_key`, display text from `label_key`, and
 search from `search_keys`. A select returns one identifier; a multiselect returns
 an array. Do not load entire large dictionaries into the AI context or browser.

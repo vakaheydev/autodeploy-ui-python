@@ -30,6 +30,7 @@ export interface ReferenceDependencyDescriptor {
   field: string
   parameter: string
   item_field: string | null
+  scope?: 'current' | 'form'
 }
 
 export interface FieldDocument {

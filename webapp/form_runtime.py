@@ -122,6 +122,7 @@ def _field_shape(field: FieldDefinition) -> dict[str, Any]:
                 "field": item.field,
                 "parameter": item.parameter,
                 "item_field": item.item_field,
+                "scope": item.scope,
             }
             for item in field.reference_dependencies
         ],
@@ -282,8 +283,12 @@ class FormRuntime:
         return form
 
     @staticmethod
-    def _validate_server_actions(actions: Iterable[ServerAction]) -> None:
+    def _validate_server_actions(
+        actions: Iterable[ServerAction],
+        form_fields: Iterable[FieldDefinition] = (),
+    ) -> None:
         values = tuple(actions)
+        owning_fields = tuple(form_fields)
         if not all(isinstance(action, ServerAction) for action in values):
             raise TypeError("get_server_actions должен возвращать ServerAction")
         identifiers = [str(action.action_id) for action in values]
@@ -329,6 +334,8 @@ class FormRuntime:
             FormRuntime._validate_reference_dependencies(
                 dialog.fields,
                 scope=f"ServerActionDialog {action.action_id!r}",
+                form_fields=owning_fields,
+                allow_form_scope=True,
             )
             if not dialog.actions:
                 raise ValueError("ServerActionDialog должен содержать хотя бы одну кнопку")
@@ -352,10 +359,14 @@ class FormRuntime:
         fields: Iterable[FieldDefinition],
         *,
         scope: str,
+        form_fields: Iterable[FieldDefinition] = (),
+        allow_form_scope: bool = False,
     ) -> None:
         """Fail early for ambiguous or unusable multi-input references."""
         siblings = tuple(fields)
         sibling_keys = {field.key for field in siblings}
+        owning_fields = tuple(form_fields)
+        form_keys = {field.key for field in owning_fields}
         for field in siblings:
             dependencies = tuple(field.reference_dependencies)
             if dependencies and field.reference is None:
@@ -374,12 +385,25 @@ class FormRuntime:
             )
             for dependency in dependencies:
                 parameter = dependency.parameter or dependency.field
-                if dependency.field not in sibling_keys:
+                dependency_scope = str(dependency.scope or "current").strip().casefold()
+                if dependency_scope not in {"current", "form"}:
+                    raise ValueError(
+                        f"{scope}: scope зависимости {dependency.field!r} поля "
+                        f"{field.key!r} должен быть 'current' или 'form'"
+                    )
+                if dependency_scope == "form" and not allow_form_scope:
+                    raise ValueError(
+                        f"{scope}: scope='form' разрешён только для полей "
+                        "ServerActionDialog"
+                    )
+                source_keys = form_keys if dependency_scope == "form" else sibling_keys
+                source_fields = owning_fields if dependency_scope == "form" else siblings
+                if dependency.field not in source_keys:
                     raise ValueError(
                         f"{scope}: зависимость {dependency.field!r} поля "
-                        f"{field.key!r} не является соседним полем"
+                        f"{field.key!r} отсутствует в scope={dependency_scope!r}"
                     )
-                if dependency.field == field.key:
+                if dependency_scope == "current" and dependency.field == field.key:
                     raise ValueError(
                         f"{scope}: поле {field.key!r} не может зависеть от себя"
                     )
@@ -399,7 +423,7 @@ class FormRuntime:
                 parameters.add(parameter)
                 if dependency.item_field:
                     parent = next(
-                        item for item in siblings
+                        item for item in source_fields
                         if item.key == dependency.field
                     )
                     if parent.reference is None:
@@ -418,11 +442,13 @@ class FormRuntime:
                 FormRuntime._validate_reference_dependencies(
                     field.block_fields,
                     scope=f"{scope}.{field.key}",
+                    form_fields=owning_fields,
+                    allow_form_scope=allow_form_scope,
                 )
 
     def _server_action(self, form: BaseForm, action_id: str) -> ServerAction:
         actions = tuple(form.get_server_actions())
-        self._validate_server_actions(actions)
+        self._validate_server_actions(actions, form.fields)
         action = next(
             (item for item in actions if item.action_id == action_id),
             None,
@@ -480,7 +506,7 @@ class FormRuntime:
         form = self.get_form(form_id, environment)
         current = self._with_defaults(form.fields, dict(values or {}))
         actions = tuple(form.get_server_actions())
-        self._validate_server_actions(actions)
+        self._validate_server_actions(actions, form.fields)
         fields = [
             self._field_document(
                 form, field, environment, current, siblings=form.fields
@@ -679,6 +705,7 @@ class FormRuntime:
             environment,
             form_validation.values,
             raw_initial,
+            form_fields=form.fields,
             validate_references=False,
             run_custom_validator=False,
         )
@@ -714,11 +741,19 @@ class FormRuntime:
         self._check_version(form, version)
         action = self._server_action(form, action_id)
         dialog = self._require_action_dialog(action)
+        form_validation = self.validate(
+            form_id,
+            environment,
+            form_values,
+            version,
+            validate_references=False,
+        )
         normalised = self._validate_dialog(
             dialog,
             environment,
-            form_values,
+            form_validation.values,
             dialog_values,
+            form_fields=form.fields,
             validate_references=False,
             run_custom_validator=False,
         )
@@ -726,7 +761,7 @@ class FormRuntime:
             form,
             action,
             environment,
-            form_values,
+            form_validation.values,
             normalised.values,
         )
 
@@ -758,17 +793,26 @@ class FormRuntime:
                 field.reference.resource,
                 environment,
             )
-        # form_values are intentionally not merged into this mapping. A
-        # handler receives only sibling fields declared by ReferenceDependency.
-        # Normalise the browser payload before any value (including uploaded
-        # FILE content) is exposed to a private reference handler. This also
-        # strips undeclared keys instead of turning the dialog endpoint into a
-        # generic parameter tunnel.
+        # form_values are intentionally not merged into dialog_values. A
+        # handler receives sibling fields with scope="current" and only
+        # explicitly named owning-form fields with scope="form". Normalise the
+        # browser payload before any value (including uploaded FILE content) is
+        # exposed to a private reference handler. This also strips undeclared
+        # keys instead of turning the dialog endpoint into a generic parameter
+        # tunnel.
+        form_validation = self.validate(
+            form_id,
+            environment,
+            form_values,
+            version,
+            validate_references=False,
+        )
         normalised = self._validate_dialog(
             dialog,
             environment,
-            form_values,
+            form_validation.values,
             dialog_values,
+            form_fields=form.fields,
             validate_references=False,
             run_custom_validator=False,
         )
@@ -789,6 +833,8 @@ class FormRuntime:
             environment,
             scoped_values,
             siblings=siblings,
+            dependency_values=form_validation.values,
+            dependency_fields=form.fields,
         )
         keys = field.reference.search_keys or (field.reference.label_key,)
         needle = str(query).strip().casefold()
@@ -870,6 +916,7 @@ class FormRuntime:
             environment,
             form_validation.values,
             dialog_values,
+            form_fields=form.fields,
             validate_references=button.require_valid_dialog,
             run_custom_validator=button.require_valid_dialog,
         )
@@ -916,6 +963,8 @@ class FormRuntime:
             dialog_validation.values,
             environment,
             resolver,
+            dependency_values=form_validation.values,
+            dependency_fields=form.fields,
         ))
         context = _WebFormContext(
             selected,
@@ -968,6 +1017,7 @@ class FormRuntime:
             environment,
             normalized_form,
             combined_dialog,
+            form_fields=form.fields,
             validate_references=False,
             run_custom_validator=False,
         )
@@ -1025,6 +1075,8 @@ class FormRuntime:
                     dialog_values,
                     siblings=dialog.fields,
                     reference_base=reference_base,
+                    dependency_values=form_values,
+                    dependency_fields=form.fields,
                 )
                 for field in dialog.fields
             ],
@@ -1048,6 +1100,7 @@ class FormRuntime:
         form_values: Mapping[str, Any],
         dialog_values: Mapping[str, Any],
         *,
+        form_fields: Iterable[FieldDefinition] = (),
         validate_references: bool,
         run_custom_validator: bool,
     ) -> RuntimeValidation:
@@ -1073,6 +1126,8 @@ class FormRuntime:
                 canonical,
                 environment,
                 errors,
+                dependency_values=form_values,
+                dependency_fields=form_fields,
             )
         if run_custom_validator and dialog.validate is not None:
             raw_issues = dialog.validate(
@@ -1148,6 +1203,8 @@ class FormRuntime:
         siblings: Optional[Iterable[FieldDefinition]] = None,
         reference_namespace: str = "forms",
         reference_base: str = "",
+        dependency_values: Optional[Mapping[str, Any]] = None,
+        dependency_fields: Optional[Iterable[FieldDefinition]] = None,
     ) -> dict[str, Any]:
         path = f"{prefix}.{field.key}" if prefix else field.key
         visible = _visible(field, values)
@@ -1173,6 +1230,7 @@ class FormRuntime:
                     "field": item.field,
                     "parameter": item.parameter or item.field,
                     "item_field": item.item_field or None,
+                    "scope": str(item.scope or "current").strip().casefold(),
                 }
                 for item in field.reference_dependencies
             ],
@@ -1205,7 +1263,12 @@ class FormRuntime:
             }
             if ref.source == "local" and visible:
                 items = self._resolve_reference(
-                    field, environment, values, siblings=siblings
+                    field,
+                    environment,
+                    values,
+                    siblings=siblings,
+                    dependency_values=dependency_values,
+                    dependency_fields=dependency_fields,
                 )
                 public_items = [_public_item(item, ref) for item in items]
                 rendered_size = len(json.dumps(
@@ -1238,6 +1301,8 @@ class FormRuntime:
                         siblings=field.block_fields,
                         reference_namespace=reference_namespace,
                         reference_base=reference_base,
+                        dependency_values=dependency_values,
+                        dependency_fields=dependency_fields,
                     )
                     for nested in field.block_fields
                 ]
@@ -1853,6 +1918,8 @@ class FormRuntime:
         errors: list[dict[str, Any]],
         *,
         prefix: str = "",
+        dependency_values: Optional[Mapping[str, Any]] = None,
+        dependency_fields: Iterable[FieldDefinition] = (),
     ) -> None:
         field_definitions = tuple(fields)
         definitions = {field.key: field for field in field_definitions}
@@ -1867,13 +1934,24 @@ class FormRuntime:
             path = f"{prefix}.{key}" if prefix else key
             if field.field_type == FieldType.BLOCK and isinstance(value, Mapping):
                 self._validate_references(
-                    field.block_fields, value, environment, errors, prefix=path
+                    field.block_fields,
+                    value,
+                    environment,
+                    errors,
+                    prefix=path,
+                    dependency_values=dependency_values,
+                    dependency_fields=dependency_fields,
                 )
                 continue
             if field.reference is None or self._empty(value):
                 continue
             items = self._resolve_reference(
-                field, environment, values, siblings=field_definitions
+                field,
+                environment,
+                values,
+                siblings=field_definitions,
+                dependency_values=dependency_values,
+                dependency_fields=dependency_fields,
             )
             if not items:
                 errors.append(self._error(
@@ -1898,6 +1976,9 @@ class FormRuntime:
         values: Mapping[str, Any],
         environment: str,
         resolver: Any,
+        *,
+        dependency_values: Optional[Mapping[str, Any]] = None,
+        dependency_fields: Iterable[FieldDefinition] = (),
     ) -> dict[str, list[dict[str, Any]]]:
         selected: dict[str, list[dict[str, Any]]] = {}
         field_definitions = tuple(fields)
@@ -1905,7 +1986,12 @@ class FormRuntime:
             value = values.get(field.key)
             if field.field_type == FieldType.BLOCK and isinstance(value, Mapping):
                 selected.update(self._selected_reference_items(
-                    field.block_fields, value, environment, resolver
+                    field.block_fields,
+                    value,
+                    environment,
+                    resolver,
+                    dependency_values=dependency_values,
+                    dependency_fields=dependency_fields,
                 ))
                 continue
             if field.reference is None:
@@ -1928,6 +2014,8 @@ class FormRuntime:
                 values,
                 siblings=field_definitions,
                 resolver=resolver,
+                dependency_values=dependency_values,
+                dependency_fields=dependency_fields,
             )
             for instance_key in populated:
                 instance_value = values.get(instance_key)
@@ -1954,6 +2042,8 @@ class FormRuntime:
         *,
         siblings: Optional[Iterable[FieldDefinition]] = None,
         resolver: Any = None,
+        dependency_values: Optional[Mapping[str, Any]] = None,
+        dependency_fields: Optional[Iterable[FieldDefinition]] = None,
     ) -> list[dict[str, Any]]:
         if field.reference is None:
             return []
@@ -1964,6 +2054,8 @@ class FormRuntime:
             tuple(siblings or ()),
             environment,
             active_resolver,
+            dependency_values=dependency_values,
+            dependency_fields=tuple(dependency_fields or ()),
         )
         if field.reference.required_params and (
             not params
@@ -1983,6 +2075,9 @@ class FormRuntime:
         siblings: Iterable[FieldDefinition],
         environment: str,
         resolver: Any,
+        *,
+        dependency_values: Optional[Mapping[str, Any]] = None,
+        dependency_fields: Iterable[FieldDefinition] = (),
     ) -> Optional[dict[str, Any]]:
         dependencies = list(field.reference_dependencies)
         if field.depends_on:
@@ -2002,15 +2097,27 @@ class FormRuntime:
 
         params: dict[str, Any] = {}
         sibling_definitions = tuple(siblings)
+        owning_definitions = tuple(dependency_fields)
         for dependency in dependencies:
-            parent_value = values.get(dependency.field)
+            dependency_scope = str(dependency.scope or "current").strip().casefold()
+            source_values = (
+                dependency_values
+                if dependency_scope == "form" and dependency_values is not None
+                else values
+            )
+            source_definitions = (
+                owning_definitions
+                if dependency_scope == "form"
+                else sibling_definitions
+            )
+            parent_value = source_values.get(dependency.field)
             if dependency.item_field:
                 if isinstance(parent_value, Mapping):
                     parent_value = parent_value.get(dependency.item_field)
                 elif not self._empty(parent_value):
                     parent = next(
                         (
-                            item for item in sibling_definitions
+                            item for item in source_definitions
                             if item.key == dependency.field
                         ),
                         None,
@@ -2021,9 +2128,11 @@ class FormRuntime:
                         parent_items = self._resolve_reference(
                             parent,
                             environment,
-                            values,
-                            siblings=sibling_definitions,
+                            source_values,
+                            siblings=source_definitions,
                             resolver=resolver,
+                            dependency_values=dependency_values,
+                            dependency_fields=owning_definitions,
                         )
                         selected = next((
                             item for item in parent_items

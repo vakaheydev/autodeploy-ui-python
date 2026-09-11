@@ -82,6 +82,9 @@
   Никогда не подменяйте ID отображаемым `label_key`.
 - Справочник с несколькими входами объявляет минимальный allowlist через
   `ReferenceDependency`; не передавайте reference handler всё состояние формы.
+  Внутри `ServerActionDialog` зависимости по умолчанию читают соседние поля
+  диалога (`scope="current"`), а `scope="form"` читает явно названное корневое
+  поле основной формы.
 - Domain errors возвращайте через `self.validation_error(field, message)`, чтобы
   web UI показал ошибку у поля и сфокусировал его.
 - Network errors должны сохранять диагностическую причину в server log, но
@@ -90,6 +93,42 @@
   reference handler могут вызываться несколькими вкладками.
 - Plugin `render` вызывается при открытии и изменении полей: он read-only и
   быстрый. Side effects и долгие расчёты оформляйте как `PluginOperation`.
+
+## Возможности ServerActionDialog — не придумывать ограничения
+
+Перед выводом «контракт этого не позволяет» агент обязан проверить
+`docs/ACTION_DIALOGS.md` и установленную версию публичных dataclass. Текущий
+контракт позволяет диалогу работать с основной формой следующим образом:
+
+| Задача | Поддерживаемый механизм |
+|---|---|
+| Рассчитать начальные значения окна | `initial_values(environment, form_values)` |
+| Валидировать окно с учётом формы | `validate(environment, form_values, dialog_values)` |
+| Прочитать форму при нажатии кнопки | `ServerDialogAction.handler(environment, form_values, dialog_values)` |
+| Подставить значения обратно в форму | `ServerDialogActionResult(form_values={...})` |
+| Изменить поля открытого окна | `ServerDialogActionResult(dialog_values={...}, close_dialog=False)` |
+| Построить справочник по полю диалога | `ReferenceDependency(..., scope="current")` |
+| Построить справочник по полю основной формы | `ReferenceDependency(..., scope="form")` |
+| Получить атрибут полного reference item вместо ID | `ReferenceDependency(..., item_field="...")` |
+| Использовать несколько входов сразу | несколько элементов в `reference_dependencies` |
+
+Не копируйте поле основной формы в диалог только ради справочника и не
+предлагайте private React modal. Например, если `swagger_file` находится в
+основной форме, корректная декларация выглядит так:
+
+```python
+ReferenceDependency(
+    field="swagger_file",
+    parameter="swagger_document",
+    scope="form",
+)
+```
+
+В `BaseReferenceHandler.load(..., extra_params=...)` появится только
+`swagger_document`. Весь `form_values` туда намеренно не передаётся. Если
+нужны три поля формы, объявите три зависимости `scope="form"`. Button handler,
+validator и initial-values callback уже получают полный нормализованный снимок
+формы отдельным аргументом — расширять public core для этого не требуется.
 
 ## Проверка результата
 

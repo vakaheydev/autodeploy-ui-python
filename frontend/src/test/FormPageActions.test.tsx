@@ -96,11 +96,14 @@ describe('FormPage custom actions', () => {
         required: true, visible: true, dynamic: false, placeholder: '', default: [],
         hint: '', file_type: '', width: 1, plural: false, plural_max: null,
         depends_on: null, depends_on_field: null,
-        reference_dependencies: [{ field: 'swagger_environment', parameter: 'environment', item_field: null }],
+        reference_dependencies: [
+          { field: 'swagger_environment', parameter: 'environment', item_field: null, scope: 'current' },
+          { field: 'name', parameter: 'form_name', item_field: null, scope: 'form' },
+        ],
         reference: {
           source: 'corp_swagger', resource: 'methods', value_key: 'id', label_key: 'label',
           search_keys: ['label', 'path'], detail_keys: ['label', 'path'],
-          required_params: ['environment'],
+          required_params: ['environment', 'form_name'],
           endpoint: '/api/v1/forms/api.create/actions/choose-methods/dialog/fields/methods/options',
         },
       }],

@@ -154,8 +154,8 @@ parent value уже является dict, поле берётся прямо и
 
 ### Несколько входных полей
 
-Когда options зависят от двух и более соседних полей, не передавайте handler всю
-форму. Объявите минимальный allowlist:
+Когда options зависят от двух и более полей, не передавайте handler всю форму.
+Объявите минимальный allowlist:
 
 ```python
 from forms.fields import ReferenceDependency
@@ -182,8 +182,20 @@ FieldDefinition(
 Runtime нормализует значения и передаёт в `extra_params` только эти поля.
 `FILE` передаётся как содержимое, `SELECT` — как сохранённый `value_key`, а
 `item_field` явно запрашивает атрибут полного выбранного item. Все зависимости
-должны быть sibling fields. Полный сценарий action dialog со Swagger находится
-в [ACTION_DIALOGS.md](ACTION_DIALOGS.md).
+по умолчанию должны быть sibling fields (`scope="current"`). Для справочника
+внутри `ServerActionDialog` разрешено обратиться к корневому полю основной
+формы через явный `scope="form"`:
+
+```python
+ReferenceDependency(
+    "swagger_file",
+    parameter="document",
+    scope="form",
+)
+```
+
+Полный сценарий action dialog со Swagger находится в
+[ACTION_DIALOGS.md](ACTION_DIALOGS.md).
 
 ## Cache
 

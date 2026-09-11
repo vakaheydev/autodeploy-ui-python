@@ -85,14 +85,23 @@ function ReferenceField(props: FieldProps) {
   const requestSequence = useRef(0)
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const explicitDependencies = field.reference_dependencies ?? []
+  const dependencyValue = (dependency: typeof explicitDependencies[number]) => (
+    dependency.scope === 'form'
+      ? props.dialogContext?.formValues[dependency.field]
+      : values[dependency.field]
+  )
   const dependencyValues = new Map(explicitDependencies.map((item) => [
     item.parameter || item.field,
-    values[item.field],
+    dependencyValue(item),
   ]))
   const legacyDependency = field.depends_on ? values[field.depends_on] : undefined
   const dependencySignature = JSON.stringify([
     field.depends_on ? [field.depends_on, legacyDependency] : null,
-    ...explicitDependencies.map((item) => [item.field, values[item.field]]),
+    ...explicitDependencies.map((item) => [
+      item.scope ?? 'current',
+      item.field,
+      dependencyValue(item),
+    ]),
   ])
   const dependencyBlocked = Boolean(
     (field.depends_on && emptyDependency(legacyDependency))

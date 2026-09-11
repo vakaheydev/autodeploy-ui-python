@@ -55,7 +55,7 @@ handbook с документацией публичного ядра.
 | Если меняется… | Сначала читать | Проверять в публичном ядре |
 |---|---|---|
 | Поля, validation, payload, submit | `FORMS.md` | `forms/base_form.py`, `forms/fields.py` |
-| Диалог кнопки формы, Swagger picker | `ACTION_DIALOGS.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
+| Диалог, доступ к полям формы, Swagger picker | `ACTION_DIALOGS.md` | `forms/base_form.py`, `forms/fields.py`, `webapp/form_runtime.py` |
 | Заполнение формы из заявки | `ITSM_FORM_FILLING.md` | `forms/base_form.py`, `webapp/form_runtime.py` |
 | Новый тип заявки или изменение AI prompt | `ITSM_FORM_FILLING.md`, `CONFIGURATION.md` | `opencode_integration/context_builder.py`, `webapp/itsm_prompt_settings.py` |
 | Custom page, отчёт, график, plugin operation | `PLUGINS.md` | `plugins/`, `webapp/plugin_runtime.py` |

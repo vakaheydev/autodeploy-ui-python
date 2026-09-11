@@ -547,7 +547,11 @@ class _DialogActionForm(BaseForm):
                         resource="swagger_methods",
                         value_key="id",
                         label_key="label",
-                        required_params=("api_path", "swagger_environment"),
+                        required_params=(
+                            "api_path",
+                            "swagger_environment",
+                            "form_name",
+                        ),
                     ),
                     reference_dependencies=(
                         ReferenceDependency(
@@ -559,6 +563,11 @@ class _DialogActionForm(BaseForm):
                         ReferenceDependency(
                             "swagger_file",
                             parameter="swagger_document",
+                        ),
+                        ReferenceDependency(
+                            "name",
+                            parameter="form_name",
+                            scope="form",
                         ),
                     ),
                 ),
@@ -941,6 +950,7 @@ def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
                     "api_path": "/orders",
                     "swagger_environment": "test_int",
                     "swagger_document": '{"openapi":"3.0.0"}',
+                    "form_name": "Subscription",
                 }:
                     return [
                         {"id": "GET /orders", "label": "GET /orders"},
@@ -980,9 +990,10 @@ def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
             "/actions/choose_methods/dialog/fields/methods/options"
         )
         assert methods["reference_dependencies"] == [
-            {"field": "api", "parameter": "api_path", "item_field": "context_path"},
-            {"field": "swagger_environment", "parameter": "swagger_environment", "item_field": None},
-            {"field": "swagger_file", "parameter": "swagger_document", "item_field": None},
+            {"field": "api", "parameter": "api_path", "item_field": "context_path", "scope": "current"},
+            {"field": "swagger_environment", "parameter": "swagger_environment", "item_field": None, "scope": "current"},
+            {"field": "swagger_file", "parameter": "swagger_document", "item_field": None, "scope": "current"},
+            {"field": "name", "parameter": "form_name", "item_field": None, "scope": "form"},
         ]
 
         dialog_values = {
@@ -997,7 +1008,10 @@ def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
             "choose_methods",
             "methods",
             "test_int",
-            {"name": "Subscription"},
+            {
+                "name": "Subscription",
+                "browser_only_form_parameter": "must-not-reach-handler",
+            },
             {
                 **dialog_values,
                 "browser_only_parameter": "must-not-reach-handler",
@@ -1016,6 +1030,7 @@ def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
             "api_path": "/orders",
             "swagger_environment": "test_int",
             "swagger_document": '{"openapi":"3.0.0"}',
+            "form_name": "Subscription",
         }
 
         invalid = container.forms.run_action_dialog_button(
