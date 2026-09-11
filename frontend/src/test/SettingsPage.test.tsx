@@ -68,6 +68,30 @@ describe('SettingsPage', () => {
     expect(field).not.toHaveClass('invalid')
   })
 
+  it('searches every settings section and focuses the selected field', async () => {
+    const document = { groups: [
+      ...settings.groups,
+      { name: 'Сеть', fields: [{
+        key: 'CORPORATE_PROXY', label: 'Адрес прокси', group: 'Сеть', kind: 'text', default: '',
+        description: 'Прокси для корпоративной сети', required: false, restart_required: false,
+        minimum: null, maximum: null, configured: false, value: '',
+      }] },
+    ] }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify(document), { status: 200, headers: { 'content-type': 'application/json' } },
+    )))
+    const user = userEvent.setup()
+    render(<MemoryRouter><SettingsPage /></MemoryRouter>)
+
+    const search = await screen.findByRole('textbox', { name: 'Поиск по всем настройкам' })
+    await user.type(search, 'корпоративной сети')
+    await user.click(screen.getByRole('option', { name: /Адрес прокси/ }))
+
+    const field = await screen.findByLabelText('Адрес прокси')
+    await waitFor(() => expect(field).toHaveFocus())
+    expect(screen.getByRole('button', { name: /^Сеть/ })).toHaveClass('active')
+  })
+
   it('opens OpenCode Server management inside the OpenCode settings section', async () => {
     const document = { groups: [
       ...settings.groups,
@@ -89,6 +113,28 @@ describe('SettingsPage', () => {
     expect(screen.getByText('http://127.0.0.1:4096 · OpenCode 1.18.18')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Подключиться' })).toBeVisible()
     expect(screen.getByLabelText(/Адрес сервера/)).toHaveValue('http://127.0.0.1:4096')
+  })
+
+  it('opens and focuses an ITSM prompt found by the global settings search', async () => {
+    const promptSettings = {
+      rules: [{ ticket_type: 'create_api_v2', prompt: 'Map requested_api.contextPath.' }],
+      warning: '', max_rules: 100, max_ticket_type_chars: 200, max_prompt_chars: 16000,
+      precedence: 'ui_override_then_corporate_hook',
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith('/settings/itsm-ai-prompts')) return new Response(JSON.stringify(promptSettings), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify(settings), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const user = userEvent.setup()
+    render(<MemoryRouter><SettingsPage /></MemoryRouter>)
+
+    const search = await screen.findByRole('textbox', { name: 'Поиск по всем настройкам' })
+    await user.type(search, 'contextPath')
+    await user.click(await screen.findByRole('option', { name: /Prompt: create_api_v2/ }))
+
+    const prompt = await screen.findByLabelText('Prompt для AI 1')
+    await waitFor(() => expect(prompt).toHaveFocus())
   })
 
   it('selects the OpenCode log level from server-declared choices', async () => {
@@ -137,6 +183,10 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     render(<MemoryRouter initialEntries={['/settings?section=ITSM%20%D0%B8%20AI']}><SettingsPage /></MemoryRouter>)
 
+    const ticketTypeSearch = await screen.findByRole('textbox', { name: 'Поиск Ticket Type' })
+    await user.type(ticketTypeSearch, 'create api')
+    expect(screen.getByRole('button', { name: 'Открыть Ticket Type create_api_v2' })).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Открыть Ticket Type create_api_v2' }))
     const prompt = await screen.findByLabelText('Prompt для AI 1')
     await user.clear(prompt)
     await user.type(prompt, 'Use requested_api.contextPath.')

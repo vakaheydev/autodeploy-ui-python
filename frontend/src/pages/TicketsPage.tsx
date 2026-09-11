@@ -55,7 +55,7 @@ function TicketFilter({ definition, value, onChange }: {
   if (definition.kind === 'boolean') {
     return <label className="ticket-filter ticket-boolean-filter"><span>{definition.label}</span><span className="switch-control"><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /><span className="switch" /><span>{value ? 'Да' : 'Нет'}</span></span></label>
   }
-  return <label className="ticket-filter"><span>{definition.label}</span><input
+  return <label className="ticket-filter"><span>{definition.label}</span><input className="text-control"
     type={definition.kind === 'date' ? 'date' : 'text'}
     value={String(value ?? '')}
     placeholder={definition.placeholder}

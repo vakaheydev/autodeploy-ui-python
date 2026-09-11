@@ -278,13 +278,13 @@ function BasicField(props: FieldProps) {
   }
   if (field.reference) return <ReferenceField {...props} onChange={commit} />
   if (field.type === 'textarea') {
-    return <textarea id={field.path} rows={5} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
+    return <textarea className="text-control" id={field.path} rows={5} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
   }
   if (field.type === 'checkbox') {
     return <label className="switch-control"><input id={field.path} type="checkbox" checked={Boolean(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} onChange={(event) => commit(event.target.checked)} /><span className="switch" /><span>{Boolean(value) ? 'Включено' : 'Выключено'}</span></label>
   }
   if (field.type === 'number') {
-    return <input id={field.path} type="number" value={value === null || value === undefined ? '' : String(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value === '' ? null : Number(event.target.value))} />
+    return <input className="text-control" id={field.path} type="number" value={value === null || value === undefined ? '' : String(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value === '' ? null : Number(event.target.value))} />
   }
   if (field.type === 'file') {
     const readFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -294,9 +294,9 @@ function BasicField(props: FieldProps) {
       reader.onload = () => commit(String(reader.result ?? ''))
       reader.readAsText(file)
     }
-    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea id={field.path} rows={7} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => commit(event.target.value)} /></div>
+    return <div className="file-control"><label className="button secondary"><Upload size={16} /> Выбрать файл<input type="file" accept={field.file_type || undefined} disabled={disabled} onChange={readFile} hidden /></label><textarea className="text-control" id={field.path} rows={7} value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder || 'Содержимое файла'} onChange={(event) => commit(event.target.value)} /></div>
   }
-  return <input id={field.path} type="text" value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
+  return <input className="text-control" id={field.path} type="text" value={stringControlValue(value)} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={errorId} placeholder={field.placeholder} onChange={(event) => commit(event.target.value)} />
 }
 
 function ReviewControls({ fieldLabel, reviewKey, review, onReview }: {

@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from webapp.ai_service import AIHandoff, ExtractionJob, WebAIService
+from webapp.ai_service import (
+    AIHandoff,
+    ExtractionJob,
+    WebAIService,
+    WebCopilotSession,
+)
 from webapp.ai_drafts import FormDraft
 
 
@@ -48,6 +53,40 @@ def test_extractor_setup_failure_finishes_job_instead_of_hanging(
 
     assert job.status == "error"
     assert job.error == "provider unavailable"
+
+
+def test_user_event_keeps_explicitly_attached_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WebAIService(SimpleNamespace())
+    service._reference_mentions = SimpleNamespace(
+        resolve=lambda _environment, _mentions: []
+    )
+    session = WebCopilotSession(
+        id="session",
+        copilot=SimpleNamespace(mcp_native=True),
+        provider_id="corp",
+        model_id="model",
+        default_variant="none",
+        variants=("none",),
+        form_search=SimpleNamespace(),
+    )
+    service._sessions[session.id] = session
+    monkeypatch.setattr(service, "_model_details", lambda *_args: (("none",), 128_000))
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+
+    service.start_message(
+        session.id,
+        message="Заполни форму",
+        environment="test_int",
+        ticket_id="  REQ-12345  ",
+        provider_id="corp",
+        model_id="model",
+        thinking="none",
+    )
+
+    user_event = next(event for event in session.events if event.kind == "user")
+    assert user_event.payload["ticket_id"] == "REQ-12345"
 
 
 def test_native_outcome_exposes_every_draft_in_a_multi_form_turn() -> None:

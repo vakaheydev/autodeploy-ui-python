@@ -764,6 +764,7 @@ class WebAIService:
             generation_started_at = session.generation_started_at
         session.emit("user", {
             "text": message,
+            "ticket_id": str(ticket_id or "").strip() or None,
             "mentions": [
                 {
                     "catalog": item["catalog"],

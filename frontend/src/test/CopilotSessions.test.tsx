@@ -75,8 +75,9 @@ describe('Copilot sessions', () => {
       busy: true,
       generation_started_at: startedAt,
       events: [
-        { sequence: 1, kind: 'assistant_note', timestamp: startedAt + 1, payload: { text: '**Получил схему.** Теперь ищу API.', thinking: 'none' } },
-        { sequence: 2, kind: 'agent_event', timestamp: startedAt + 2, payload: { kind: 'tool', call_id: 'tool-1', title: 'get_api', status: 'completed', input_detail: '{}', output_detail: '{"id":"api"}' } },
+        { sequence: 1, kind: 'user', timestamp: startedAt, payload: { text: 'Заполни форму', ticket_id: 'REQ-12345', thinking: 'none' } },
+        { sequence: 2, kind: 'assistant_note', timestamp: startedAt + 1, payload: { text: '**Получил схему.** Теперь ищу API.', thinking: 'none' } },
+        { sequence: 3, kind: 'agent_event', timestamp: startedAt + 2, payload: { kind: 'tool', call_id: 'tool-1', title: 'get_api', status: 'completed', input_detail: '{}', output_detail: '{"id":"api"}' } },
       ],
     })
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -91,6 +92,7 @@ describe('Copilot sessions', () => {
     render(<MemoryRouter><EnvironmentProvider><Copilot /></EnvironmentProvider></MemoryRouter>)
 
     expect(await screen.findByText('Получил схему.', { exact: false })).toBeVisible()
+    expect(screen.getByText('REQ-12345')).toBeVisible()
     expect(screen.getByTitle('Контекст последнего ответа / максимальный контекст модели')).toHaveTextContent('1 250 / 131 072')
     expect(await screen.findByText(/1[7-9] с|2[0-1] с/)).toBeVisible()
   })

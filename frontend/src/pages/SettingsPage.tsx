@@ -1,16 +1,100 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api'
-import { Check, KeyRound, RefreshCw, ShieldCheck, X } from '../components/Icons'
+import { Check, KeyRound, RefreshCw, Search, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
 import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
 import { SearchableSelect } from '../components/SearchableSelect'
 import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
 import { PluginAISettings } from '../components/PluginAISettings'
 import { ITSMPromptSettings } from '../components/ITSMPromptSettings'
-import type { SettingField, SettingsDocument } from '../types'
+import type { ITSMPromptSettingsDocument, PluginAIPolicyDocument, SettingField, SettingsDocument } from '../types'
 
 const specialGroups = new Set(['Плагины', 'ITSM и AI'])
+
+interface SettingsSearchItem {
+  id: string
+  group: string
+  label: string
+  description: string
+  target: string
+  searchable: string
+}
+
+function normalizedSearch(value: unknown): string {
+  return String(value ?? '').toLocaleLowerCase('ru').replace(/ё/g, 'е')
+}
+
+function regularSearchItems(document: SettingsDocument | null): SettingsSearchItem[] {
+  if (!document) return []
+  return document.groups.flatMap((group) => group.fields.map((field) => {
+    const details = [field.key, field.description, field.kind, field.picker, field.default, field.value, ...(field.choices ?? [])]
+      .filter(Boolean)
+      .join(' · ')
+    return {
+      id: `setting:${field.key}`,
+      group: group.name,
+      label: field.label,
+      description: details,
+      target: `setting-${field.key}`,
+      searchable: normalizedSearch([group.name, field.label, details].join(' ')),
+    }
+  }))
+}
+
+function auxiliarySearchItems(
+  prompts: ITSMPromptSettingsDocument | null,
+  plugins: PluginAIPolicyDocument | null,
+): SettingsSearchItem[] {
+  const items: SettingsSearchItem[] = []
+  prompts?.rules.forEach((rule, index) => {
+    items.push({
+      id: `itsm:${index}:type`,
+      group: 'ITSM и AI',
+      label: `Ticket Type: ${rule.ticket_type || index + 1}`,
+      description: 'Стабильный тип заявки',
+      target: `itsm-ticket-type-${index}`,
+      searchable: normalizedSearch(`ITSM AI ticket type тип заявки ${rule.ticket_type}`),
+    })
+    items.push({
+      id: `itsm:${index}:prompt`,
+      group: 'ITSM и AI',
+      label: `Prompt: ${rule.ticket_type || index + 1}`,
+      description: rule.prompt,
+      target: `itsm-prompt-${index}`,
+      searchable: normalizedSearch(`ITSM AI prompt инструкции ${rule.ticket_type} ${rule.prompt}`),
+    })
+  })
+  if (plugins) {
+    items.push({
+      id: 'plugins:master',
+      group: 'Плагины',
+      label: 'Доступ Gravitee Copilot к плагинам',
+      description: 'Глобальная AI-видимость плагинов',
+      target: 'plugin-ai-master-toggle',
+      searchable: normalizedSearch('плагины AI Copilot видимость доступ'),
+    })
+    plugins.plugins.forEach((plugin, pluginIndex) => {
+      items.push({
+        id: `plugin:${plugin.id}`,
+        group: 'Плагины',
+        label: plugin.title,
+        description: plugin.description || plugin.id,
+        target: `plugin-ai-${pluginIndex}-toggle`,
+        searchable: normalizedSearch(`плагин ${plugin.title} ${plugin.id} ${plugin.description}`),
+      })
+      plugin.operations.forEach((operation, operationIndex) => items.push({
+        id: `plugin:${plugin.id}:${operation.id}`,
+        group: 'Плагины',
+        label: `${plugin.title}: ${operation.label}`,
+        description: operation.description || operation.tool_name,
+        target: `plugin-ai-${pluginIndex}-operation-${operationIndex}`,
+        searchable: normalizedSearch(`операция плагина политика разрешение manual approve ${plugin.title} ${plugin.id} ${operation.label} ${operation.id} ${operation.description} ${operation.tool_name}`),
+      }))
+    })
+  }
+  return items
+}
 
 function draftFrom(document: SettingsDocument): Record<string, string | boolean> {
   return Object.fromEntries(document.groups.flatMap((group) => group.fields.map((field) => [
@@ -80,6 +164,10 @@ export function SettingsPage() {
   const [mcpItems, setMcpItems] = useState<Array<{ name: string; status: string; error: string }>>([])
   const [mcpConnected, setMcpConnected] = useState(false)
   const [mcpLoading, setMcpLoading] = useState(false)
+  const [globalSearch, setGlobalSearch] = useState('')
+  const [promptSearchDocument, setPromptSearchDocument] = useState<ITSMPromptSettingsDocument | null>(null)
+  const [pluginSearchDocument, setPluginSearchDocument] = useState<PluginAIPolicyDocument | null>(null)
+  const [focusTarget, setFocusTarget] = useState(searchParams.get('field') ?? '')
 
   const applyDocument = (next: SettingsDocument) => {
     setDocument(next)
@@ -119,11 +207,66 @@ export function SettingsPage() {
   }, [])
 
   useEffect(() => {
+    const controller = new AbortController()
+    void Promise.all([
+      api<ITSMPromptSettingsDocument>('/api/v1/settings/itsm-ai-prompts', { signal: controller.signal }).catch(() => null),
+      api<PluginAIPolicyDocument>('/api/v1/plugins/ai-policy', { signal: controller.signal }).catch(() => null),
+    ]).then(([prompts, plugins]) => {
+      if (controller.signal.aborted) return
+      if (prompts && Array.isArray(prompts.rules)) setPromptSearchDocument(prompts)
+      if (plugins && Array.isArray(plugins.plugins)) setPluginSearchDocument(plugins)
+    })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
     if (requestedGroup && (specialGroups.has(requestedGroup) || document?.groups.some((group) => group.name === requestedGroup))) setActiveGroup(requestedGroup)
   }, [document, requestedGroup])
 
   const fields = useMemo(() => document?.groups.flatMap((group) => group.fields) ?? [], [document])
   const fieldByKey = useMemo(() => new Map(fields.map((field) => [field.key, field])), [fields])
+  const searchItems = useMemo(
+    () => [...regularSearchItems(document), ...auxiliarySearchItems(promptSearchDocument, pluginSearchDocument)],
+    [document, pluginSearchDocument, promptSearchDocument],
+  )
+  const searchResults = useMemo(() => {
+    const words = normalizedSearch(globalSearch).trim().split(/\s+/).filter(Boolean)
+    if (!words.length) return []
+    return searchItems
+      .filter((item) => words.every((word) => item.searchable.includes(word)))
+      .sort((left, right) => {
+        const query = words.join(' ')
+        const leftLabel = normalizedSearch(left.label)
+        const rightLabel = normalizedSearch(right.label)
+        return Number(rightLabel.startsWith(query)) - Number(leftLabel.startsWith(query))
+          || left.label.localeCompare(right.label, 'ru')
+      })
+      .slice(0, 40)
+  }, [globalSearch, searchItems])
+
+  const focusSetting = (target: string) => {
+    const attempt = (remaining: number) => {
+      const element = window.document.getElementById(target) as HTMLElement | null
+      if (!element && remaining > 0) {
+        window.setTimeout(() => attempt(remaining - 1), 40)
+        return
+      }
+      if (!element) return
+      element.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      element.focus({ preventScroll: true })
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) element.select()
+    }
+    window.setTimeout(() => attempt(15), 0)
+  }
+
+  const openSearchResult = (item: SettingsSearchItem) => {
+    setActiveGroup(item.group)
+    setFocusTarget('')
+    window.setTimeout(() => setFocusTarget(item.target), 0)
+    setSearchParams({ section: item.group, field: item.target }, { replace: true })
+    setGlobalSearch('')
+    focusSetting(item.target)
+  }
 
   const changeValue = (field: SettingField, value: string | boolean) => {
     setDraft((current) => ({ ...current, [field.key]: value }))
@@ -220,12 +363,16 @@ export function SettingsPage() {
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {notice && <div className="alert success"><Check size={17} /><p>{notice}</p></div>}
       <div className="settings-security-note"><KeyRound size={22} /><div><strong>Сохранённые секреты не отправляются в браузер</strong><p>Пустое поле оставляет секрет без изменений. Для удаления используйте «Очистить».</p></div></div>
+      <section className="settings-global-search">
+        <label><Search size={19} /><input className="text-control" aria-label="Поиск по всем настройкам" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="Найти любую настройку…" />{globalSearch && <button type="button" className="icon-button" aria-label="Очистить поиск настроек" onClick={() => setGlobalSearch('')}><X size={15} /></button>}</label>
+        {globalSearch.trim() && <div className="settings-search-results" role="listbox" aria-label="Найденные настройки">{searchResults.map((item) => <button type="button" role="option" aria-selected="false" key={item.id} onClick={() => openSearchResult(item)}><span><small>{item.group}</small><strong>{item.label}</strong><p>{item.description}</p></span><Search size={15} /></button>)}{searchResults.length === 0 && <div className="settings-search-empty">Ничего не найдено</div>}</div>}
+      </section>
       <nav className="settings-tabs" aria-label="Разделы настроек">
-        {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => { setActiveGroup(group.name); setSearchParams({ section: group.name }, { replace: true }) }}>{group.name}<span>{group.fields.length}</span></button>)}
-        <button type="button" className={activeGroup === 'ITSM и AI' ? 'active' : ''} onClick={() => { setActiveGroup('ITSM и AI'); setSearchParams({ section: 'ITSM и AI' }, { replace: true }) }}>ITSM и AI</button>
-        <button type="button" className={activeGroup === 'Плагины' ? 'active' : ''} onClick={() => { setActiveGroup('Плагины'); setSearchParams({ section: 'Плагины' }, { replace: true }) }}>Плагины</button>
+        {document?.groups.map((group) => <button type="button" className={activeGroup === group.name ? 'active' : ''} key={group.name} onClick={() => { setActiveGroup(group.name); setFocusTarget(''); setSearchParams({ section: group.name }, { replace: true }) }}>{group.name}<span>{group.fields.length}</span></button>)}
+        <button type="button" className={activeGroup === 'ITSM и AI' ? 'active' : ''} onClick={() => { setActiveGroup('ITSM и AI'); setFocusTarget(''); setSearchParams({ section: 'ITSM и AI' }, { replace: true }) }}>ITSM и AI</button>
+        <button type="button" className={activeGroup === 'Плагины' ? 'active' : ''} onClick={() => { setActiveGroup('Плагины'); setFocusTarget(''); setSearchParams({ section: 'Плагины' }, { replace: true }) }}>Плагины</button>
       </nav>
-      {activeGroup === 'ITSM и AI' && <ITSMPromptSettings />}
+      {activeGroup === 'ITSM и AI' && <ITSMPromptSettings focusTarget={focusTarget} onDocumentChange={setPromptSearchDocument} />}
       {activeGroup === 'Плагины' && <PluginAISettings />}
       {activeGroup === 'OpenCode' && <OpenCodeServerPanel />}
       {activeGroup === 'OpenCode' && <div className="settings-source-status"><span className={`status-dot ${mcpConnected ? 'online' : ''}`} /> <span>{mcpConnected ? `${mcpItems.length} MCP получено от OpenCode` : 'OpenCode не подключён — сохранённые значения останутся доступны'}</span><button type="button" className="icon-button" title="Обновить MCP" disabled={mcpLoading} onClick={() => void loadMcp()}><RefreshCw size={15} className={mcpLoading ? 'spin' : ''} /></button></div>}
@@ -250,7 +397,7 @@ export function SettingsPage() {
                     ? <McpSinglePicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
                     : field.picker === 'mcp_multi'
                       ? <McpMultiPicker value={String(draft[field.key] ?? '')} options={mcpOptions} onChange={(value) => changeValue(field, value)} />
-                      : <span className="configuration-input"><input
+                      : <span className="configuration-input"><input className="text-control"
                     id={inputId}
                     type={inputType}
                     value={String(draft[field.key] ?? '')}
