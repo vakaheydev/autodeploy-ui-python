@@ -256,7 +256,7 @@ function ReferenceField(props: FieldProps) {
         {ordered.map((item) => {
           const id = identifier(item)
           const detailsText = searchableDetails(item)
-          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id} title="ПКМ — открыть карточку" onContextMenu={(event) => { event.preventDefault(); openDetails(item) }}><input type="checkbox" aria-label={label(item)} checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span className="option-copy"><strong>{label(item)}</strong>{detailsText && <small>{detailsText}</small>}</span>{selected.has(id) && <Check className="option-selected-mark" size={15} />}</label>
+          return <label className={`option-row ${selected.has(id) ? 'selected' : ''}`} key={id} title="ПКМ — открыть карточку" onContextMenu={(event) => { event.preventDefault(); openDetails(item) }}><input className="option-checkbox" type="checkbox" aria-label={label(item)} checked={selected.has(id)} disabled={disabled} onChange={() => toggle(id)} /><span className="option-copy"><strong>{label(item)}</strong>{detailsText && <small>{detailsText}</small>}</span>{selected.has(id) && <Check className="option-selected-mark" size={15} />}</label>
         })}
         {!loading && shown.length === 0 && <span className="muted option-empty">Значения не найдены</span>}
       </div>

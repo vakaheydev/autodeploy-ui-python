@@ -161,6 +161,8 @@ describe('FormPage custom actions', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Методы Swagger' })
     expect(within(dialog).getByText('Выберите методы')).toBeVisible()
     const method = await within(dialog).findByRole('checkbox', { name: 'GET /orders' })
+    expect(method).toHaveClass('option-checkbox')
+    expect(method.closest('.option-row')).toHaveTextContent('GET /orders')
     await user.click(method)
     await user.click(within(dialog).getByRole('button', { name: 'Применить' }))
 
