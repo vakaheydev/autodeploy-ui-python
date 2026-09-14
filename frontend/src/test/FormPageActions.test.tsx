@@ -180,6 +180,51 @@ describe('FormPage custom actions', () => {
     })
   })
 
+  it('renders an explicit server action error and scrolls it into view', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/actions/load-tfs')) {
+        return new Response(JSON.stringify({
+          success: true,
+          status: 'error',
+          title: 'Загрузка из TFS не выполнена',
+          message: 'TFS не вернул данные',
+          values: {},
+          data: null,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(document), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }))
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes><Route path="/forms/:formId" element={<FormPage />} /></Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Загрузить из TFS' }))
+    const result = await screen.findByRole('alert')
+    expect(result).toHaveClass('result-card', 'error')
+    expect(result).toHaveTextContent('Загрузка из TFS не выполнена')
+    expect(result).toHaveTextContent('TFS не вернул данные')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+    }))
+    expect(result).toHaveFocus()
+  })
+
   it('opens the existing inline review when the ITSM hook selects AI mode', async () => {
     const user = userEvent.setup()
     let ticketBody: Record<string, unknown> | undefined

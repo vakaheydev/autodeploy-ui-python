@@ -31,6 +31,7 @@ from forms.fields import (
     ReferenceConfig,
     ReferenceDependency,
 )
+from forms.result_config import ResultStatus
 ```
 
 `ServerAction` объявляет либо прежний `handler`, либо `dialog`, но не оба сразу.
@@ -69,12 +70,37 @@ handler(
 
 - `form_values` — partial patch основной формы;
 - `dialog_values` — partial patch открытого диалога;
-- `message` и optional `data`;
-- `close_dialog`; если `None`, действует `close_on_success` кнопки.
+- `message`, `status`, `title` и optional `data`;
+- `close_dialog`; если `None`, действует `close_on_success` кнопки, кроме
+  `ResultStatus.ERROR`: штатная ошибка по умолчанию оставляет окно открытым.
 
 Каждый patch повторно нормализуется Python runtime. Неизвестные поля не
 попадают в браузер. Для опасной операции задайте `confirmation_text`: public
 runtime выдаст и проверит одноразовый confirmation token.
+
+## Статусы результата
+
+Не возвращайте текст ошибки как обычное успешное сообщение. Для ожидаемой
+ошибки интеграции, отсутствующих данных или отклонённой бизнес-операции верните:
+
+```python
+return ServerDialogActionResult(
+    status=ResultStatus.ERROR,
+    title="Swagger не прочитан",
+    message="TFS не вернул описание Swagger для выбранного API",
+)
+```
+
+Поддерживаются `ResultStatus.SUCCESS`, `ERROR`, `WAITING`, `PENDING`. Поле
+`status` определяет оформление сообщения, но не HTTP-код. Исключение Python
+оставляйте для неожиданной технической ошибки; runtime безопасно преобразует
+его в API error и залогирует причину. Старый результат без `status` считается
+`SUCCESS`.
+
+При `ERROR` диалог остаётся открытым, чтобы пользователь видел причину и мог
+исправить ввод. Явный `close_dialog=True` закрывает его; тогда красная карточка
+показывается в форме, а frontend автоматически прокручивает и переводит фокус
+к этой карточке.
 
 ## Доступ к значениям основной формы
 
@@ -357,6 +383,13 @@ class AddSubscriptionMethodsForm(BaseForm):
             form_values={"methods": dialog_values["methods"]},
         )
 ```
+
+`ServerDialogActionResult` также принимает `status: ResultStatus` и `title`.
+Если обработчик возвращает `ResultStatus.ERROR` и явно не задаёт
+`close_dialog`, окно остаётся открытым, а ошибка показывается внутри него. Если
+`close_dialog=True` задан явно, диалог закрывается и основная форма
+автоматически прокручивается к красной карточке результата. Mapping-форма
+поддерживает ключи `status` и `title` по тем же правилам.
 
 Corporate `BaseReferenceHandler.load()` для `corp_swagger` получает только
 объявленные значения:

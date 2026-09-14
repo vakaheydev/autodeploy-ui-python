@@ -56,8 +56,11 @@ update both sides of a public/private contract when its signature changes.
 Preserve `form_id`, field keys, `FieldType`, `ReferenceConfig`, plural naming and
 the existing `BaseForm` lifecycle. Add one-step web actions through
 `ServerAction` and interactive field-based actions through `ServerActionDialog`;
-a raw Tkinter callback cannot execute in a headless server. Multi-input
-references must declare the minimal `ReferenceDependency` allowlist rather than
+a raw Tkinter callback cannot execute in a headless server. For an expected
+action failure, return `ServerActionResult` (or
+`ServerDialogActionResult`) with `status=ResultStatus.ERROR`; never hide a
+failure inside the text of a success result. Multi-input references must
+declare the minimal `ReferenceDependency` allowlist rather than
 receiving complete form state. Inside a `ServerActionDialog`, use
 `scope="form"` only for the exact owning-form fields required by that reference;
 the default `scope="current"` addresses sibling dialog fields.

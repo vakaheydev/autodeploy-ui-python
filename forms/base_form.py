@@ -48,6 +48,23 @@ class CustomButton:
 
 
 @dataclass(frozen=True)
+class ServerActionResult:
+    """Typed result of a direct :class:`ServerAction` handler.
+
+    ``status`` controls how the message is presented to the operator; it does
+    not describe HTTP transport success.  Existing mapping results remain
+    supported and may use the same ``message``, ``status``, ``title``,
+    ``values`` and ``data`` keys.
+    """
+
+    message: str = "Действие выполнено"
+    status: ResultStatus = ResultStatus.SUCCESS
+    title: str = ""
+    values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    data: Any = None
+
+
+@dataclass(frozen=True)
 class ServerDialogActionResult:
     """Result of a button inside a server-rendered action dialog.
 
@@ -61,6 +78,8 @@ class ServerDialogActionResult:
     dialog_values: Mapping[str, Any] = _dc_field(default_factory=dict)
     data: Any = None
     close_dialog: Optional[bool] = None
+    status: ResultStatus = ResultStatus.SUCCESS
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,8 +123,9 @@ class ServerAction:
     """UI-independent custom form action available through the web API.
 
     ``handler`` runs only in Python and receives ``(environment, form_data)``.
-    It may return a mapping with optional ``message``, ``values`` and ``data``
-    keys.  Existing :class:`CustomButton` remains untouched for Tkinter.
+    It may return :class:`ServerActionResult` or a mapping with optional
+    ``message``, ``status``, ``title``, ``values`` and ``data`` keys. Existing
+    :class:`CustomButton` remains untouched for Tkinter.
     """
 
     action_id: str

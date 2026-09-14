@@ -115,6 +115,8 @@ export interface ActionDialogDocument {
   fields: FieldDocument[]
   actions: ActionDialogButtonDocument[]
   message?: string
+  status?: ActionResultStatus
+  result_title?: string
   validation_scope?: 'form' | 'dialog'
   validation?: ValidationResult
   form_values?: Record<string, unknown>
@@ -123,6 +125,21 @@ export interface ActionDialogDocument {
   confirmation_required?: boolean
   confirmation_text?: string
   confirmation_token?: string
+}
+
+export type ActionResultStatus = 'pending' | 'success' | 'waiting' | 'error'
+
+export interface FormActionResponse {
+  success: boolean
+  message?: string
+  status?: ActionResultStatus
+  title?: string
+  values?: Record<string, unknown>
+  data?: unknown
+  confirmation_required?: boolean
+  confirmation_text?: string
+  confirmation_token?: string
+  validation?: ValidationResult
 }
 
 export interface ValidationError {
@@ -151,7 +168,7 @@ export interface SubmitResult {
   success: true
   message: string
   submission_id: string
-  status: 'pending' | 'success' | 'waiting' | 'error'
+  status: ActionResultStatus
   title: string
   content: string
   response: unknown

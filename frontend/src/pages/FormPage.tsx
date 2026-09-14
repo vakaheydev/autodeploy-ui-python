@@ -8,6 +8,7 @@ import { useEnvironment } from '../environment'
 import type {
   ActionDialogButtonDocument,
   ActionDialogDocument,
+  FormActionResponse,
   FormDocument,
   PreviewResult,
   SubmitResult,
@@ -156,6 +157,8 @@ export function FormPage() {
   const [ticketId, setTicketId] = useState('')
   const [ticketError, setTicketError] = useState('')
   const [result, setResult] = useState<SubmitResult | null>(null)
+  const resultRef = useRef<HTMLElement | null>(null)
+  const [actionResultRevision, setActionResultRevision] = useState(0)
   const stateSequence = useRef(0)
   const handoffStarted = useRef('')
   const draftStarted = useRef('')
@@ -187,6 +190,15 @@ export function FormPage() {
   const focusedValidationRef = useRef('')
 
   useEffect(() => { latestValuesRef.current = values }, [values])
+
+  useEffect(() => {
+    if (!actionResultRevision) return
+    const timer = window.setTimeout(() => {
+      resultRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      resultRef.current?.focus({ preventScroll: true })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [actionResultRevision])
 
   useEffect(() => {
     const first = errors.find((item) => Boolean(item.field))
@@ -238,6 +250,34 @@ export function FormPage() {
         && !item.field.startsWith(`${changedPath}.`)
         && !changedPath.startsWith(`${item.field}.`)
     }))
+  }
+
+  const showActionResult = ({
+    message,
+    status = 'success',
+    title,
+    data = null,
+  }: Pick<FormActionResponse, 'message' | 'status' | 'title' | 'data'>) => {
+    const fallbackTitle = status === 'error'
+      ? 'Действие завершилось с ошибкой'
+      : status === 'waiting'
+        ? 'Действие выполняется'
+        : status === 'pending'
+          ? 'Действие принято'
+          : 'Действие выполнено'
+    setResult({
+      success: true,
+      message: message ?? fallbackTitle,
+      submission_id: '',
+      status,
+      title: title || fallbackTitle,
+      content: '',
+      response: data,
+      payload: null,
+      polling: false,
+      poll_interval_ms: null,
+    })
+    setActionResultRevision((current) => current + 1)
   }
 
   useEffect(() => {
@@ -774,7 +814,7 @@ export function FormPage() {
     if (!document) return
     setBusy(true); setError('')
     try {
-      const response = await post<{ success: boolean; message?: string; values?: Record<string, unknown>; confirmation_required?: boolean; confirmation_text?: string; confirmation_token?: string; validation?: { errors?: ValidationError[] } }>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionId)}`, {
+      const response = await post<FormActionResponse>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionId)}`, {
         environment, values, form_version: document.version, confirmation_token: confirmationToken,
       })
       if (response.confirmation_required && response.confirmation_token) {
@@ -782,16 +822,33 @@ export function FormPage() {
       } else if (!response.success) {
         const actionErrors = response.validation?.errors ?? []
         setErrors(actionErrors)
-        setError(actionErrors.length ? '' : response.message ?? 'Действие не выполнено')
+        setError('')
+        if (!actionErrors.length) showActionResult({
+          message: response.message ?? 'Действие не выполнено',
+          status: 'error',
+          title: response.title,
+          data: response.data,
+        })
       } else {
         if (response.values) {
           setValues((current) => ({ ...current, ...response.values }))
           setEditRevision((current) => current + 1)
         }
         setActionConfirm(null)
-        if (response.message) setResult({ success: true, message: response.message, submission_id: '', status: 'success', title: 'Действие выполнено', content: '', response: null, payload: null, polling: false, poll_interval_ms: null })
+        showActionResult(response)
       }
-    } catch (reason) { reportFailure(reason) } finally { setBusy(false) }
+    } catch (reason) {
+      const inlineErrors = validationErrorsFromApi(reason)
+      if (inlineErrors.length) {
+        setErrors(inlineErrors)
+      } else {
+        setError('')
+        showActionResult({
+          message: reason instanceof Error ? reason.message : String(reason),
+          status: 'error',
+        })
+      }
+    } finally { setBusy(false) }
   }
 
   const openActionDialog = async (actionId: string) => {
@@ -885,7 +942,15 @@ export function FormPage() {
       if (response.close_dialog) {
         const message = response.message ?? 'Действие выполнено'
         resetActionDialog()
-        setResult({ success: true, message, submission_id: '', status: 'success', title: 'Действие выполнено', content: '', response: response.data ?? null, payload: null, polling: false, poll_interval_ms: null })
+        showActionResult({
+          message,
+          status: response.status,
+          title: response.result_title,
+          data: response.data,
+        })
+      } else if (response.status === 'error') {
+        setActionDialogNotice('')
+        setActionDialogError(response.message ?? 'Действие завершилось с ошибкой')
       }
     } catch (reason) {
       const inlineErrors = validationErrorsFromApi(reason)
@@ -930,9 +995,9 @@ export function FormPage() {
         {errors.some((item) => !item.field) && <div className="alert error form-validation-summary" role="alert"><div>{errors.filter((item) => !item.field).map((item) => <p key={`${item.code}-${item.message}`}>{item.message}</p>)}</div></div>}
       </section>
 
-      {result && <section className={`result-card ${result.status}`}>
+      {result && <section ref={resultRef} className={`result-card ${result.status}`} role={result.status === 'error' ? 'alert' : 'status'} tabIndex={-1}>
         <div className="result-icon">{result.status === 'success' ? <Check /> : result.status === 'error' ? <X /> : <LoaderCircle className={result.polling ? 'spin' : ''} />}</div>
-        <div><span className="eyebrow">Результат операции</span><h2>{result.title}</h2><p>{result.message}</p><pre>{result.content}</pre>{result.polling && <small>Статус обновляется автоматически</small>}</div>
+        <div><span className="eyebrow">Результат операции</span><h2>{result.title}</h2><p>{result.message}</p>{result.content && <pre>{result.content}</pre>}{result.polling && <small>Статус обновляется автоматически</small>}</div>
       </section>}
 
       <footer className={`form-actions ${Object.keys(review).length ? 'reviewing' : ''}`}>

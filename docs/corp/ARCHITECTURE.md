@@ -104,8 +104,9 @@ package создал JSON schema.
 Основные типы импортируются из public wheel:
 
 ```python
-from forms.base_form import BaseForm, ServerAction
+from forms.base_form import BaseForm, ServerAction, ServerActionResult
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
+from forms.result_config import ResultStatus
 from handlers.base_reference_handler import BaseReferenceHandler
 from plugins import PluginDefinition, PluginOperation, PluginRegistry
 from tickets import TicketAction, TicketCard, TicketListConfiguration, TicketPage

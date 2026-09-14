@@ -8,7 +8,8 @@
 ```python
 from typing import Any
 
-from forms.base_form import BaseForm, ServerAction
+from forms.base_form import BaseForm, ServerAction, ServerActionResult
+from forms.result_config import ResultStatus
 from forms.fields import FieldDefinition, FieldType, ReferenceConfig
 
 
@@ -164,16 +165,32 @@ def _load_swagger_methods(self, environment, form_data):
     methods = self.gravitee_service.read_swagger_methods(
         environment, form_data["swagger_url"]
     )
-    return {
-        "message": f"Найдено методов: {len(methods)}",
-        "values": {"methods": methods},
-        "data": {"count": len(methods)},
-    }
+    if not methods:
+        return ServerActionResult(
+            message="Swagger не содержит методов",
+            title="Методы не загружены",
+            status=ResultStatus.ERROR,
+        )
+    return ServerActionResult(
+        message=f"Найдено методов: {len(methods)}",
+        values={"methods": methods},
+        data={"count": len(methods)},
+    )
 ```
 
-Контракт handler: `(environment: str, form_data: dict) -> mapping | None`.
-Допустимые result keys: `message`, `values`, `data`. `values` проходит через
-normalization/state на сервере, затем применяется frontend.
+Контракт handler: `(environment: str, form_data: dict) -> ServerActionResult | mapping | None`.
+Допустимые result keys: `message`, `status`, `title`, `values`, `data`. Для
+типизированного результата используйте `ServerActionResult`. `status` принимает
+`ResultStatus.SUCCESS`, `ERROR`, `WAITING` или `PENDING`; в mapping допустимы
+одноимённые строки в нижнем регистре. Если статус не передан, используется
+`success`, поэтому старые обработчики полностью совместимы. `status` управляет
+видом сообщения, а не HTTP-кодом. `values` проходит через normalization/state
+на сервере, затем применяется frontend.
+
+После любого результата action интерфейс автоматически прокручивается к его
+карточке. Не кодируйте ошибку текстом внутри успешного результата: возвращайте
+`ServerActionResult(status=ResultStatus.ERROR, ...)`, чтобы оператор увидел
+красную карточку с корректным заголовком.
 
 `confirmation_text` включает one-use confirmation token. `require_valid_form`
 запрещает action до успешной validation. Action errors показываются рядом с

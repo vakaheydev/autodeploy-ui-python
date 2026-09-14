@@ -11,6 +11,7 @@ from forms.base_form import (
     ITSMFetchResult,
     ServerAction,
     ServerActionDialog,
+    ServerActionResult,
     ServerDialogAction,
     ServerDialogActionResult,
 )
@@ -22,6 +23,7 @@ from forms.fields import (
 )
 from forms.loader import register_all_forms
 from forms.registry import FormRegistry
+from forms.result_config import ResultStatus
 from opencode_integration.data_sources import ITSMAIPrompt, ITSMAIPromptRequest
 from webapp.container import ApplicationContainer
 from webapp.extensions import RuntimeServices
@@ -480,12 +482,23 @@ class _ActionForm(BaseForm):
         return "https://example.invalid"
 
     def get_server_actions(self):
-        return [ServerAction(
-            "normalise",
-            "Normalise",
-            self._normalise,
-            confirmation_text="Run normalisation?",
-        )]
+        return [
+            ServerAction(
+                "normalise",
+                "Normalise",
+                self._normalise,
+                confirmation_text="Run normalisation?",
+            ),
+            ServerAction(
+                "report_error",
+                "Report error",
+                lambda _environment, _values: ServerActionResult(
+                    message="TFS не вернул данные",
+                    status=ResultStatus.ERROR,
+                    title="Загрузка из TFS не выполнена",
+                ),
+            ),
+        ]
 
     def _normalise(self, environment, values):
         assert self.current_environment == environment
@@ -586,6 +599,12 @@ class _DialogActionForm(BaseForm):
                     require_valid_dialog=False,
                     close_on_success=False,
                 ),
+                ServerDialogAction(
+                    "report_error",
+                    "Сообщить об ошибке",
+                    self._report_error,
+                    require_valid_dialog=False,
+                ),
                 ServerDialogAction("apply", "Применить", self._apply),
             ),
             initial_values=self._initial_dialog_values,
@@ -615,6 +634,14 @@ class _DialogActionForm(BaseForm):
         return ServerDialogActionResult(
             message="Swagger прочитан",
             dialog_values={"status": "Готово к применению"},
+        )
+
+    @staticmethod
+    def _report_error(_environment, _form_values, _dialog_values):
+        return ServerDialogActionResult(
+            message="Swagger временно недоступен",
+            status=ResultStatus.ERROR,
+            title="Не удалось прочитать Swagger",
         )
 
     def _apply(self, environment, form_values, dialog_values):
@@ -911,7 +938,25 @@ def test_server_action_requires_one_time_confirmation(container: ApplicationCont
         assert result == {
             "success": True,
             "message": "Done",
+            "status": "success",
+            "title": "Действие выполнено",
             "values": {"name": "ORDERS"},
+            "data": None,
+        }
+        failed = container.forms.run_action(
+            form.form_id,
+            "report_error",
+            "test_int",
+            {"name": "orders"},
+            version,
+            "",
+        )
+        assert failed == {
+            "success": True,
+            "message": "TFS не вернул данные",
+            "status": "error",
+            "title": "Загрузка из TFS не выполнена",
+            "values": {},
             "data": None,
         }
         repeated = container.forms.run_action(
@@ -1057,6 +1102,21 @@ def test_server_action_dialog_reuses_fields_and_passes_multiple_dependencies(
         )
         assert inspected["close_dialog"] is False
         assert inspected["values"]["status"] == "Готово к применению"
+
+        failed = container.forms.run_action_dialog_button(
+            "test.dialog-action",
+            "choose_methods",
+            "report_error",
+            "test_int",
+            {"name": "Subscription"},
+            dialog_values,
+            version,
+        )
+        assert failed["success"] is True
+        assert failed["status"] == "error"
+        assert failed["result_title"] == "Не удалось прочитать Swagger"
+        assert failed["message"] == "Swagger временно недоступен"
+        assert failed["close_dialog"] is False
 
         applied = container.forms.run_action_dialog_button(
             "test.dialog-action",

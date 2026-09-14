@@ -24,9 +24,11 @@ from forms.base_form import (
     ITSMFetchResult,
     ServerAction,
     ServerActionDialog,
+    ServerActionResult,
     ServerDialogAction,
     ServerDialogActionResult,
 )
+from forms.result_config import ResultStatus
 from forms.fields import (
     FieldDefinition,
     FieldType,
@@ -66,6 +68,14 @@ class FormVersionConflict(ValueError):
 
 class FormAIUnavailableError(RuntimeError):
     pass
+
+
+_ACTION_TITLES = {
+    ResultStatus.SUCCESS: "Действие выполнено",
+    ResultStatus.ERROR: "Действие завершилось с ошибкой",
+    ResultStatus.WAITING: "Действие выполняется",
+    ResultStatus.PENDING: "Действие принято",
+}
 
 
 class _ConditionValues(dict[str, Any]):
@@ -608,16 +618,14 @@ class FormRuntime:
         )
         form.screen = context
         # Contract validation above guarantees a callable direct handler.
-        result = action.handler(environment, copy.deepcopy(validation.values))  # type: ignore[misc]
-        if result is None:
-            result = {}
-        if not isinstance(result, Mapping):
-            result = {"data": result}
-        proposed = result.get("values", {})
-        if proposed is not None and not isinstance(proposed, Mapping):
-            raise ValueError("Server action values должен быть объектом")
+        raw_result = action.handler(  # type: ignore[misc]
+            environment,
+            copy.deepcopy(validation.values),
+        )
+        result = self._server_action_result(raw_result)
+        proposed = result.values
         applied = context.applied_values
-        applied.update(copy.deepcopy(dict(proposed or {})))
+        applied.update(copy.deepcopy(dict(proposed)))
         # Server actions are allowed to return a partial patch, including data
         # produced by legacy corporate integrations.  Normalise that patch
         # through the same Python field contracts before it reaches React.  In
@@ -646,10 +654,53 @@ class FormRuntime:
         }
         return {
             "success": True,
-            "message": str(result.get("message", "Действие выполнено")),
+            "message": str(result.message or "Действие выполнено"),
+            "status": result.status.value,
+            "title": str(result.title or _ACTION_TITLES[result.status]),
             "values": _json_safe(applied),
-            "data": _json_safe(result.get("data")),
+            "data": _json_safe(result.data),
         }
+
+    @staticmethod
+    def _action_status(value: Any) -> ResultStatus:
+        if value is None or value == "":
+            return ResultStatus.SUCCESS
+        if isinstance(value, ResultStatus):
+            return value
+        try:
+            return ResultStatus(str(value).strip().casefold())
+        except ValueError as exc:
+            allowed = ", ".join(item.value for item in ResultStatus)
+            raise ValueError(
+                f"Некорректный статус ServerAction {value!r}; допустимо: {allowed}"
+            ) from exc
+
+    @classmethod
+    def _server_action_result(cls, value: Any) -> ServerActionResult:
+        if value is None:
+            return ServerActionResult()
+        if isinstance(value, ServerActionResult):
+            if not isinstance(value.values, Mapping):
+                raise TypeError("ServerActionResult.values должен быть mapping")
+            return ServerActionResult(
+                message=str(value.message or "Действие выполнено"),
+                status=cls._action_status(value.status),
+                title=str(value.title or ""),
+                values=value.values,
+                data=value.data,
+            )
+        if not isinstance(value, Mapping):
+            return ServerActionResult(data=value)
+        proposed = value.get("values") or {}
+        if not isinstance(proposed, Mapping):
+            raise ValueError("Server action values должен быть объектом")
+        return ServerActionResult(
+            message=str(value.get("message") or "Действие выполнено"),
+            status=cls._action_status(value.get("status")),
+            title=str(value.get("title") or ""),
+            values=proposed,
+            data=value.get("data"),
+        )
 
     def open_action_dialog(
         self,
@@ -1022,7 +1073,7 @@ class FormRuntime:
             run_custom_validator=False,
         )
         close_dialog = (
-            button.close_on_success
+            button.close_on_success and result.status is not ResultStatus.ERROR
             if result.close_dialog is None
             else bool(result.close_dialog)
         )
@@ -1036,6 +1087,8 @@ class FormRuntime:
         response.update({
             "success": True,
             "message": str(result.message or "Действие выполнено"),
+            "status": result.status.value,
+            "result_title": str(result.title or _ACTION_TITLES[result.status]),
             "form_values": _json_safe(form_patch),
             "data": _json_safe(result.data),
             "close_dialog": close_dialog,
@@ -1156,7 +1209,19 @@ class FormRuntime:
         if value is None:
             return ServerDialogActionResult()
         if isinstance(value, ServerDialogActionResult):
-            return value
+            if not isinstance(value.form_values, Mapping):
+                raise TypeError("ServerDialogActionResult.form_values должен быть mapping")
+            if not isinstance(value.dialog_values, Mapping):
+                raise TypeError("ServerDialogActionResult.dialog_values должен быть mapping")
+            return ServerDialogActionResult(
+                message=str(value.message or "Действие выполнено"),
+                form_values=value.form_values,
+                dialog_values=value.dialog_values,
+                data=value.data,
+                close_dialog=value.close_dialog,
+                status=FormRuntime._action_status(value.status),
+                title=str(value.title or ""),
+            )
         if not isinstance(value, Mapping):
             return ServerDialogActionResult(data=value)
         known = {
@@ -1166,6 +1231,8 @@ class FormRuntime:
             "dialog_values",
             "data",
             "close_dialog",
+            "status",
+            "title",
         }
         unexpected = set(value) - known
         if unexpected:
@@ -1190,6 +1257,8 @@ class FormRuntime:
             dialog_values=dialog_values,
             data=value.get("data"),
             close_dialog=raw_close,
+            status=FormRuntime._action_status(value.get("status")),
+            title=str(value.get("title") or ""),
         )
 
     def _field_document(

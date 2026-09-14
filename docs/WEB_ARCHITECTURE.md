@@ -104,7 +104,8 @@ executed safely on a server. They are shown disabled with a migration hint. Move
 their UI-independent behavior into `get_server_actions()`:
 
 ```python
-from forms.base_form import ServerAction
+from forms.base_form import ServerAction, ServerActionResult
+from forms.result_config import ResultStatus
 
 def get_server_actions(self):
     return [ServerAction(
@@ -115,8 +116,12 @@ def get_server_actions(self):
     )]
 ```
 
-The handler stays in Python and can return `{"message": ..., "values": ...,
-"data": ...}`. Returned values are merged into the rendered form.
+The handler stays in Python and can return `ServerActionResult` or a compatible
+mapping with `message`, `status`, `title`, `values` and `data`. Use
+`ResultStatus.ERROR` for an expected business failure that should render as an
+error card without becoming a transport exception. Missing `status` remains
+`success` for backward compatibility. Returned values are merged into the
+rendered form, and React scrolls/focuses the resulting status card.
 
 When an action needs an interactive modal, it declares
 `ServerAction(dialog=ServerActionDialog(...))`. Dialog fields reuse the complete

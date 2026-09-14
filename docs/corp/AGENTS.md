@@ -107,6 +107,7 @@
 | Прочитать форму при нажатии кнопки | `ServerDialogAction.handler(environment, form_values, dialog_values)` |
 | Подставить значения обратно в форму | `ServerDialogActionResult(form_values={...})` |
 | Изменить поля открытого окна | `ServerDialogActionResult(dialog_values={...}, close_dialog=False)` |
+| Показать штатную ошибку операции | `ServerActionResult(status=ResultStatus.ERROR, message=...)` или такой же `status` в `ServerDialogActionResult` |
 | Построить справочник по полю диалога | `ReferenceDependency(..., scope="current")` |
 | Построить справочник по полю основной формы | `ReferenceDependency(..., scope="form")` |
 | Получить атрибут полного reference item вместо ID | `ReferenceDependency(..., item_field="...")` |
