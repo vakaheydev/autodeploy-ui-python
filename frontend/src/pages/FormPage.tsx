@@ -10,6 +10,7 @@ import type {
   ActionDialogDocument,
   FormActionResponse,
   FormDocument,
+  FieldDocument,
   PreviewResult,
   SubmitResult,
   ValidationError,
@@ -122,6 +123,12 @@ export function applyReviewDecision(
   )
 }
 
+function hasDynamicFields(fields: FieldDocument[]): boolean {
+  return fields.some((field) => field.dynamic
+    || hasDynamicFields(field.fields ?? [])
+    || Object.values(field.instances ?? {}).some((instance) => hasDynamicFields(instance)))
+}
+
 function reviewEntries(result: ExtractionResult, includeEmpty: boolean): Record<string, ReviewEntry> {
   return Object.fromEntries(result.fields
     .filter((field) => includeEmpty || (field.proposed_value !== null && field.proposed_value !== undefined))
@@ -160,6 +167,8 @@ export function FormPage() {
   const resultRef = useRef<HTMLElement | null>(null)
   const [actionResultRevision, setActionResultRevision] = useState(0)
   const stateSequence = useRef(0)
+  const stateRequest = useRef<AbortController | null>(null)
+  const lastStateValues = useRef<Record<string, unknown> | null>(null)
   const handoffStarted = useRef('')
   const draftStarted = useRef('')
   const extractionId = useRef('')
@@ -179,6 +188,8 @@ export function FormPage() {
   const [actionDialogBusy, setActionDialogBusy] = useState('')
   const [actionDialogConfirm, setActionDialogConfirm] = useState<{ action: ActionDialogButtonDocument; text: string; token: string } | null>(null)
   const actionDialogStateSequence = useRef(0)
+  const actionDialogStateRequest = useRef<AbortController | null>(null)
+  const lastActionDialogState = useRef<{ formValues: Record<string, unknown>; dialogValues: Record<string, unknown> } | null>(null)
   const [activeDraftId, setActiveDraftId] = useState(linkedDraftId)
   const activeDraftIdRef = useRef(linkedDraftId)
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(linkedDraftId ? 'saved' : 'idle')
@@ -284,6 +295,12 @@ export function FormPage() {
     const controller = new AbortController()
     const scope = `${formId}|${environment}`
     loadedScope.current = ''
+    stateRequest.current?.abort()
+    stateRequest.current = null
+    lastStateValues.current = null
+    actionDialogStateRequest.current?.abort()
+    actionDialogStateRequest.current = null
+    lastActionDialogState.current = null
     if (extractionId.current) {
       void api(`/api/v1/ai/extractions/${encodeURIComponent(extractionId.current)}?cancel=true`, { method: 'DELETE' }).catch(() => undefined)
       extractionId.current = ''
@@ -308,9 +325,11 @@ export function FormPage() {
     setDraftSaveState(linkedDraftId ? 'saved' : 'idle')
     api<FormDocument>(`/api/v1/forms/${encodeURIComponent(formId)}?environment=${encodeURIComponent(environment)}`, { signal: controller.signal })
       .then((value) => {
+        const initialValues = restored ? { ...value.initial_values, ...restored } : value.initial_values
         loadedScope.current = scope
         setDocument(value)
-        setValues(restored ? { ...value.initial_values, ...restored } : value.initial_values)
+        setValues(initialValues)
+        lastStateValues.current = restored ? null : initialValues
         setErrors([])
         setResult(null)
       })
@@ -415,32 +434,55 @@ export function FormPage() {
 
   useEffect(() => {
     if (!document || loading) return
+    if (lastStateValues.current === values) return
+    if (!hasDynamicFields(document.fields) && document.custom_actions.length === 0) {
+      lastStateValues.current = values
+      return
+    }
     const sequence = ++stateSequence.current
+    const controller = new AbortController()
     const timer = window.setTimeout(() => {
+      stateRequest.current?.abort()
+      stateRequest.current = controller
       post<FormDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/state`, {
         environment,
         values,
         form_version: document.version,
-      }).then((next) => {
-        if (sequence === stateSequence.current) setDocument(next)
+      }, controller.signal).then((next) => {
+        if (sequence === stateSequence.current) {
+          lastStateValues.current = values
+          setDocument(next)
+        }
       }).catch((reason: unknown) => {
+        if (reason instanceof Error && reason.name === 'AbortError') return
         if (sequence === stateSequence.current) setError(reason instanceof Error ? reason.message : String(reason))
+      }).finally(() => {
+        if (stateRequest.current === controller) stateRequest.current = null
       })
-    }, 160)
-    return () => window.clearTimeout(timer)
+    }, 220)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
   }, [values, environment, formId, document?.version])
 
   useEffect(() => {
     if (!document || !actionDialog) return
+    if (lastActionDialogState.current?.formValues === values
+      && lastActionDialogState.current.dialogValues === actionDialogValues) return
     const sequence = ++actionDialogStateSequence.current
+    const controller = new AbortController()
     const timer = window.setTimeout(() => {
+      actionDialogStateRequest.current?.abort()
+      actionDialogStateRequest.current = controller
       post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionDialog.id)}/dialog/state`, {
         environment,
         form_values: values,
         dialog_values: actionDialogValues,
         form_version: document.version,
-      }).then((next) => {
+      }, controller.signal).then((next) => {
         if (sequence !== actionDialogStateSequence.current) return
+        lastActionDialogState.current = { formValues: values, dialogValues: actionDialogValues }
         setActionDialog((current) => current ? {
           ...current,
           fields: next.fields,
@@ -448,12 +490,18 @@ export function FormPage() {
           form_version: next.form_version,
         } : null)
       }).catch((reason: unknown) => {
+        if (reason instanceof Error && reason.name === 'AbortError') return
         if (sequence === actionDialogStateSequence.current) {
           setActionDialogError(reason instanceof Error ? reason.message : String(reason))
         }
+      }).finally(() => {
+        if (actionDialogStateRequest.current === controller) actionDialogStateRequest.current = null
       })
-    }, 160)
-    return () => window.clearTimeout(timer)
+    }, 220)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
   }, [actionDialog?.id, actionDialog?.form_version, actionDialogValues, document, environment, formId, values])
 
   useEffect(() => {
@@ -870,8 +918,10 @@ export function FormPage() {
         setError(actionErrors.length ? '' : response.message ?? 'Не удалось открыть диалог')
         return
       }
+      const dialogValues = response.values ?? {}
+      lastActionDialogState.current = { formValues: values, dialogValues }
       setActionDialog(response)
-      setActionDialogValues(response.values ?? {})
+      setActionDialogValues(dialogValues)
     } catch (reason) {
       reportFailure(reason)
     } finally {
@@ -881,6 +931,9 @@ export function FormPage() {
 
   const resetActionDialog = () => {
     actionDialogStateSequence.current += 1
+    actionDialogStateRequest.current?.abort()
+    actionDialogStateRequest.current = null
+    lastActionDialogState.current = null
     setActionDialog(null)
     setActionDialogValues({})
     setActionDialogErrors([])
@@ -931,7 +984,11 @@ export function FormPage() {
         setValues((current) => ({ ...current, ...response.form_values }))
         setEditRevision((current) => current + 1)
       }
-      setActionDialogValues(response.values ?? actionDialogValues)
+      const nextDialogValues = response.values ?? actionDialogValues
+      lastActionDialogState.current = response.form_values && Object.keys(response.form_values).length
+        ? null
+        : { formValues: values, dialogValues: nextDialogValues }
+      setActionDialogValues(nextDialogValues)
       setActionDialog((current) => current ? {
         ...current,
         fields: response.fields ?? current.fields,

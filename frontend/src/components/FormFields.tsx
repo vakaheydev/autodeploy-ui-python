@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
 import { Check, FileJson, LoaderCircle, Plus, RefreshCw, Search, Trash2, Upload, X } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
@@ -45,6 +45,83 @@ interface OptionsResponse {
 interface ReferenceCacheStatusResponse {
   environment: string
   updated_at: number | null
+}
+
+const REFERENCE_PAGE_SIZE = 100
+const fieldSignatureCache = new WeakMap<FieldDocument, string>()
+
+function fieldSignature(field: FieldDocument) {
+  const cached = fieldSignatureCache.get(field)
+  if (cached !== undefined) return cached
+  const value = JSON.stringify(field)
+  fieldSignatureCache.set(field, value)
+  return value
+}
+
+function pathBelongsToField(path: string | null, field: FieldDocument) {
+  if (!path) return false
+  if (path === field.path || path.startsWith(`${field.path}.`)) return true
+  if (!field.plural) return false
+  const escaped = field.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped}_\\d+(?:\\.|$)`).test(path)
+}
+
+function fieldErrorsSignature(field: FieldDocument, errors: ValidationError[]) {
+  return JSON.stringify(errors.filter((item) => pathBelongsToField(item.field, field)))
+}
+
+function fieldReviewSignature(field: FieldDocument, review: FieldProps['review']) {
+  return JSON.stringify(Object.entries(review ?? {}).filter(([path]) => pathBelongsToField(path, field)))
+}
+
+function dependencySignatureForProps(props: FieldProps) {
+  const dependencies = props.field.reference_dependencies ?? []
+  const values = dependencies.map((dependency) => [
+    dependency.scope ?? 'current',
+    dependency.field,
+    dependency.scope === 'form'
+      ? props.dialogContext?.formValues[dependency.field]
+      : props.values[dependency.field],
+  ])
+  if (props.field.depends_on) values.push([
+    'current',
+    props.field.depends_on,
+    props.values[props.field.depends_on],
+  ])
+  const visitFormDependencies = (field: FieldDocument) => {
+    for (const dependency of field.reference_dependencies ?? []) {
+      if (dependency.scope === 'form') values.push([
+        'form',
+        dependency.field,
+        props.dialogContext?.formValues[dependency.field],
+      ])
+    }
+    for (const nested of field.fields ?? []) visitFormDependencies(nested)
+    for (const instance of Object.values(field.instances ?? {})) {
+      for (const nested of instance) visitFormDependencies(nested)
+    }
+  }
+  if (props.field.type === 'block') visitFormDependencies(props.field)
+  return JSON.stringify(values)
+}
+
+function pluralValuesSignature(field: FieldDocument, values: Record<string, unknown>) {
+  if (!field.plural) return ''
+  const prefix = `${field.key}_`
+  return JSON.stringify(Object.entries(values).filter(([key]) => key === field.key || key.startsWith(prefix)))
+}
+
+function sameFieldProps(previous: FieldProps, next: FieldProps) {
+  return previous.formId === next.formId
+    && previous.environment === next.environment
+    && previous.disabled === next.disabled
+    && Object.is(previous.value, next.value)
+    && fieldSignature(previous.field) === fieldSignature(next.field)
+    && pluralValuesSignature(previous.field, previous.values) === pluralValuesSignature(next.field, next.values)
+    && dependencySignatureForProps(previous) === dependencySignatureForProps(next)
+    && fieldErrorsSignature(previous.field, previous.errors) === fieldErrorsSignature(next.field, next.errors)
+    && fieldReviewSignature(previous.field, previous.review) === fieldReviewSignature(next.field, next.review)
+    && previous.dialogContext?.formVersion === next.dialogContext?.formVersion
 }
 
 function errorsForField(field: FieldDocument, errors: ValidationError[]) {
@@ -102,6 +179,7 @@ function ReferenceField(props: FieldProps) {
   const [refreshStatusError, setRefreshStatusError] = useState('')
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const requestSequence = useRef(0)
+  const requestController = useRef<AbortController | null>(null)
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const explicitDependencies = field.reference_dependencies ?? []
   const dependencyValue = (dependency: typeof explicitDependencies[number]) => (
@@ -154,25 +232,32 @@ function ReferenceField(props: FieldProps) {
 
   const load = async (refresh = false, requestedQuery = query) => {
     const sequence = ++requestSequence.current
+    requestController.current?.abort()
+    const controller = new AbortController()
+    requestController.current = controller
     setLoading(true)
     setLoadError('')
     try {
       const result = await post<OptionsResponse>(reference.endpoint, referenceRequest({
         query: requestedQuery,
         offset: 0,
-        limit: 500,
+        limit: REFERENCE_PAGE_SIZE,
         refresh,
-      }))
+      }), controller.signal)
       if (sequence !== requestSequence.current) return
       setItems(result.items)
       setTotal(result.total)
       if (result.updated_at !== undefined) setUpdatedAt(result.updated_at)
     } catch (error) {
       if (sequence !== requestSequence.current) return
+      if (error instanceof Error && error.name === 'AbortError') return
       setLoadError(error instanceof Error ? error.message : String(error))
       setItems([])
     } finally {
-      if (sequence === requestSequence.current) setLoading(false)
+      if (sequence === requestSequence.current) {
+        if (requestController.current === controller) requestController.current = null
+        setLoading(false)
+      }
     }
   }
 
@@ -205,6 +290,8 @@ function ReferenceField(props: FieldProps) {
     // Invalidate a request started for the previous field/environment before
     // changing to inline data or an unavailable dependency.
     requestSequence.current += 1
+    requestController.current?.abort()
+    requestController.current = null
     itemCache.current.clear()
     setUpdatedAt(null)
     if (field.options !== undefined) {
@@ -221,6 +308,8 @@ function ReferenceField(props: FieldProps) {
       return
     }
   }, [field.options, dependencyBlocked, dependencySignature, environment, reference.endpoint])
+
+  useEffect(() => () => requestController.current?.abort(), [])
 
   useEffect(() => {
     if (!serverBacked) return
@@ -468,6 +557,8 @@ export function PluralField(props: FieldProps) {
   )
 }
 
+const MemoizedPluralField = memo(PluralField, sameFieldProps)
+
 export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, review, onReview, dialogContext }: {
   fields: FieldDocument[]
   values: Record<string, unknown>
@@ -481,14 +572,22 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
   onReview?: FieldProps['onReview']
   dialogContext?: FieldProps['dialogContext']
 }) {
-  const change = (key: string, value: unknown) => onValuesChange({ ...values, [key]: value })
-  const remove = (key: string) => {
-    const next = { ...values }
+  const valuesRef = useRef(values)
+  const callbacksRef = useRef({ onValuesChange, onFieldChange, onReview })
+  valuesRef.current = values
+  callbacksRef.current = { onValuesChange, onFieldChange, onReview }
+  const change = useCallback((key: string, value: unknown) => {
+    callbacksRef.current.onValuesChange({ ...valuesRef.current, [key]: value })
+  }, [])
+  const remove = useCallback((key: string) => {
+    const next = { ...valuesRef.current }
     delete next[key]
-    onValuesChange(next)
-  }
+    callbacksRef.current.onValuesChange(next)
+  }, [])
+  const fieldChanged = useCallback((path: string) => callbacksRef.current.onFieldChange?.(path), [])
+  const reviewField = useCallback((key: string, accept: boolean) => callbacksRef.current.onReview?.(key, accept), [])
   return <div className="fields-grid">{fields.map((field) => (
-    <PluralField
+    <MemoizedPluralField
       key={field.key}
       field={field}
       value={values[field.key]}
@@ -501,9 +600,9 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
       onChange={(value) => change(field.key, value)}
       onObjectChange={change}
       onObjectDelete={remove}
-      onFieldChange={onFieldChange}
+      onFieldChange={fieldChanged}
       review={review}
-      onReview={onReview}
+      onReview={reviewField}
       dialogContext={dialogContext}
     />
   ))}</div>

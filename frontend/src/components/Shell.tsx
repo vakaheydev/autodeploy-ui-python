@@ -1,8 +1,10 @@
+import { Suspense } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { Boxes, CircleAlert, ClipboardList, History, Home, LoaderCircle, Moon, Puzzle, Search, Settings, Sparkles, Sun, X } from './Icons'
 import { useEnvironment } from '../environment'
 import { useTheme } from '../theme'
 import { SearchableSelect } from './SearchableSelect'
+import { Spinner } from './Feedback'
 
 const links = [
   { to: '/', label: 'Главная', icon: Home },
@@ -60,7 +62,7 @@ export function Shell() {
             <div className="topbar-note"><span className="status-dot online" /> API подключён</div>
           </div>
         </header>
-        <div className="page-container"><Outlet /></div>
+        <div className="page-container"><Suspense fallback={<Spinner label="Загружаю раздел…" />}><Outlet /></Suspense></div>
       </main>
     </div>
   )

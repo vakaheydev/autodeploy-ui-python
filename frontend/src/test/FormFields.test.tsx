@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FormFields } from '../components/FormFields'
 import type { FieldDocument } from '../types'
@@ -38,6 +39,27 @@ describe('FormFields', () => {
     expect(onValuesChange).toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Принять Название' }))
     expect(onReview).toHaveBeenCalledWith('name', true)
+  })
+
+  it('preserves edits from separate memoized fields', async () => {
+    const user = userEvent.setup()
+    const fields = [
+      base({ key: 'name', path: 'name', label: 'Название' }),
+      base({ key: 'description', path: 'description', label: 'Описание' }),
+    ]
+    function Harness() {
+      const [values, setValues] = useState<Record<string, unknown>>({ name: '', description: '' })
+      return <>
+        <FormFields fields={fields} values={values} environment="test_int" formId="x" errors={[]} onValuesChange={setValues} />
+        <output>{JSON.stringify(values)}</output>
+      </>
+    }
+
+    render(<Harness />)
+    await user.type(screen.getByRole('textbox', { name: /Название/ }), 'Orders')
+    await user.type(screen.getByRole('textbox', { name: /Описание/ }), 'Internal API')
+
+    expect(screen.getByRole('status')).toHaveTextContent('{"name":"Orders","description":"Internal API"}')
   })
 
   it('renders validation feedback inside the affected field', () => {
@@ -151,11 +173,15 @@ describe('FormFields', () => {
   })
 
   it('loads a large reference from the server once and renders the result', async () => {
-    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
-      items: [{ id: 'api-103', name: 'service103', context_path: '/api/v1/users/service103' }],
-      total: 1,
-      has_more: false,
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { limit?: number }
+      expect(body.limit).toBe(100)
+      return new Response(JSON.stringify({
+        items: [{ id: 'api-103', name: 'service103', context_path: '/api/v1/users/service103' }],
+        total: 1,
+        has_more: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
     vi.stubGlobal('fetch', fetch)
     const field = base({
       key: 'api', path: 'api', label: 'API', type: 'select',

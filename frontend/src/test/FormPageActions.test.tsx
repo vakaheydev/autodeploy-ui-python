@@ -62,6 +62,40 @@ describe('FormPage custom actions', () => {
     expect(screen.queryByText('Python runtime')).not.toBeInTheDocument()
   })
 
+  it('does not recalculate a form whose document has no dynamic fields or actions', async () => {
+    const user = userEvent.setup()
+    const staticDocument: FormDocument = {
+      ...document,
+      itsm_support: false,
+      custom_actions: [],
+      fields: [{
+        key: 'name', path: 'name', label: 'Название', type: 'text', required: false,
+        visible: true, dynamic: false, placeholder: '', default: '', hint: '',
+        file_type: '', width: 1, plural: false, plural_max: null,
+        depends_on: null, depends_on_field: null,
+      }],
+      initial_values: { name: '' },
+    }
+    const fetch = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify(staticDocument), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetch)
+
+    render(
+      <MemoryRouter initialEntries={['/forms/api.create']}>
+        <EnvironmentProvider>
+          <Routes><Route path="/forms/:formId" element={<FormPage />} /></Routes>
+        </EnvironmentProvider>
+      </MemoryRouter>,
+    )
+
+    await user.type(await screen.findByRole('textbox', { name: 'Название' }), 'Orders')
+    await new Promise((resolve) => window.setTimeout(resolve, 300))
+
+    expect(fetch.mock.calls.some(([input]) => String(input).endsWith('/state'))).toBe(false)
+  })
+
   it('renders a server action dialog and applies its Python result to the form', async () => {
     const user = userEvent.setup()
     const formDocument: FormDocument = {
