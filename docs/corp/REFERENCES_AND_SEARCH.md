@@ -31,7 +31,14 @@ dictionary item не хранится в форме и повторно разр
 Frontend показывает в filter placeholder поля `search_keys`, выводит их рядом с
 элементом, сохраняет выбранные значения сверху выдачи и открывает `detail_keys`
 в read-only карточке по правому клику. Нажатие на значение в карточке копирует
-его. Эти UI-возможности не меняют storage contract.
+его. Рядом с каждым `SELECT`/`MULTISELECT`, имеющим `reference`, отображается
+кнопка обновления. Она сначала открывает подтверждение с окружением и реальным
+timestamp shared cache; только отдельное подтверждение пользователя запускает
+invalidate всего семейства `resource` (включая dependency-варианты с суффиксом
+`__...`) и повторную загрузку. Отмена не вызывает handler. Эта кнопка также
+работает для маленьких справочников, чьи начальные options были встроены в form
+document, и для справочников action dialog/plugin fields. Эти UI-возможности не
+меняют storage contract.
 
 ## Corporate handler
 
@@ -211,6 +218,13 @@ resource + environment + отсортированные dependency params
 `cache.invalidate(resource, environment)`; если corporate handler использует
 второй cache, он должен согласовать с этим действием его invalidation либо не
 обещать поддержку refresh.
+
+Проверка даты перед подтверждением выполняется в status-only режиме: public
+runtime читает самый новый timestamp логического `resource` и его
+dependency-вариантов, не
+создаёт resolver, не вызывает handler и не продлевает TTL. Поэтому отображаемая
+дата относится именно к server-side cache, а не ко времени последнего запроса
+браузера.
 
 Этот же shared cache обслуживает быстрые `@`-ссылки в AI-чате. Поиск упоминаний
 использует ровно API/application `ReferenceConfig`, возвращённые

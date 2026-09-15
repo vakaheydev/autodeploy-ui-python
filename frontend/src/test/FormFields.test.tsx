@@ -11,6 +11,11 @@ const base = (overrides: Partial<FieldDocument>): FieldDocument => ({
   depends_on: null, depends_on_field: null, ...overrides,
 })
 
+const formatDate = (value: number) => new Intl.DateTimeFormat('ru-RU', {
+  dateStyle: 'long',
+  timeStyle: 'medium',
+}).format(new Date(value * 1000))
+
 describe('FormFields', () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -67,6 +72,40 @@ describe('FormFields', () => {
     expect(screen.getByRole('checkbox', { name: 'Internal' })).toBeChecked()
     await user.click(screen.getByRole('checkbox', { name: 'External' }))
     expect(onValuesChange).toHaveBeenLastCalledWith({ ingresses: ['internal', 'external'] })
+  })
+
+  it('confirms a reference refresh and shows the server cache timestamp', async () => {
+    const user = userEvent.setup()
+    const updatedAt = 1_700_000_000
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { cache_status_only?: boolean; refresh?: boolean }
+      if (body.cache_status_only) {
+        return new Response(JSON.stringify({ environment: 'test_int', updated_at: updatedAt }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ items: [{ id: 'internal', name: 'Internal' }], total: 1, has_more: false, updated_at: updatedAt + 10 }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const field = base({
+      key: 'ingresses', path: 'ingresses', label: 'Ингрессы', type: 'multiselect',
+      reference: { source: 'local', resource: 'ingress.json', value_key: 'id', label_key: 'name', search_keys: ['name'], detail_keys: [], required_params: [], endpoint: '/options' },
+      options: [{ id: 'internal', name: 'Internal' }],
+    })
+    render(<FormFields fields={[field]} values={{ ingresses: [] }} environment="test_int" formId="x" errors={[]} onValuesChange={() => undefined} />)
+
+    expect(fetch).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Обновить справочник «Ингрессы»' }))
+    const dialog = screen.getByRole('dialog', { name: 'Обновление справочника' })
+    await waitFor(() => expect(within(dialog).getByText('TEST INT')).toBeVisible())
+    expect(within(dialog).getByText(formatDate(updatedAt))).toBeVisible()
+    await user.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: 'Обновить справочник «Ингрессы»' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    await user.click(within(screen.getByRole('dialog', { name: 'Обновление справочника' })).getByRole('button', { name: 'Обновить' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3))
+    const refreshBody = JSON.parse(String(fetch.mock.calls[2][1]?.body ?? '{}')) as { refresh?: boolean }
+    expect(refreshBody.refresh).toBe(true)
   })
 
   it('keeps selected reference items first and opens a copyable read-only card', async () => {

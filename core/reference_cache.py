@@ -111,6 +111,23 @@ class ReferenceCache:
 
             return None
 
+    def get_latest_timestamp(
+        self, resource: str, environment: str
+    ) -> Optional[float]:
+        """Return the newest timestamp for a resource and its parameter variants.
+
+        Dependent reference handlers conventionally append ``__...`` to the
+        logical resource key.  The browser refreshes a field, not one opaque
+        handler key, so its status must include those variants as well.
+        """
+        prefix = f"{resource}__"
+        timestamps = [
+            entry.timestamp
+            for entry in self.read_entries(environment)
+            if entry.resource == resource or entry.resource.startswith(prefix)
+        ]
+        return max(timestamps, default=None)
+
     @property
     def revision(self) -> int:
         """Monotonic process-local revision for derived read-only indexes."""
@@ -175,6 +192,19 @@ class ReferenceCache:
         """
         with self._lock:
             self._invalidate_locked(resource, environment)
+
+    def invalidate_family(self, resource: str, environment: str) -> None:
+        """Invalidate a logical resource and every parameterized variant."""
+        prefix = f"{resource}__"
+        resources = {
+            entry.resource
+            for entry in self.read_entries(environment)
+            if entry.resource == resource or entry.resource.startswith(prefix)
+        }
+        resources.add(resource)
+        with self._lock:
+            for item in resources:
+                self._invalidate_locked(item, environment)
 
     def _invalidate_locked(
         self, resource: Optional[str], environment: Optional[str]

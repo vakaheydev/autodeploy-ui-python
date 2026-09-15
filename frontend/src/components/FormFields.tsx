@@ -1,9 +1,10 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { post } from '../api'
-import { Check, FileJson, Plus, RefreshCw, Search, Trash2, Upload, X } from './Icons'
+import { Check, FileJson, LoaderCircle, Plus, RefreshCw, Search, Trash2, Upload, X } from './Icons'
 import type { FieldDocument, ReferenceItem, ValidationError } from '../types'
 import { SearchableSelect } from './SearchableSelect'
 import { ReferenceDetailsModal } from './ReferenceDetailsModal'
+import { Modal } from './Feedback'
 
 interface ReviewEntry {
   confidence: string
@@ -38,6 +39,12 @@ interface OptionsResponse {
   items: ReferenceItem[]
   total: number
   has_more: boolean
+  updated_at?: number | null
+}
+
+interface ReferenceCacheStatusResponse {
+  environment: string
+  updated_at: number | null
 }
 
 function errorsForField(field: FieldDocument, errors: ValidationError[]) {
@@ -71,6 +78,14 @@ function emptyDependency(value: unknown) {
   return typeof value === 'object' && Object.keys(value as object).length === 0
 }
 
+function formatReferenceUpdatedAt(value: number | null) {
+  if (value === null) return 'Справочник ещё не обновлялся'
+  return new Intl.DateTimeFormat('ru-RU', {
+    dateStyle: 'long',
+    timeStyle: 'medium',
+  }).format(new Date(value * 1000))
+}
+
 function ReferenceField(props: FieldProps) {
   const { field, values, rootValues, environment, disabled, onChange } = props
   const reference = field.reference!
@@ -82,6 +97,10 @@ function ReferenceField(props: FieldProps) {
   const [loadError, setLoadError] = useState('')
   const [total, setTotal] = useState(field.options?.length ?? 0)
   const [detailItem, setDetailItem] = useState<ReferenceItem | null>(null)
+  const [refreshDialogOpen, setRefreshDialogOpen] = useState(false)
+  const [refreshStatusLoading, setRefreshStatusLoading] = useState(false)
+  const [refreshStatusError, setRefreshStatusError] = useState('')
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const requestSequence = useRef(0)
   const itemCache = useRef(new Map<string, ReferenceItem>())
   const explicitDependencies = field.reference_dependencies ?? []
@@ -121,31 +140,33 @@ function ReferenceField(props: FieldProps) {
   // restored (manual and AI drafts share this path).
   const selectionSignature = JSON.stringify(selectedValues)
 
+  const referenceRequest = (extra: Record<string, unknown>) => props.dialogContext ? {
+    environment,
+    form_values: props.dialogContext.formValues,
+    dialog_values: rootValues,
+    form_version: props.dialogContext.formVersion,
+    ...extra,
+  } : {
+    environment,
+    values: rootValues,
+    ...extra,
+  }
+
   const load = async (refresh = false, requestedQuery = query) => {
     const sequence = ++requestSequence.current
     setLoading(true)
     setLoadError('')
     try {
-      const result = await post<OptionsResponse>(reference.endpoint, props.dialogContext ? {
-        environment,
-        form_values: props.dialogContext.formValues,
-        dialog_values: rootValues,
-        form_version: props.dialogContext.formVersion,
+      const result = await post<OptionsResponse>(reference.endpoint, referenceRequest({
         query: requestedQuery,
         offset: 0,
         limit: 500,
         refresh,
-      } : {
-        environment,
-        values: rootValues,
-        query: requestedQuery,
-        offset: 0,
-        limit: 500,
-        refresh,
-      })
+      }))
       if (sequence !== requestSequence.current) return
       setItems(result.items)
       setTotal(result.total)
+      if (result.updated_at !== undefined) setUpdatedAt(result.updated_at)
     } catch (error) {
       if (sequence !== requestSequence.current) return
       setLoadError(error instanceof Error ? error.message : String(error))
@@ -155,11 +176,37 @@ function ReferenceField(props: FieldProps) {
     }
   }
 
+  const openRefreshDialog = async () => {
+    setRefreshDialogOpen(true)
+    setRefreshStatusLoading(true)
+    setRefreshStatusError('')
+    try {
+      const result = await post<ReferenceCacheStatusResponse>(reference.endpoint, referenceRequest({
+        query: '',
+        offset: 0,
+        limit: 1,
+        refresh: false,
+        cache_status_only: true,
+      }))
+      setUpdatedAt(result.updated_at)
+    } catch (error) {
+      setRefreshStatusError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRefreshStatusLoading(false)
+    }
+  }
+
+  const confirmRefresh = () => {
+    setRefreshDialogOpen(false)
+    void load(true, query)
+  }
+
   useEffect(() => {
     // Invalidate a request started for the previous field/environment before
     // changing to inline data or an unavailable dependency.
     requestSequence.current += 1
     itemCache.current.clear()
+    setUpdatedAt(null)
     if (field.options !== undefined) {
       setItems(field.options)
       setTotal(field.options.length)
@@ -211,6 +258,23 @@ function ReferenceField(props: FieldProps) {
     setDetailItem(item)
   }
   const details = detailItem && <ReferenceDetailsModal item={detailItem} title={label(detailItem)} onClose={() => setDetailItem(null)} />
+  const refreshConfirmation = refreshDialogOpen && <Modal
+    title="Обновление справочника"
+    onClose={() => setRefreshDialogOpen(false)}
+    footer={<>
+      <button type="button" className="button secondary" onClick={() => setRefreshDialogOpen(false)}>Отмена</button>
+      <button type="button" className="button primary" disabled={refreshStatusLoading || loading || dependencyBlocked} onClick={confirmRefresh}><RefreshCw size={16} /> Обновить</button>
+    </>}
+  >
+    <div className="reference-refresh-dialog">
+      <p>Заново загрузить данные справочника <strong>«{field.label}»</strong>?</p>
+      <dl className="reference-refresh-meta">
+        <div><dt>Окружение</dt><dd>{environment.replaceAll('_', ' ').toUpperCase()}</dd></div>
+        <div><dt>Последнее обновление</dt><dd>{refreshStatusLoading ? <span className="reference-refresh-loading"><LoaderCircle className="spin" size={15} /> Проверяю…</span> : formatReferenceUpdatedAt(updatedAt)}</dd></div>
+      </dl>
+      {refreshStatusError && <div className="alert error" role="alert">{refreshStatusError}</div>}
+    </div>
+  </Modal>
 
   if (field.type === 'select') {
     return (
@@ -230,12 +294,13 @@ function ReferenceField(props: FieldProps) {
             ariaInvalid={invalid}
             ariaDescribedBy={errorId}
           />
-          {reference.source === 'http' && <button type="button" className="icon-button reference-refresh" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
+          <button type="button" className="icon-button reference-refresh" disabled={loading || disabled || dependencyBlocked} onClick={() => void openRefreshDialog()} title="Обновить справочник" aria-label={`Обновить справочник «${field.label}»`}><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>
         </div>
         {loading && <small className="muted">Загружаю справочник…</small>}
         {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
         {loadError && <small className="field-load-error">{loadError}</small>}
         {details}
+        {refreshConfirmation}
       </div>
     )
   }
@@ -250,7 +315,7 @@ function ReferenceField(props: FieldProps) {
     <div className="reference-control multiselect">
       <div className="reference-toolbar">
         <label className="mini-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder} /></label>
-        {reference.source === 'http' && <button type="button" className="icon-button" disabled={loading || disabled} onClick={() => void load(true)} title="Обновить справочник"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>}
+        <button type="button" className="icon-button reference-refresh" disabled={loading || disabled || dependencyBlocked} onClick={() => void openRefreshDialog()} title="Обновить справочник" aria-label={`Обновить справочник «${field.label}»`}><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>
       </div>
       <div className="option-list" role="group" aria-label={field.label} aria-invalid={invalid || undefined} aria-describedby={errorId}>
         {ordered.map((item) => {
@@ -264,6 +329,7 @@ function ReferenceField(props: FieldProps) {
       {!loading && serverBacked && total > items.length && <small className="muted">Показано {items.length} из {total}. Уточните поиск.</small>}
       {loadError && <small className="field-load-error">{loadError}</small>}
       {details}
+      {refreshConfirmation}
     </div>
   )
 }

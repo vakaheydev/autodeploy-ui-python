@@ -203,6 +203,7 @@ class PluginRuntime:
         offset: int,
         limit: int,
         refresh: bool,
+        cache_status_only: bool = False,
     ) -> dict[str, Any]:
         plugin = self.get(plugin_id)
         self.container.forms._ensure_environment(environment)
@@ -211,8 +212,16 @@ class PluginRuntime:
         )
         if field.reference is None:
             raise ValueError("Поле не связано со справочником")
+        if cache_status_only:
+            return {
+                "environment": environment,
+                "updated_at": self.container.reference_cache.get_latest_timestamp(
+                    field.reference.resource,
+                    environment,
+                ),
+            }
         if refresh:
-            self.container.reference_cache.invalidate(
+            self.container.reference_cache.invalidate_family(
                 field.reference.resource, environment
             )
         scoped = self.container.forms._values_for_field_path(values, field_path)
@@ -255,6 +264,10 @@ class PluginRuntime:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(page) < total,
+            "updated_at": self.container.reference_cache.get_latest_timestamp(
+                field.reference.resource,
+                environment,
+            ),
         }
 
     def run_operation(

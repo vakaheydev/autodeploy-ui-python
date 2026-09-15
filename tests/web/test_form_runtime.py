@@ -350,6 +350,65 @@ def test_large_reference_is_searched_server_side_and_keeps_selection(
     assert result["has_more"] is False
 
 
+def test_reference_cache_status_does_not_load_or_invalidate_catalog(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    form = container.forms.get_form("other.ingress.enable", "test_int")
+    field = next(item for item in form.fields if item.key == "apis")
+    assert field.reference is not None
+    container.reference_cache.set(
+        field.reference.resource,
+        "test_int",
+        [{"id": "api-1", "name": "Payments"}],
+    )
+    dependent_resource = f"{field.reference.resource}__owner=payments"
+    container.reference_cache.set(
+        dependent_resource,
+        "test_int",
+        [{"id": "api-2", "name": "Payments methods"}],
+    )
+    timestamp = container.reference_cache.get_timestamp(
+        dependent_resource,
+        "test_int",
+    )
+
+    def fail_if_resolved():
+        raise AssertionError("status-only request must not create a resolver")
+
+    monkeypatch.setattr(container, "new_reference_resolver", fail_if_resolved)
+    result = container.forms.options(
+        "other.ingress.enable",
+        "apis",
+        "test_int",
+        {},
+        "",
+        0,
+        1,
+        False,
+        True,
+    )
+
+    assert result == {"environment": "test_int", "updated_at": timestamp}
+    assert container.reference_cache.get_timestamp(
+        dependent_resource,
+        "test_int",
+    ) == timestamp
+
+    container.reference_cache.invalidate_family(
+        field.reference.resource,
+        "test_int",
+    )
+    assert container.reference_cache.get_timestamp(
+        field.reference.resource,
+        "test_int",
+    ) is None
+    assert container.reference_cache.get_timestamp(
+        dependent_resource,
+        "test_int",
+    ) is None
+
+
 def test_global_search_uses_extension_catalog_configuration(
     container: ApplicationContainer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

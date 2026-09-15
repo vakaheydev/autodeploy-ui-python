@@ -829,6 +829,7 @@ class FormRuntime:
         offset: int,
         limit: int,
         refresh: bool,
+        cache_status_only: bool = False,
     ) -> dict[str, Any]:
         """Resolve one dialog reference using only explicitly declared inputs."""
         self._ensure_environment(environment)
@@ -839,8 +840,16 @@ class FormRuntime:
         field, siblings = self._find_field_context(dialog.fields, field_path)
         if field.reference is None:
             raise ValueError("Поле диалога не связано со справочником")
+        if cache_status_only:
+            return {
+                "environment": environment,
+                "updated_at": self.container.reference_cache.get_latest_timestamp(
+                    field.reference.resource,
+                    environment,
+                ),
+            }
         if refresh:
-            self.container.reference_cache.invalidate(
+            self.container.reference_cache.invalidate_family(
                 field.reference.resource,
                 environment,
             )
@@ -878,6 +887,10 @@ class FormRuntime:
                 "offset": offset,
                 "limit": limit,
                 "has_more": False,
+                "updated_at": self.container.reference_cache.get_latest_timestamp(
+                    field.reference.resource,
+                    environment,
+                ),
             }
         all_items = self._resolve_reference(
             field,
@@ -922,6 +935,10 @@ class FormRuntime:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(page) < total,
+            "updated_at": self.container.reference_cache.get_latest_timestamp(
+                field.reference.resource,
+                environment,
+            ),
         }
 
     def run_action_dialog_button(
@@ -1749,14 +1766,23 @@ class FormRuntime:
         offset: int,
         limit: int,
         refresh: bool,
+        cache_status_only: bool = False,
     ) -> dict[str, Any]:
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         field, siblings = self._find_field_context(form.fields, field_path)
         if field.reference is None:
             raise ValueError("Поле не связано со справочником")
+        if cache_status_only:
+            return {
+                "environment": environment,
+                "updated_at": self.container.reference_cache.get_latest_timestamp(
+                    field.reference.resource,
+                    environment,
+                ),
+            }
         if refresh:
-            self.container.reference_cache.invalidate(
+            self.container.reference_cache.invalidate_family(
                 field.reference.resource, environment
             )
         scoped_values = self._values_for_field_path(values, field_path)
@@ -1797,6 +1823,10 @@ class FormRuntime:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(selected) < total,
+            "updated_at": self.container.reference_cache.get_latest_timestamp(
+                field.reference.resource,
+                environment,
+            ),
         }
 
     def search(

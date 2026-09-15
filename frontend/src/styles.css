@@ -261,7 +261,16 @@ p { color: var(--muted); line-height: 1.58; }
 .reference-control .select-options small { max-width: none; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 .select-empty { padding: 16px 9px; color: var(--muted); font-size: 10px; text-align: center; }
 .reference-select-row { display: flex; align-items: center; gap: 7px; }
-.reference-refresh { flex: 0 0 auto; }
+.reference-refresh { flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface); }
+.reference-refresh:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 42%, var(--border)); }
+.reference-refresh-dialog { display: grid; gap: 14px; }
+.reference-refresh-dialog > p { margin: 0; }
+.reference-refresh-dialog > p strong { color: var(--text); }
+.reference-refresh-meta { display: grid; gap: 7px; margin: 0; }
+.reference-refresh-meta > div { display: grid; grid-template-columns: minmax(125px, .45fr) minmax(0, 1fr); align-items: center; gap: 14px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.reference-refresh-meta dt { color: var(--muted); font-size: 10px; font-weight: 650; }
+.reference-refresh-meta dd { margin: 0; color: var(--text); font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+.reference-refresh-loading { display: inline-flex; align-items: center; gap: 6px; color: var(--primary); }
 .composer-options .select-popover { top: auto; bottom: calc(100% + 7px); }
 
 /* Catalog search */

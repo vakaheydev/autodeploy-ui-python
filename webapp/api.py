@@ -371,6 +371,7 @@ def plugin_reference_options(
             body.offset,
             body.limit,
             body.refresh,
+            body.cache_status_only,
         )
     except Exception as exc:
         _raise_runtime_error(exc)
@@ -604,6 +605,7 @@ def form_action_dialog_reference_options(
             body.offset,
             body.limit,
             body.refresh,
+            body.cache_status_only,
         )
     except Exception as exc:
         _raise_runtime_error(exc)
@@ -649,6 +651,7 @@ def reference_options(
             body.offset,
             body.limit,
             body.refresh,
+            body.cache_status_only,
         )
     except Exception as exc:
         _raise_runtime_error(exc)
