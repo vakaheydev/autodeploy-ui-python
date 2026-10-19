@@ -42,6 +42,36 @@ The optional AutoDeploy MCP is disabled by default. Set
 `AUTODEPLOY_MCP_ENABLED=true` and restart to expose `/api/mcp`; see
 [MCP.md](MCP.md).
 
+## OpenCode 1.18.18 / 2.0.32
+
+Install OpenCode separately and make `opencode` available on `PATH`. For an npm
+installation the V2 package is `@opencode/cli@2.0.32`; the supported V1 package
+is `opencode-ai@1.18.18`. The AutoDeploy release
+does not bundle the CLI. Verify it with `opencode --version`.
+
+**Создать сервер** starts `opencode serve --hostname 127.0.0.1 --port <free-port>`
+in the isolated runtime. The CLI version determines its launch configuration;
+connections automatically select the V1 or V2 adapter from the server's reported
+version. V2 requires authentication: AutoDeploy uses the saved
+server password or generates an in-memory password for its owned process.
+The V2 username is `opencode`. Shell password aliases cannot override it.
+V1 preserves optional Basic Auth and the configured username.
+
+For **Подключиться**, start a V2 server with a known `OPENCODE_PASSWORD`, then
+save the same password and its localhost address in AutoDeploy settings.
+`OPENCODE_SERVER_PASSWORD` remains an upstream alias. Opening the separate
+OpenCode Web UI requires its own login; set a known password before creating
+the server if you need that UI. Passwords are never included in session links.
+
+Existing provider/agent configuration is normalized by OpenCode V2. AutoDeploy
+uses the native API for V2 and native `mcp.servers.autodeploy` configuration with
+`disabled: false`, `codemode: false` and `oauth: false`. Other MCP entries are
+preserved. V1 receives the original `mcp.autodeploy` entry with `enabled: true`.
+The managed entry is switched when connecting to a different version; provider
+configuration for each version remains owned by OpenCode/the operator.
+See [AI_AGENT_ARCHITECTURE.md](AI_AGENT_ARCHITECTURE.md) for transport
+and session policy details.
+
 Logs:
 
 - launcher/update: `logs/launcher.log`;

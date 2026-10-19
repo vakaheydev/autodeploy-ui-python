@@ -2,6 +2,47 @@
 
 Status: **implemented for the web Copilot**.
 
+## OpenCode transport
+
+Supported reference versions are **OpenCode 1.18.18 and 2.0.32**.
+`connection.py` automatically selects `client.py` for 1.x or `client_v2.py` for
+2.x before sending any session mutation. It probes `/api/info` first and falls
+back to `/global/health` only for a missing route or the V1 Web UI HTML response.
+Authentication, network and server errors never trigger fallback. The selected
+adapter stays fixed until reconnect. V2 projects its native `/api` messages into
+the same Python agent contract used by V1.
+
+V2 readiness uses `/api/info` followed by bounded polling for required agents,
+because the first plugin scan can finish after the HTTP listener starts.
+Models and variants come from `/api/model`, providers from `/api/provider`, and
+the default from the agent or `/api/model/default`. Disabled models are omitted.
+
+Each V2 session explicitly carries its isolated `location.directory` and native
+`permissions` rules (`action`, `resource`, `effect`). Rules deny everything first
+and grant only the selected MCP tools. Selected MCP servers are exposed directly
+with `codemode: false` in that location; the `execute` tool remains denied.
+The shared/global configuration file is never rewritten by this adaptation.
+
+In V2, trusted per-turn instructions use a session instruction entry. Context is
+enqueued with `resume: false`; a normal prompt resumes execution. The client
+polls the persisted message projection and pending permissions, publishes tool
+and text changes through the existing application events, and completes only
+after the idle marker following the admitted prompt. Historical idle markers
+cannot complete a new turn. Cancellation and timeout interrupt the server loop.
+History follows every pagination cursor. Reasoning and raw provider error
+bodies are excluded from the projection.
+
+V1 retains its existing synchronous message/SSE transport, permission schema,
+configured-model discovery and context storage. Both versions keep the same
+Python validation, exact MCP allowlists and operator confirmation boundaries.
+
+The optional real-CLI contract test uses local fake provider/MCP endpoints and
+does not contact a paid model:
+
+```bash
+AUTODEPLOY_TEST_OPENCODE=/path/to/opencode python -m pytest tests/test_opencode_v2_live.py
+```
+
 ## Decision
 
 The web assistant uses one conversational orchestrator and two isolated helper

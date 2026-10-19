@@ -3060,7 +3060,10 @@ class ManagerPolicyTests(unittest.TestCase):
             manager._prepare_runtime()
             config = json.loads((runtime / "opencode.json").read_text(encoding="utf-8"))
             self.assertIn("existing", config["mcp"])
-            self.assertEqual(config["mcp"]["autodeploy"]["url"], "http://127.0.0.1:8765/api/mcp")
+            self.assertEqual(config["mcp"]["servers"]["autodeploy"], {
+                "type": "remote", "url": "http://127.0.0.1:8765/api/mcp",
+                "disabled": False, "codemode": False, "oauth": False,
+            })
 
     def test_owned_server_is_terminated_on_stop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3195,7 +3198,7 @@ class ServiceAbstractionTests(unittest.TestCase):
             from http.server import BaseHTTPRequestHandler, HTTPServer
 
             if "--version" in sys.argv:
-                print("1.18.18")
+                print("2.0.32")
                 raise SystemExit(0)
 
             host = sys.argv[sys.argv.index("--hostname") + 1]
@@ -3206,9 +3209,9 @@ class ServiceAbstractionTests(unittest.TestCase):
                     pass
 
                 def do_GET(self):
-                    if self.path == "/global/health":
-                        body = {"healthy": True, "version": "1.18.18"}
-                    elif self.path == "/agent":
+                    if self.path == "/api/info":
+                        body = {"version": "2.0.32", "pid": 1, "urls": [], "paths": {"tmp": "/tmp"}}
+                    elif self.path == "/api/agent":
                         body = [
                             {"name": "form-extractor", "mode": "primary"},
                             {"name": "form-router", "mode": "primary"},
@@ -3246,7 +3249,7 @@ class ServiceAbstractionTests(unittest.TestCase):
             try:
                 client = manager.create()
                 self.assertTrue(client.health().healthy)
-                self.assertEqual(manager.status.version, "1.18.18")
+                self.assertEqual(manager.status.version, "2.0.32")
                 self.assertTrue(manager.status.address.startswith("http://127.0.0.1:"))
                 self.assertEqual(manager.status.ownership, "owned")
                 self.assertTrue(manager.status.agent_loaded)

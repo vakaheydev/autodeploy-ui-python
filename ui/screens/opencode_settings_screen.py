@@ -32,7 +32,7 @@ from core.logging_setup import UI_LOG_BUFFER
 from opencode_integration.manager import (
     DEFAULT_SERVER_URL,
     REQUIRED_AGENTS,
-    TARGET_OPENCODE_VERSION,
+    SUPPORTED_OPENCODE_VERSIONS,
 )
 from ui.dialogs import show_error, show_info
 from ui.screens.base_screen import BaseScreen
@@ -523,8 +523,8 @@ class OpenCodeSettingsScreen(BaseScreen):
         self._status_label.config(fg=colors.get(status.state, theme.C["text_muted"]))
         detail = [status.message]
         if status.version:
-            note = "" if status.version == TARGET_OPENCODE_VERSION else (
-                f" — ожидается {TARGET_OPENCODE_VERSION}"
+            note = "" if status.version in SUPPORTED_OPENCODE_VERSIONS else (
+                f" — проверены {', '.join(SUPPORTED_OPENCODE_VERSIONS)}"
             )
             detail.append(f"Версия: {status.version}{note}")
         if status.address:

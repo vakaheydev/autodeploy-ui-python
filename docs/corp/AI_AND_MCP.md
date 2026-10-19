@@ -2,7 +2,7 @@
 
 ## Текущая topology
 
-Web flow использует OpenCode 1.18.18 и три роли:
+Web flow поддерживает OpenCode 1.18.18 и 2.0.32 и использует три роли:
 
 ```text
 operator
@@ -15,6 +15,16 @@ operator
   -> Python draft + human review
   -> normal form preview/confirmation/submit
 ```
+
+Public core автоматически определяет версию сервера и выбирает V1 или V2
+адаптер. Прежний V1 transport сохраняется. Для V2 используется native API
+`/api/*`. Provider/model/variants берутся
+из активного каталога V2. Сессии создаются в изолированной runtime-директории с
+native deny-by-default rules (`action`, `resource`, `effect`). Выбранные MCP
+экспонируются напрямую (`codemode: false`) только в этой location; глобальный
+config не переписывается, `execute` остаётся запрещён. `manual` по-прежнему
+требует разового подтверждения через session-scoped permission reply.
+Корпоративные extension contracts и Python draft lifecycle не меняются.
 
 `autodeploy-copilot` — единственный агент, разговаривающий с пользователем.
 Обычный вопрос или приветствие не запускает form search. Main session не

@@ -58,6 +58,10 @@ class OpenCodeStructuredOutputError(OpenCodeError):
     """Модель не смогла сформировать structured output."""
 
 
+class OpenCodeProtocolError(OpenCodeError):
+    """The server did not return a JSON API response (for example, Web UI HTML)."""
+
+
 class OpenCodeAgentMissingError(OpenCodeError):
     """Специализированный агент не загружен сервером."""
 
@@ -1344,7 +1348,7 @@ class OpenCodeClient:
                 try:
                     return json.loads(raw.decode("utf-8"))
                 except json.JSONDecodeError as exc:
-                    raise OpenCodeError("OpenCode вернул невалидный JSON") from exc
+                    raise OpenCodeProtocolError("OpenCode вернул невалидный JSON") from exc
         except urllib.error.HTTPError as exc:
             raw = exc.read(16_384).decode("utf-8", errors="replace")
             # Не переносим response body в UI/исключение: provider способен

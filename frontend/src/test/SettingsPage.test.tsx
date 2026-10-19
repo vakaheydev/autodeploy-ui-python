@@ -100,7 +100,7 @@ describe('SettingsPage', () => {
         description: '', required: true, restart_required: false, minimum: null, maximum: null, configured: true, value: 'http://127.0.0.1:4096',
       }] },
     ] }
-    const status = { state: 'ready', message: 'Подключено', version: '1.18.18', address: 'http://127.0.0.1:4096', pid: null, agent_loaded: true, ownership: 'external', runtime_dir: '' }
+    const status = { state: 'ready', message: 'Подключено', version: '2.0.32', address: 'http://127.0.0.1:4096', pid: null, agent_loaded: true, ownership: 'external', runtime_dir: '' }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
       const payload = path.includes('/opencode/status') ? status : path.includes('/opencode/mcp') ? { connected: true, items: [] } : document
@@ -110,7 +110,7 @@ describe('SettingsPage', () => {
     render(<MemoryRouter initialEntries={['/settings?section=OpenCode']}><SettingsPage /></MemoryRouter>)
 
     expect(await screen.findByRole('heading', { name: 'OpenCode Server' })).toBeVisible()
-    expect(screen.getByText('http://127.0.0.1:4096 · OpenCode 1.18.18')).toBeVisible()
+    expect(screen.getByText('http://127.0.0.1:4096 · OpenCode 2.0.32')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Подключиться' })).toBeVisible()
     expect(screen.getByLabelText(/Адрес сервера/)).toHaveValue('http://127.0.0.1:4096')
   })

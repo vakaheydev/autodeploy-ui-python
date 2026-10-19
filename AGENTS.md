@@ -42,7 +42,7 @@ example package as source code in this repository.
 - `handlers/`: reference handlers used by Python forms.
 - `webapp/`: FastAPI application, API contracts, form runtime, MCP and AI façade.
 - `frontend/`: React + TypeScript source and tests.
-- `opencode_integration/`: OpenCode 1.18.18 client, agents and safe sessions.
+- `opencode_integration/`: automatic OpenCode 1.18.18 / 2.0.32 adapters, agents and safe sessions.
 - `launcher/`: atomic signed/checksummed release delivery.
 - `docs/`: current public-core documentation; `docs/README.md` is its router.
 - `docs/corp/`: copyable documentation for the private corporate package.

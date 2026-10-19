@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -25,6 +26,7 @@ from opencode_integration.client import (
     OpenCodeClient,
     OpenCodeError,
 )
+from opencode_integration.connection import OpenCodeConnection
 
 OPENCODE_HOST = "127.0.0.1"
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
@@ -40,7 +42,8 @@ REQUIRED_AGENTS = (
     FORM_SEARCH_AGENT,
     REPOSITORY_RESEARCHER_AGENT,
 )
-TARGET_OPENCODE_VERSION = "1.18.18"
+TARGET_OPENCODE_VERSION = "2.0.32"
+SUPPORTED_OPENCODE_VERSIONS = ("1.18.18", TARGET_OPENCODE_VERSION)
 _log = logging.getLogger("opencode.manager")
 
 
@@ -106,13 +109,15 @@ class OpenCodeManager:
         self.request_timeout = self._timeout_value(request_timeout)
         self.username = username.strip() or "opencode"
         self.password = password
+        self._owned_password = ""
+        self._launch_version = TARGET_OPENCODE_VERSION
         self.mcp_url = mcp_url.strip()
 
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.Lock()
         self._cancel = threading.Event()
         self._process: Optional[subprocess.Popen[str]] = None
-        self._client: Optional[OpenCodeClient] = None
+        self._client: Optional[OpenCodeConnection] = None
         self._status = ManagerStatus(
             "stopped",
             "OpenCode Server не подключён",
@@ -161,7 +166,7 @@ class OpenCodeManager:
                 self._client.timeout = self.request_timeout
 
     @property
-    def client(self) -> Optional[OpenCodeClient]:
+    def client(self) -> Optional[OpenCodeConnection]:
         with self._lock:
             if not self._ready_locked():
                 return None
@@ -209,7 +214,7 @@ class OpenCodeManager:
         address: Optional[str] = None,
         *,
         timeout: Optional[float] = None,
-    ) -> OpenCodeClient:
+    ) -> OpenCodeConnection:
         """Подключается к уже работающему серверу; вызывать из worker thread."""
         target = (address or self.server_url).strip().rstrip("/")
         effective_timeout = self._timeout_value(
@@ -226,11 +231,11 @@ class OpenCodeManager:
             )
             deadline = time.monotonic() + effective_timeout
             try:
-                self._prepare_runtime()
                 client = self._make_client(target)
                 health = client.health(timeout=self._remaining(deadline))
                 if not health.healthy:
                     raise OpenCodeManagerError("health check вернул healthy=false")
+                self._prepare_runtime(version=health.version)
                 self._set_status(
                     "connecting",
                     "Сервер отвечает. Проверяю AI-агентов…",
@@ -271,7 +276,7 @@ class OpenCodeManager:
         address: Optional[str] = None,
         *,
         timeout: Optional[float] = None,
-        on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
+        on_ready: Optional[Callable[[OpenCodeConnection], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> threading.Thread:
         return self._run_async(
@@ -281,7 +286,7 @@ class OpenCodeManager:
             on_error,
         )
 
-    def create(self, *, port: int = 0) -> OpenCodeClient:
+    def create(self, *, port: int = 0) -> OpenCodeConnection:
         """Создаёт дочерний localhost-only server в изолированной директории."""
         with self._lifecycle_lock:
             self._cancel.clear()
@@ -294,11 +299,13 @@ class OpenCodeManager:
             executable = shutil.which(self.command)
             if executable is None:
                 return self._create_failed(
-                    "Команда 'opencode' не найдена в PATH. Установите OpenCode 1.18.18."
+                    f"Команда 'opencode' не найдена в PATH. Установите OpenCode {TARGET_OPENCODE_VERSION}."
                 )
             try:
-                self._prepare_runtime()
+                self._prepare_runtime(version=None)
                 version = self._detect_version(executable)
+                self._launch_version = version
+                self._prepare_mcp_config(version)
             except Exception as exc:
                 return self._create_failed(f"Не удалось подготовить OpenCode: {exc}", exc)
 
@@ -368,13 +375,13 @@ class OpenCodeManager:
             )
 
     # Совместимость со старым API и формами, которые вызывают manager.start().
-    def start(self) -> OpenCodeClient:
+    def start(self) -> OpenCodeConnection:
         return self.create()
 
     def start_async(
         self,
         *,
-        on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
+        on_ready: Optional[Callable[[OpenCodeConnection], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> threading.Thread:
         return self.create_async(on_ready=on_ready, on_error=on_error)
@@ -383,7 +390,7 @@ class OpenCodeManager:
         self,
         *,
         port: int = 0,
-        on_ready: Optional[Callable[[OpenCodeClient], None]] = None,
+        on_ready: Optional[Callable[[OpenCodeConnection], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> threading.Thread:
         return self._run_async(
@@ -396,8 +403,8 @@ class OpenCodeManager:
     @staticmethod
     def _run_async(
         name: str,
-        operation: Callable[[], OpenCodeClient],
-        on_ready: Optional[Callable[[OpenCodeClient], None]],
+        operation: Callable[[], OpenCodeConnection],
+        on_ready: Optional[Callable[[OpenCodeConnection], None]],
         on_error: Optional[Callable[[Exception], None]],
     ) -> threading.Thread:
         def worker() -> None:
@@ -438,11 +445,11 @@ class OpenCodeManager:
                 pid=process.pid if process else None,
             )
             try:
-                self._prepare_runtime()
                 client = existing or self._make_client(address)
                 health = client.health(timeout=self.connect_timeout)
                 if not health.healthy:
                     raise OpenCodeManagerError("health check вернул healthy=false")
+                self._prepare_runtime(version=health.version)
                 self._require_agents(
                     client,
                     timeout=min(self.connect_timeout, 10.0),
@@ -505,7 +512,7 @@ class OpenCodeManager:
                 raise OpenCodeManagerError(self._status.message) from exc
             return self.status
 
-    def restart(self) -> OpenCodeClient:
+    def restart(self) -> OpenCodeConnection:
         with self._lock:
             if self._ownership != "owned":
                 raise OpenCodeManagerError(
@@ -530,7 +537,7 @@ class OpenCodeManager:
                 owned = self._ownership == "owned"
             self._clear_connection(terminate_owned=owned, set_stopped=True)
 
-    def _prepare_runtime(self) -> None:
+    def _prepare_runtime(self, *, version: str | None = TARGET_OPENCODE_VERSION) -> None:
         missing = [source for source in self.agent_sources if not source.is_file()]
         if missing:
             raise OpenCodeManagerError(
@@ -566,10 +573,11 @@ class OpenCodeManager:
                 or destination.read_text(encoding="utf-8") != source_text
             ):
                 destination.write_text(source_text, encoding="utf-8")
-        self._prepare_mcp_config()
+        if version is not None:
+            self._prepare_mcp_config(version)
         _log.info("runtime prepared directory=%s", self.runtime_dir)
 
-    def _prepare_mcp_config(self) -> None:
+    def _prepare_mcp_config(self, version: str = TARGET_OPENCODE_VERSION) -> None:
         """Merge only our remote MCP entry into the isolated project config."""
         config_path = self.runtime_dir / "opencode.json"
         if config_path.is_symlink():
@@ -591,17 +599,27 @@ class OpenCodeManager:
             mcp_map = mcp
         else:
             raise OpenCodeManagerError("opencode.json: mcp должен быть JSON object")
+        servers = mcp_map.setdefault("servers", {})
+        if not isinstance(servers, dict):
+            raise OpenCodeManagerError("opencode.json: mcp.servers должен быть JSON object")
+        # Remove the old entry even when native configuration already exists.
+        mcp_map.pop(AUTODEPLOY_MCP_NAME, None)
+        servers.pop(AUTODEPLOY_MCP_NAME, None)
         if self.mcp_url:
             parsed = urlsplit(self.mcp_url)
             if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
                 raise OpenCodeManagerError("AutoDeploy MCP разрешён только по localhost HTTP")
-            mcp_map[AUTODEPLOY_MCP_NAME] = {
-                "type": "remote",
-                "url": self.mcp_url,
-                "enabled": True,
-            }
-        else:
-            mcp_map.pop(AUTODEPLOY_MCP_NAME, None)
+            if version.removeprefix("v").startswith("1."):
+                mcp_map[AUTODEPLOY_MCP_NAME] = {
+                    "type": "remote", "url": self.mcp_url, "enabled": True,
+                }
+            else:
+                servers[AUTODEPLOY_MCP_NAME] = {
+                    "type": "remote", "url": self.mcp_url, "disabled": False,
+                    "codemode": False, "oauth": False,
+                }
+        if not servers:
+            mcp_map.pop("servers", None)
         config.setdefault("$schema", "https://opencode.ai/config.json")
         temporary = config_path.with_suffix(".json.tmp")
         temporary.write_text(
@@ -612,26 +630,31 @@ class OpenCodeManager:
 
     @staticmethod
     def _require_agents(
-        client: OpenCodeClient,
+        client: OpenCodeConnection,
         *,
         deadline: Optional[float] = None,
         timeout: Optional[float] = None,
     ) -> None:
+        # /api/info becomes ready before V2's initial plugin scan settles.
+        deadline = deadline if deadline is not None else time.monotonic() + (timeout or 10.0)
         for agent_name in REQUIRED_AGENTS:
-            effective_timeout = (
-                OpenCodeManager._remaining(deadline)
-                if deadline is not None
-                else timeout
-            )
-            client.require_agent(agent_name, timeout=effective_timeout)
+            while True:
+                try:
+                    client.require_agent(agent_name, timeout=OpenCodeManager._remaining(deadline))
+                    break
+                except OpenCodeAgentMissingError:
+                    if time.monotonic() + 0.15 >= deadline:
+                        raise
+                    time.sleep(0.15)
 
-    def _make_client(self, address: str) -> OpenCodeClient:
-        return OpenCodeClient(
+    def _make_client(self, address: str) -> OpenCodeConnection:
+        owned_v2 = self._ownership == "owned" and not self._launch_version.removeprefix("v").startswith("1.")
+        return OpenCodeConnection(
             address,
             timeout=self.request_timeout,
             directory=self.runtime_dir,
-            username=self.username,
-            password=self.password,
+            username="opencode" if owned_v2 else self.username,
+            password=self._owned_password if self._ownership == "owned" else self.password,
         )
 
     def _detect_version(self, executable: str) -> str:
@@ -659,11 +682,11 @@ class OpenCodeManager:
         if not match:
             raise OpenCodeManagerError("Не удалось определить версию OpenCode")
         version = match.group(0)
-        if version != TARGET_OPENCODE_VERSION:
+        if version not in SUPPORTED_OPENCODE_VERSIONS:
             _log.warning(
-                "OpenCode version mismatch actual=%s target=%s",
+                "OpenCode version not verified actual=%s supported=%s",
                 version,
-                TARGET_OPENCODE_VERSION,
+                ", ".join(SUPPORTED_OPENCODE_VERSIONS),
             )
         return version
 
@@ -676,13 +699,21 @@ class OpenCodeManager:
 
     def _spawn(self, executable: str, port: int) -> subprocess.Popen[str]:
         environment = os.environ.copy()
-        if self.password:
-            environment["OPENCODE_SERVER_PASSWORD"] = self.password
-            environment["OPENCODE_SERVER_USERNAME"] = self.username
+        # V2 always requires authentication. Keep an ephemeral credential in
+        # memory, and override both aliases so shell settings cannot win.
+        if self._launch_version.removeprefix("v").startswith("1."):
+            self._owned_password = self.password
+            environment.pop("OPENCODE_PASSWORD", None)
+            if self.password:
+                environment["OPENCODE_SERVER_PASSWORD"] = self.password
+                environment["OPENCODE_SERVER_USERNAME"] = self.username
+            else:
+                environment.pop("OPENCODE_SERVER_PASSWORD", None)
+                environment.pop("OPENCODE_SERVER_USERNAME", None)
         else:
-            # Не наследуем случайный password из shell: иначе созданный server
-            # потребует auth, о котором клиент формы не знает.
-            environment.pop("OPENCODE_SERVER_PASSWORD", None)
+            self._owned_password = self.password or secrets.token_urlsafe(32)
+            environment["OPENCODE_PASSWORD"] = self._owned_password
+            environment["OPENCODE_SERVER_PASSWORD"] = self._owned_password
             environment.pop("OPENCODE_SERVER_USERNAME", None)
         kwargs: dict[str, object] = {
             "cwd": str(self.runtime_dir),
@@ -754,7 +785,7 @@ class OpenCodeManager:
 
     def _wait_until_ready(
         self,
-        client: OpenCodeClient,
+        client: OpenCodeConnection,
         process: subprocess.Popen[str],
     ) -> None:
         deadline = time.monotonic() + self.startup_timeout
@@ -798,7 +829,7 @@ class OpenCodeManager:
         cause: Optional[BaseException] = None,
         *,
         version: str = "",
-    ) -> OpenCodeClient:
+    ) -> OpenCodeConnection:
         self._set_status("error", message, version=version)
         error = OpenCodeManagerError(message)
         if cause is not None:
