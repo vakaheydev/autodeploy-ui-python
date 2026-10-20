@@ -30,6 +30,7 @@ from webapp.models import (
     ActionDialogStateRequest,
     ActionRequest,
     OpenCodeAuthenticateRequest,
+    MCPToolPolicyRequest,
     DraftSaveRequest,
     EnvironmentActivationRequest,
     ITSMPromptSettingsUpdateRequest,
@@ -823,3 +824,27 @@ def opencode_mcp(request: Request):
             for name, value in sorted(servers.items())
         ],
     }
+
+
+@router.get("/opencode/mcp/{name}/tools", tags=["opencode"])
+def opencode_mcp_tools(name: str, request: Request, refresh: bool = False):
+    try:
+        return container(request).mcp_management.catalog(name, refresh=refresh)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/opencode/mcp/{name}/restart", tags=["opencode"])
+def opencode_mcp_restart(name: str, request: Request):
+    try:
+        return container(request).mcp_management.restart(name)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/opencode/mcp/{name}/tools/{tool}/policy", tags=["opencode"])
+def opencode_mcp_tool_policy(name: str, tool: str, body: MCPToolPolicyRequest, request: Request):
+    try:
+        return container(request).mcp_management.update(name, tool, body.policy)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

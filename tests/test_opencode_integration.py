@@ -463,6 +463,7 @@ class PermissionTests(unittest.TestCase):
             choose_repository_mcp("gravitee_repo", ["ado"], statuses),
             "",
         )
+        self.assertEqual(choose_repository_mcp("", ["ado"], statuses), "")
 
 
 class _RecordingClient(OpenCodeClient):

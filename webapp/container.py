@@ -36,6 +36,7 @@ from webapp.extensions import (
 from webapp.environment_runtime import EnvironmentRuntime
 from webapp.form_runtime import FormRuntime
 from webapp.itsm_prompt_settings import ITSMPromptSettingsStore
+from webapp.mcp_management import MCPManagement
 from webapp.plugin_policy import PluginAIPolicyStore
 from webapp.plugin_runtime import PluginRuntime
 from webapp.security import ConfirmationStore, SubmissionStore, request_fingerprint
@@ -54,6 +55,7 @@ class ApplicationContainer:
         self.itsm_prompt_settings = ITSMPromptSettingsStore(
             settings.data_dir / "itsm-ai-prompts.json"
         )
+        self.mcp_management = MCPManagement(self)
         self.confirmations = ConfirmationStore()
         self.submissions = SubmissionStore()
         self.service_provider = load_service_provider(self.env_manager)

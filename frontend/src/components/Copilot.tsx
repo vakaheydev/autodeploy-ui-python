@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MarkdownContent } from './MarkdownContent'
+import { PermissionRequest } from './PermissionRequest'
 import { api, post } from '../api'
 import { Bot, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, Pencil, Send, Sparkles, Trash2, X } from './Icons'
 import { useEnvironment } from '../environment'
@@ -240,6 +241,10 @@ export function Copilot() {
   }, [events])
 
   const queued = queueState.queue ?? []
+  const lastIdle = events.reduce((latest, event) => event.kind === 'idle' ? Math.max(latest, event.sequence) : latest, 0)
+  const permissionResolutions = new Map(events
+    .filter((event) => event.kind === 'agent_event' && event.payload.kind === 'permission_resolved')
+    .map((event) => [String(event.payload.permission_id), String(event.payload.detail || 'processed')]))
   const canQueue = Boolean(queueState.queue_enabled && queueState.queue_ready
     && queued.length < (queueState.queue_limit ?? 10)
     && queueState.active_environment === environment)
@@ -472,7 +477,7 @@ export function Copilot() {
       </header>
       <p className="copilot-intro">Опишите задачу или приложите номер заявки. Copilot выберет форму, подготовит план или найдёт объект в Gravitee Repository.</p>
       <div className="chat-transcript" ref={transcript}>
-        {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={event.sequence} />)}
+        {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} permissionActive={busy && event.sequence > lastIdle} permissionResolution={permissionResolutions.get(String(event.payload.permission_id))} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={`${session?.id}:${event.sequence}`} />)}
         {!session && !error && <div className="chat-welcome"><LoaderCircle className="spin" /> Подготавливаю защищённую сессию…</div>}
         {session && busy && <div className="message-row assistant generating-message" aria-live="polite"><div className="message-meta"><span>Copilot</span><span>готовит ответ</span></div><div className="message-bubble"><span className="generating-orb"><Sparkles size={15} /></span><span className="generating-copy"><strong>{waitingLabel(waitingSeconds)}</strong>{progress && <small>{progress}</small>}<span className="typing-dots" aria-hidden="true"><i /><i /><i /></span></span><span className="generation-timer"><Clock3 size={13} /> {waitingSeconds} с</span><button type="button" onClick={() => post(`/api/v1/ai/sessions/${session.id}/cancel`, {})}>Остановить</button></div></div>}
       </div>
@@ -493,12 +498,12 @@ export function Copilot() {
   )
 }
 
-function ChatEventView({ event, sessionId, busy, onCandidate }: { event: ChatEvent; sessionId: string; busy: boolean; onCandidate: (formId: string) => void }) {
+function ChatEventView({ event, sessionId, busy, permissionActive, permissionResolution, onCandidate }: { event: ChatEvent; sessionId: string; busy: boolean; permissionActive: boolean; permissionResolution?: string; onCandidate: (formId: string) => void }) {
   const payload = event.payload
   if (event.kind === 'system') return <div className="system-event"><Bot size={15} /><span>{String(payload.title ?? '')}</span></div>
   if (event.kind === 'assistant_note') return <div className="message-row assistant assistant-note"><div className="message-meta"><span>Copilot · промежуточное сообщение</span><time>{new Date(event.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-bubble markdown"><MarkdownContent>{String(payload.text ?? '')}</MarkdownContent></div></div>
   if (event.kind === 'agent_event') {
-    if (payload.kind === 'permission') return <div className="permission-event"><div><strong>{String(payload.title ?? 'Требуется разрешение')}</strong><small>{String(payload.detail ?? '')}</small></div><div><button className="button secondary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: false })}>Отклонить</button><button className="button primary small" onClick={() => post(`/api/v1/ai/sessions/${sessionId}/permissions/${payload.permission_id}`, { allow: true })}>Разрешить один раз</button></div></div>
+    if (payload.kind === 'permission') return <PermissionRequest payload={payload} sessionId={sessionId} active={permissionActive} resolution={permissionResolution} />
     if (payload.kind === 'tool' || payload.call_id) {
       const input = prettyToolDetail(payload.input_detail ?? payload.detail)
       const output = prettyToolDetail(payload.output_detail)

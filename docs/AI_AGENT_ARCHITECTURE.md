@@ -48,8 +48,11 @@ bodies are excluded from the projection.
 The web Copilot uses OpenCode's durable inbox, with no AutoDeploy execution
 queue. While Copilot is generating, a follow-up is admitted immediately through
 `POST /api/session/{id}/prompt` with `delivery: "queue"` and `resume: true`.
-OpenCode decides when to deliver it. The UI reads pending user items from
-`GET /api/session/{id}/inbox`; removal uses `DELETE .../inbox/{message_id}`.
+OpenCode decides when to deliver it. The UI reads pending user items marked
+`metadata.source = "autodeploy-queue"` from `GET /api/session/{id}/inbox`;
+ordinary prompts and context admissions are not displayed as queued follow-ups.
+The adapter still observes the whole native inbox before declaring execution
+complete. Removal uses `DELETE .../inbox/{message_id}`.
 Deleting an already-delivered item is a native no-op; it does not cancel a turn.
 
 `AUTODEPLOY_OPENCODE_MESSAGE_QUEUE=true` enables admission by default on V2 only.
@@ -84,12 +87,60 @@ V1 retains its existing synchronous message/SSE transport, permission schema,
 configured-model discovery and context storage. Both versions keep the same
 Python validation, exact MCP allowlists and operator confirmation boundaries.
 
+Permission cards offer reject, allow once and, when OpenCode supplies save
+patterns, allow always. V2 saves the action/resource rule in its project; V1
+retains its session-scoped semantics. The UI displays that scope before consent.
+`POST .../permissions/{permission_id}` accepts `allow` and optional `always`
+(default false), validates that the request still belongs to this native session,
+and returns `accepted` plus `decision`. A request that has already disappeared
+returns `accepted: false, decision: "expired"`. Polling detects requests resolved
+outside AutoDeploy as well as new requests. Resolved or completed-turn cards
+cannot be acted on again; failed replies stay visible and retryable.
+
 The optional real-CLI contract test uses local fake provider/MCP endpoints and
 does not contact a paid model:
 
 ```bash
 AUTODEPLOY_TEST_OPENCODE=/path/to/opencode python -m pytest tests/test_opencode_v2_live.py
 ```
+
+## Environments and MCP settings
+
+The selected environment is a default context, not an AI access boundary.
+Copilot and Repository Researcher may read and compare all scopes exposed by
+enabled MCP servers. Repository scope names come from tool schemas/discovery,
+not guesses derived from AutoDeploy environment labels. A failed scope lookup
+must not be described as a restriction to the current environment.
+Form drafts may target any valid application environment; their own stored
+environment, reference resolution and human review remain authoritative.
+
+### MCP management
+
+Settings → OpenCode shows every configured MCP server, its status, restart
+action and tool catalog. Catalog discovery uses the standard MCP SDK
+`initialize` / `tools/list` protocol (stdio, Streamable HTTP or legacy SSE);
+it never invokes a tool. A local stdio catalog uses a short-lived discovery
+process and closes it after reading. Config commands, environment values and
+headers stay server-side. Catalogs are cached briefly and invalidated on restart.
+An OAuth server that cannot authorize a separate catalog connection reports
+that failure without changing its existing OpenCode connection or policies.
+
+Each known tool can be set to deny, ask or allow. Choices are stored atomically
+in `mcp-tool-policies.json` and projected as exact session rules; arbitrary
+wildcard names are not accepted. Defaults remain the existing read-only and
+plugin policies. Changing a V2 tool to ask revokes its saved native always rule.
+V1 requires a new chat to discard previous in-memory always approvals.
+
+Selected MCP servers are prepared before each Copilot request and queue resume,
+including restored sessions. V2 exposes them directly with Code Mode disabled
+in the isolated runtime; disconnected selected servers are connected. Existing
+sessions receive refreshed permission rules and trusted context when settings
+change. Running turns are not interrupted by a policy edit.
+
+The HTTP endpoints are `GET /api/v1/opencode/mcp/{name}/tools`,
+`POST .../{name}/restart`, and `POST .../{name}/tools/{tool}/policy`
+with `{"policy": "deny" | "ask" | "allow"}`. Restart reconnects the selected
+MCP transport; for remote MCP it does not restart the remote host process.
 
 ## Decision
 

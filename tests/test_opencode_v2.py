@@ -79,7 +79,7 @@ def test_selected_mcp_exposed_directly_without_enabling_execute():
                      {"data": [{"name": "repo", "status": {"status": "connected"}}]},
                      {"data": {"id": "ses_test"}}])
     client.create_session(mcp_names=["repo"])
-    assert client.calls[1] == ("PUT", "/api/experimental/mcp/repo", {"config": {**config, "codemode": False}})
+    assert client.calls[1] == ("PUT", "/api/experimental/mcp/repo", {"config": {**config, "codemode": False, "disabled": False}})
     assert not any(x["action"] == "execute" for x in client.calls[-1][2]["permissions"])
 
 
@@ -194,8 +194,49 @@ def test_queue_admission_cannot_race_a_finished_observer():
     assert not client.calls
 
 
+def test_context_and_ordinary_prompt_are_not_operator_queue_items():
+    context = {"id": "context", "type": "user", "delivery": "queue",
+               "payload": {"text": "internal context"}}
+    ordinary = {**context, "id": "ordinary", "payload": {"text": "current request"}}
+    queued = {**context, "id": "followup", "payload": {
+        "text": "prepared follow-up", "metadata": {"source": "autodeploy-queue", "message": "Next"},
+    }}
+    client = Client([{"data": [context, ordinary]}, {"data": [context, ordinary, queued]}])
+    assert client.list_message_queue("ses_test") == []
+    assert client.list_message_queue("ses_test") == [queued]
+
+
+def test_first_prompt_pending_in_native_inbox_does_not_show_a_phantom_queue():
+    pending = {**PROMPT, "delivery": "queue", "payload": {"text": "hello"}}
+    history = page(IDLE, assistant(), PROMPT)
+    client = Client([None, None, {"data": PROMPT}, page(),
+                     {"data": [pending]}, {"data": []}, history, {"data": []}, history])
+    events = []
+    result = client.send_chat_message(session_id="ses_test", prompt="hello", agent="autodeploy-copilot",
+                                      on_event=events.append)
+    assert result.text == "done"
+    assert [event["properties"]["items"] for event in events
+            if event["type"] == "client.queue.updated"] == [[]]
+    assert not [event for event in events if event["type"] == "client.queue.user"]
+
+
+def test_unmarked_pending_prompt_still_prevents_premature_completion():
+    pending = {"id": "internal", "type": "user", "delivery": "queue", "payload": {"text": "context"}}
+    first_history = page(IDLE, assistant("first"), PROMPT)
+    next_history = page({**IDLE, "id": "idle_next"}, assistant("last", id="last"), PROMPT)
+    client = Client([None, None, {"data": PROMPT}, first_history, {"data": [pending]},
+                     {"data": [pending]}, {"data": []}, next_history, {"data": []}, next_history])
+    events = []
+    result = client.send_chat_message(session_id="ses_test", prompt="hello", agent="autodeploy-copilot",
+                                      on_event=events.append)
+    assert result.text == "last"
+    assert [event["properties"]["items"] for event in events
+            if event["type"] == "client.queue.updated"] == [[]]
+
+
 def test_native_queue_preserves_separate_answers_and_returns_last_turn():
-    second = {"id": "msg_second", "type": "user", "text": "second", "metadata": {"message": "second"}}
+    second = {"id": "msg_second", "type": "user", "text": "second",
+              "metadata": {"source": "autodeploy-queue", "message": "second"}}
     history = page(IDLE, assistant("second answer", id="answer_second"), second,
                    assistant("first answer"), PROMPT)
     client = Client([None, None, {"data": PROMPT}, history, {"data": []}, history])
@@ -211,7 +252,8 @@ def test_native_queue_preserves_separate_answers_and_returns_last_turn():
 
 
 def test_resume_wakes_existing_native_prompt_without_reconfiguring_session():
-    queued = {"id": "msg_prompt", "type": "user", "delivery": "queue", "payload": {"text": "hello"}}
+    queued = {"id": "msg_prompt", "type": "user", "delivery": "queue",
+              "payload": {"text": "hello", "metadata": {"source": "autodeploy-queue"}}}
     history = page(IDLE, assistant(), PROMPT)
     client = Client([{"data": [queued]}, {"data": queued}, history, {"data": []}, history])
     events = []

@@ -13,6 +13,10 @@ import pytest
 
 from opencode_integration.manager import OpenCodeManager
 from opencode_integration.client import OpenCodeCancelled
+from opencode_integration.client import build_session_permissions
+from opencode_integration.mcp_discovery import discover_mcp_tools
+from opencode_integration.copilot import UnifiedCopilot
+from unittest.mock import Mock
 
 
 @pytest.mark.integration
@@ -118,6 +122,7 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
         client.add_session_context(session_id=session, prompt="CATALOG_ONLY_ONCE", agent="form-search",
                                    provider_id="local", model_id="test-model", variant="none")
         assert not requests
+        assert client.list_message_queue(session) == []  # Context is native inbox data, not a follow-up.
         permissions = []
 
         def on_event(event):
@@ -146,6 +151,45 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
                 names = [t["function"]["name"] for t in request.get("tools", [])]
                 assert "test_repo_delete" not in names
                 assert "execute" not in names
+        if mcp_policy == "ask":
+            native = client._v2
+            copilot = UnifiedCopilot(client, Mock(), Mock(), forms=[], workflow_id="test")
+            copilot._session_id = session
+            for decision in ("once", "reject", "always"):
+                payload = {"action": "test_repo_search", "resources": [f"example/{decision}"],
+                           "save": [f"example/{decision}"]}
+                pending = native._wire("POST", f"/api/session/{session}/permission", payload)["data"]
+                assert pending["effect"] == "ask"
+                assert copilot.approve_permission(pending["id"], allow=decision != "reject",
+                                                  always=decision == "always")
+                assert not any(row["id"] == pending["id"] for row in client.list_pending_permissions())
+                assert copilot.approve_permission(pending["id"], allow=True) is False
+            saved_session = client.create_session(agent="form-search", mcp_names=["test_repo"],
+                                                   mcp_tool_asklist={"test_repo": ["search"]})
+            saved = native._wire("POST", f"/api/session/{saved_session}/permission", payload)["data"]
+            assert saved["effect"] == "allow"  # V2 saves this resource for the project, across sessions.
+            different = native._wire("POST", f"/api/session/{saved_session}/permission", {
+                **payload, "resources": ["example/another"], "save": ["example/another"],
+            })["data"]
+            assert different["effect"] == "ask"
+            client.respond_permission(saved_session, different["id"], "reject")
+            assert client.clear_saved_mcp_permissions("test_repo", "search") is True
+            revoked = native._wire("POST", f"/api/session/{saved_session}/permission", payload)["data"]
+            assert revoked["effect"] == "ask"
+            client.respond_permission(saved_session, revoked["id"], "reject")
+            client.delete_session(saved_session)
+        if mcp_policy == "allow":
+            config = client.mcp_configurations()["test_repo"]
+            discovered = discover_mcp_tools(config, client.directory)
+            assert {tool["name"] for tool in discovered} == {"search", "delete"}
+            assert tool_calls == ["search"]  # Catalog discovery never calls tools.
+            client.restart_mcp("test_repo")
+            client.prepare_mcp(["test_repo"])
+            client.update_session_permissions(session, build_session_permissions(
+                ["test_repo"], {"test_repo": ["search"]},
+            ))
+            assert {"action": "test_repo_search", "resource": "*", "effect": "allow"} in client.get_session(session)["permissions"]
+            assert client.list_mcp_servers()["test_repo"]["status"] == "connected"
         history = client.list_session_messages(session)
         assert history[-1]["parts"][0]["text"] == '{"ok":true}'
         client.update_session_title(session, "Renamed")

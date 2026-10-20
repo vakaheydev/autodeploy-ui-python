@@ -132,4 +132,5 @@ def choose_repository_mcp(
     ]
     if len(likely) == 1:
         return likely[0]
-    return connected[0] if len(connected) == 1 else ""
+    # A lone Confluence/AutoDeploy server is not necessarily a JSON repository.
+    return ""

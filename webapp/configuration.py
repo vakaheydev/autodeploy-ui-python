@@ -196,7 +196,7 @@ def _specs() -> tuple[SettingSpec, ...]:
         ),
         SettingSpec(
             OPENCODE_REPOSITORY_GIT_PULL_KEY, "Разрешать запрос git pull", "OpenCode",
-            "boolean", "true", "Каждый git pull всё равно требует подтверждения.",
+            "boolean", "true", "По умолчанию git pull требует подтверждения. Точечное правило инструмента в панели MCP имеет приоритет.",
         ),
         SettingSpec(
             SERVICE_PROVIDER_KEY, "Фабрика корпоративных сервисов", "Расширения", "text", "",

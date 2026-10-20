@@ -4,6 +4,7 @@ import { ApiError, api } from '../api'
 import { Check, KeyRound, RefreshCw, Search, ShieldCheck, X } from '../components/Icons'
 import { ErrorBanner, Spinner } from '../components/Feedback'
 import { OpenCodeServerPanel } from '../components/OpenCodeServerPanel'
+import { MCPServersPanel } from '../components/MCPServersPanel'
 import { SearchableSelect } from '../components/SearchableSelect'
 import { McpMultiPicker, McpSinglePicker, PathSettingPicker } from '../components/SettingsPickers'
 import { PluginAISettings } from '../components/PluginAISettings'
@@ -375,6 +376,7 @@ export function SettingsPage() {
       {activeGroup === 'ITSM и AI' && <ITSMPromptSettings focusTarget={focusTarget} onDocumentChange={setPromptSearchDocument} />}
       {activeGroup === 'Плагины' && <PluginAISettings />}
       {activeGroup === 'OpenCode' && <OpenCodeServerPanel />}
+      {activeGroup === 'OpenCode' && <MCPServersPanel servers={mcpItems} onRefresh={() => void loadMcp()} />}
       {activeGroup === 'OpenCode' && <div className="settings-source-status"><span className={`status-dot ${mcpConnected ? 'online' : ''}`} /> <span>{mcpConnected ? `${mcpItems.length} MCP получено от OpenCode` : 'OpenCode не подключён — сохранённые значения останутся доступны'}</span><button type="button" className="icon-button" title="Обновить MCP" disabled={mcpLoading} onClick={() => void loadMcp()}><RefreshCw size={15} className={mcpLoading ? 'spin' : ''} /></button></div>}
       {visibleGroups.map((group) => (
         <section className="configuration-group" key={group.name}>

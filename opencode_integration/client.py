@@ -610,6 +610,36 @@ class OpenCodeClient:
             raise OpenCodeError("Некорректный ответ /permission")
         return [item for item in payload if isinstance(item, dict)]
 
+    def mcp_configurations(self):
+        config = self._request("GET", "/config")
+        return {name: value for name, value in (config.get("mcp") or {}).items()
+                if isinstance(value, dict) and value.get("type") in {"local", "remote"}}
+
+    def connect_mcp(self, name):
+        self._request("POST", f"/mcp/{urllib.parse.quote(name, safe='')}/connect")
+
+    def restart_mcp(self, name):
+        path = f"/mcp/{urllib.parse.quote(name, safe='')}"
+        self._request("POST", path + "/disconnect")
+        self.connect_mcp(name)
+
+    def prepare_mcp(self, names):
+        if not names:
+            return
+        statuses = self.list_mcp_servers()
+        for name in names:
+            if name not in statuses:
+                raise OpenCodeError(f"MCP {name!r} отсутствует в конфигурации OpenCode")
+            if statuses[name].get("status") != "connected":
+                self.connect_mcp(name)
+
+    def update_session_permissions(self, session_id, rules):
+        self._request("PATCH", f"/session/{urllib.parse.quote(session_id, safe='')}", {"permission": rules})
+
+    def clear_saved_mcp_permissions(self, name, tool):
+        # V1 has no public endpoint to revoke its in-memory "always" decisions.
+        return False
+
     def create_session(
         self,
         title: str = "",
@@ -1250,9 +1280,18 @@ class OpenCodeClient:
             )
         except Exception:
             return
+        pending = [request for request in pending if str(request.get("sessionID") or "") == session_id]
+        current = {str(request.get("id")) for request in pending if request.get("id")}
+        for permission_id in seen - current:
+            self._safe_event_callback(
+                callback,
+                {"type": "permission.replied", "properties": {
+                    "sessionID": session_id, "requestID": permission_id, "reply": "processed",
+                }},
+                session_id,
+            )
+        seen.intersection_update(current)
         for request in pending:
-            if str(request.get("sessionID") or "") != session_id:
-                continue
             permission_id = str(request.get("id") or "")
             if not permission_id or permission_id in seen:
                 continue

@@ -53,6 +53,9 @@ class ConversationEvent:
     input_detail: str = ""
     output_detail: str = ""
     duration_seconds: Optional[float] = None
+    permission_always: bool = False
+    permission_scope: str = ""
+    permission_resources: tuple[str, ...] = ()
 
 
 def _log_identifier(value: Any) -> str:

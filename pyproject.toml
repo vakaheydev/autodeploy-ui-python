@@ -15,6 +15,7 @@ dependencies = [
   "starlette==0.47.2",
   "jsonschema>=4.23,<5",
   "uvicorn==0.35.0",
+  "mcp==1.30.0",
 ]
 
 [project.optional-dependencies]

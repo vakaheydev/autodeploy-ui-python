@@ -158,8 +158,7 @@ def permission(
     session_id: str, permission_id: str, body: PermissionReplyRequest, request: Request
 ):
     try:
-        service(request).permission(session_id, permission_id, body.allow)
-        return {"accepted": True}
+        return service(request).permission(session_id, permission_id, body.allow, always=body.always)
     except Exception as exc:
         translate(exc)
 

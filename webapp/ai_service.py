@@ -266,6 +266,7 @@ class WebAIService:
             ),
             workflow_id=workflow_id,
             prompt_override=self.container.itsm_prompt_settings.prompt_for,
+            mcp_configuration=self.container.mcp_management.session_configuration,
         )
         if opencode_session_id:
             copilot.resume_session(opencode_session_id)
@@ -1081,8 +1082,15 @@ class WebAIService:
         if session.active_researcher:
             session.active_researcher.cancel()
 
-    def permission(self, session_id: str, permission_id: str, allow: bool) -> None:
-        self._session(session_id).copilot.approve_permission(permission_id, allow=allow)
+    def permission(self, session_id: str, permission_id: str, allow: bool, *, always: bool = False) -> dict[str, Any]:
+        session = self._session(session_id)
+        accepted = session.copilot.approve_permission(permission_id, allow=allow, always=always)
+        decision = ("always" if always else "once" if allow else "reject") if accepted else "expired"
+        session.emit("agent_event", dataclasses.asdict(ConversationEvent(
+            "permission_resolved", "Запрос разрешения обработан", decision,
+            permission_id=permission_id,
+        )))
+        return {"accepted": accepted, "decision": decision}
 
     def delete(self, session_id: str) -> None:
         with self._lock:
@@ -1170,7 +1178,8 @@ class WebAIService:
     ) -> dict[str, Any]:
         """Validate an MCP proposal and correlate its local draft to the turn."""
         session, job_id = self._active_workflow(workflow_id)
-        self._require_active_environment(session, environment)
+        if environment not in ENVIRONMENT_MAP:
+            raise ValueError("Неизвестное целевое окружение")
         if session.refining_draft_id and draft_id != session.refining_draft_id:
             raise ValueError(
                 "Уточнение должно обновить переданный draft_id, а не создать новый"
@@ -1221,7 +1230,8 @@ class WebAIService:
     ) -> dict[str, Any]:
         """Delegate one bounded complex lookup without polluting chat memory."""
         session, job_id = self._active_workflow(workflow_id)
-        self._require_active_environment(session, environment)
+        if not str(environment).strip():
+            raise ValueError("Укажите контекст окружения или scope для исследования")
         repository_mcp = session.copilot.repository_mcp
         if not repository_mcp:
             raise RuntimeError("JSON Repository MCP не подключён к Copilot")
@@ -1968,17 +1978,6 @@ class WebAIService:
             if session.cancel_event.is_set():
                 raise RuntimeError("Copilot-запрос отменён")
             return session, session.job_id
-
-    @staticmethod
-    def _require_active_environment(
-        session: WebCopilotSession,
-        environment: str,
-    ) -> None:
-        if str(environment) != session.active_environment:
-            raise ValueError(
-                "MCP-вызов должен использовать окружение текущего запроса: "
-                + session.active_environment
-            )
 
     @staticmethod
     def _exact_variant(variants: Sequence[str], desired: str) -> str:

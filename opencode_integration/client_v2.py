@@ -22,7 +22,15 @@ from .client import (
 
 def _permission(request: Mapping[str, Any]) -> dict[str, Any]:
     return {**request, "permission": request.get("action", ""),
-            "patterns": request.get("resources", [])}
+            "patterns": request.get("resources", []),
+            "always": request.get("save") or [], "always_scope": "project"}
+
+
+def _is_operator_queue_item(row: Mapping[str, Any]) -> bool:
+    """Ordinary prompts and context also use the native inbox, but are not follow-ups."""
+    payload = row.get("payload") or row
+    metadata = payload.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get("source") == "autodeploy-queue"
 
 
 def _message(raw: Mapping[str, Any], session_id: str) -> dict[str, Any]:
@@ -76,6 +84,10 @@ class OpenCodeV2Client(OpenCodeClient):
         self._active_queues: set[str] = set()
 
     def list_message_queue(self, session_id):
+        return [row for row in self._list_pending_messages(session_id) if _is_operator_queue_item(row)]
+
+    def _list_pending_messages(self, session_id):
+        """All native pending prompts, including the active turn's admission."""
         rows = _unwrap_data(self._wire("GET", f"/api/session/{quote(session_id, safe='')}/inbox", quiet=True))
         if not isinstance(rows, list):
             raise OpenCodeError("Некорректный ответ очереди OpenCode")
@@ -89,7 +101,7 @@ class OpenCodeV2Client(OpenCodeClient):
                 raise OpenCodeError("Текущий ответ уже завершён или ещё не начат; отправьте сообщение снова")
             result = _unwrap_data(self._wire("POST", f"/api/session/{quote(session_id, safe='')}/prompt", {
                 "text": text, "delivery": "queue", "resume": True,
-                "metadata": metadata or {},
+                "metadata": {**(metadata or {}), "source": "autodeploy-queue"},
             }))
             if not isinstance(result, dict) or not result.get("id"):
                 raise OpenCodeError("OpenCode не вернул ID сообщения очереди")
@@ -149,7 +161,7 @@ class OpenCodeV2Client(OpenCodeClient):
                 raise OpenCodeError(f"MCP {name!r} отсутствует в конфигурации OpenCode")
             if config.get("codemode") is not False and self._direct_mcp.get(name) != config:
                 self._wire("PUT", f"/api/experimental/mcp/{quote(name, safe='')}",
-                           {"config": {**config, "codemode": False}})
+                           {"config": {**config, "codemode": False, "disabled": False}})
                 deadline = time.monotonic() + min(10.0, self.timeout)
                 while True:
                     status = self.list_mcp_servers(timeout=max(0.1, deadline - time.monotonic())).get(name, {})
@@ -162,6 +174,52 @@ class OpenCodeV2Client(OpenCodeClient):
                         raise OpenCodeError(f"MCP {name!r} не подключён после настройки V2")
                     time.sleep(0.1)
                 self._direct_mcp[name] = dict(config)
+
+    def mcp_configurations(self):
+        entries = self._wire("GET", "/api/config")
+        servers = {}
+        for entry in entries:
+            if isinstance(entry, dict):
+                servers.update(((entry.get("info") or {}).get("mcp") or {}).get("servers") or {})
+        return {name: value for name, value in servers.items()
+                if isinstance(value, dict) and value.get("type") in {"local", "remote"}}
+
+    def connect_mcp(self, name):
+        self._wire("POST", f"/api/experimental/mcp/{quote(name, safe='')}/connect")
+
+    def restart_mcp(self, name):
+        self._wire("POST", f"/api/experimental/mcp/{quote(name, safe='')}/disconnect")
+        self.connect_mcp(name)
+
+    def prepare_mcp(self, names):
+        if not names:
+            return
+        with self._mcp_lock:
+            self._prepare_direct_mcp(names)
+            statuses = self.list_mcp_servers()
+            for name in names:
+                if statuses.get(name, {}).get("status") != "connected":
+                    self.connect_mcp(name)
+            deadline = time.monotonic() + min(15, self.timeout)
+            while any(statuses.get(name, {}).get("status") != "connected" for name in names):
+                if time.monotonic() >= deadline:
+                    raise OpenCodeError("MCP не подключился за отведённое время")
+                time.sleep(0.1)
+                statuses = self.list_mcp_servers()
+
+    def update_session_permissions(self, session_id, rules):
+        self._wire("PATCH", f"/api/session/{quote(session_id, safe='')}", {"permissions": [
+            {"action": re.sub(r"[^A-Za-z0-9_*?-]", "_", rule["permission"]),
+             "resource": rule["pattern"], "effect": rule["action"]} for rule in rules
+        ]})
+
+    def clear_saved_mcp_permissions(self, name, tool):
+        action = re.sub(r"[^A-Za-z0-9_*?-]", "_", f"{name}_{tool}")
+        rows = _unwrap_data(self._wire("GET", "/api/permission/saved"))
+        for row in rows:
+            if row.get("action") == action:
+                self._wire("DELETE", f"/api/permission/saved/{quote(row['id'], safe='')}")
+        return True
 
     def health(self, timeout=None) -> OpenCodeHealth:
         value = self._wire("GET", "/api/info", timeout=timeout, instance=False)
@@ -362,7 +420,8 @@ class OpenCodeV2Client(OpenCodeClient):
                         if current_user not in seen_users:
                             seen_users.add(current_user)
                             deadline = time.monotonic() + self.timeout
-                            emit("client.queue.user", raw)
+                            if _is_operator_queue_item(raw):
+                                emit("client.queue.user", raw)
                     if raw.get("type") == "assistant":
                         projected = _message(raw, session_id)
                         replies.append(projected)
@@ -389,7 +448,7 @@ class OpenCodeV2Client(OpenCodeClient):
                         self._raise_message_error(final)
                         if native_queue:
                             with self._queue_lock:
-                                pending = self.list_message_queue(session_id)
+                                pending = self._list_pending_messages(session_id)
                                 if pending:
                                     continue
                                 if self._turn_messages(path, prompt_id, min(2.0, remaining)) != rows:

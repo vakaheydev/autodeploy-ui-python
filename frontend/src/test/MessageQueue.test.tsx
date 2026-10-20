@@ -51,6 +51,35 @@ function mount(overrides: Record<string, unknown> = {}, reject = false) {
 afterEach(() => { window.localStorage.clear(); vi.unstubAllGlobals() })
 
 describe('Native OpenCode queue', () => {
+  it('does not show a queue during ordinary generation without follow-ups', async () => {
+    const { state } = mount()
+    await screen.findByRole('button', { name: 'Остановить' })
+    expect(screen.queryByRole('region', { name: 'Очередь сообщений' })).not.toBeInTheDocument()
+    act(() => Events.current.emit('queue', { ...state, queue: [] }, 1))
+    expect(screen.queryByText('Сообщение из OpenCode')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Очередь сообщений' })).not.toBeInTheDocument()
+  })
+
+  it('does not reactivate old permission cards in the next turn', async () => {
+    mount({ events: [
+      { sequence: 1, timestamp: 1, kind: 'agent_event', payload: { kind: 'permission', permission_id: 'old', title: 'Old permission' } },
+      { sequence: 2, timestamp: 2, kind: 'idle', payload: {} },
+      { sequence: 3, timestamp: 3, kind: 'progress', payload: { text: 'New turn' } },
+    ] })
+    expect(await screen.findByText('Запрос больше не ожидает ответа')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Разрешить один раз' })).not.toBeInTheDocument()
+  })
+
+  it('closes a live permission card on an external resolution event', async () => {
+    mount({ events: [
+      { sequence: 1, timestamp: 1, kind: 'agent_event', payload: { kind: 'permission', permission_id: 'per_live', title: 'Permission' } },
+    ] })
+    expect(await screen.findByRole('button', { name: 'Разрешить один раз' })).toBeEnabled()
+    act(() => Events.current.emit('agent_event', { kind: 'permission_resolved', permission_id: 'per_live', detail: 'processed' }, 2))
+    expect(screen.queryByRole('button', { name: 'Разрешить один раз' })).not.toBeInTheDocument()
+    expect(screen.getByText('Запрос больше не ожидает ответа')).toBeVisible()
+  })
+
   it('submits while generating, shows server inbox and removes a pending message', async () => {
     const { user, fetch } = mount()
     await screen.findByRole('button', { name: 'В очередь' })

@@ -22,6 +22,8 @@ from opencode_integration.client import (
     OpenCodeCancelled,
     OpenCodeClient,
     OpenCodeError,
+    OpenCodeHttpError,
+    build_session_permissions,
     opencode_context_tokens,
     opencode_message_duration,
     opencode_text_generation_duration,
@@ -459,6 +461,7 @@ class UnifiedCopilot:
         trusted_mcp_ask_tools: Optional[Mapping[str, Sequence[str]]] = None,
         workflow_id: str = "",
         prompt_override: Optional[Callable[[str], Optional[str]]] = None,
+        mcp_configuration: Optional[Callable[[], dict[str, Any]]] = None,
     ) -> None:
         self._client = client
         self._context_builder = ContextBuilder(
@@ -477,6 +480,8 @@ class UnifiedCopilot:
         )
         self._form_ids = tuple(item["form_id"] for item in self._catalog)
         self._allowed_mcp = tuple(allowed_mcp)
+        self._mcp_configuration = mcp_configuration
+        self._mcp_config_signature = ""
         self._configured_repository_mcp = repository_mcp.strip()
         self._allow_repository_git_pull = bool(allow_repository_git_pull)
         self._max_context_chars = max(10_000, min(500_000, int(max_context_chars)))
@@ -563,6 +568,8 @@ class UnifiedCopilot:
             self._cancel_event = cancel_event
             self._on_event = on_event
             self._on_queue_event = on_queue_event
+            if self._mcp_configuration:
+                self._ensure_session(lambda _message: None)
             response = self._client.resume_message_queue(
                 self._require_session(), cancel_event=cancel_event, on_event=self._handle_raw_event,
             )
@@ -862,12 +869,23 @@ class UnifiedCopilot:
             return outcome
 
     def _ensure_session(self, notify: Callable[[str], None]) -> None:
-        if self._session_id is not None:
+        if self._session_id is not None and self._mcp_configuration is None:
             return
+        configuration = self._mcp_configuration() if self._mcp_configuration else {}
+        if self._mcp_configuration:
+            signature = json.dumps(configuration, sort_keys=True)
+            if signature != self._mcp_config_signature:
+                self._session_context_initialized = False
+                self._mcp_config_signature = signature
+            self._allowed_mcp = tuple(configuration["names"])
+            self._configured_repository_mcp = configuration["repository"]
+            self._allow_repository_git_pull = configuration.get("allow_git_pull", self._allow_repository_git_pull)
+            self._client.prepare_mcp(self._allowed_mcp)
         timeout = min(10.0, max(0.5, self._client.timeout))
         notify("Проверяю единого AI-помощника и provider…")
-        self._client.require_agent(AUTODEPLOY_COPILOT_AGENT, timeout=timeout)
-        self._client.require_provider(self._provider_id, timeout=timeout)
+        if self._session_id is None:
+            self._client.require_agent(AUTODEPLOY_COPILOT_AGENT, timeout=timeout)
+            self._client.require_provider(self._provider_id, timeout=timeout)
         statuses = self._client.list_mcp_servers(timeout=timeout)
         unavailable_trusted = [
             name
@@ -916,6 +934,11 @@ class UnifiedCopilot:
             name: tools for name, tools in self._trusted_mcp_ask_tools.items()
             if name in mcp_names
         })
+        if self._session_id is not None:
+            self._client.update_session_permissions(self._session_id, [
+                *build_session_permissions(mcp_names, allowlist, asklist), *configuration.get("rules", []),
+            ])
+            return
         self._session_id = self._client.create_session(
             "",
             agent=AUTODEPLOY_COPILOT_AGENT,
@@ -930,6 +953,10 @@ class UnifiedCopilot:
                 "workflow_id": self._workflow_id,
             },
         )
+        if configuration.get("rules"):
+            self._client.update_session_permissions(self._session_id, [
+                *build_session_permissions(mcp_names, allowlist, asklist), *configuration["rules"],
+            ])
         self._on_session(self._session_id)
         self._emit(ConversationEvent(
             "system",
@@ -988,6 +1015,10 @@ class UnifiedCopilot:
                     **common,
                 )
             )
+            if self._mcp_config_signature:
+                prompt += "\nTRUSTED_MCP_OPERATOR_POLICIES\n" + json.dumps(
+                    json.loads(self._mcp_config_signature).get("rules", []), ensure_ascii=False,
+                ) + "\nEND_TRUSTED_MCP_OPERATOR_POLICIES"
             self._client.add_session_context(
                 session_id=self._require_session(),
                 prompt=prompt,
@@ -1040,10 +1071,30 @@ class UnifiedCopilot:
         if context is not None:
             self._sent_ticket_contexts.add(ticket_id)
 
-    def approve_permission(self, permission_id: str, *, allow: bool) -> None:
-        self._client.respond_permission(
-            self._require_session(), permission_id, "once" if allow else "reject"
-        )
+    def approve_permission(self, permission_id: str, *, allow: bool, always: bool = False) -> bool:
+        if always and not allow:
+            raise ValueError("Постоянное разрешение несовместимо с отклонением")
+        session_id = self._require_session()
+        pending = self._client.list_pending_permissions()
+        request = next((item for item in pending
+                        if item.get("id") == permission_id and item.get("sessionID") == session_id), None)
+        if request is None:
+            return False  # Already answered elsewhere, cancelled or finished.
+        if always and not request.get("always"):
+            raise ValueError("OpenCode не предложил сохраняемое правило для этого запроса")
+        try:
+            self._client.respond_permission(
+                session_id, permission_id, "always" if always else "once" if allow else "reject",
+            )
+        except OpenCodeHttpError as exc:
+            if exc.status != 404:
+                raise
+            # The request may disappear between the pending snapshot and reply.
+            if any(item.get("id") == permission_id and item.get("sessionID") == session_id
+                   for item in self._client.list_pending_permissions()):
+                raise
+            return False
+        return True
 
     def cancel(self) -> None:
         if self._cancel_event is not None:
@@ -1108,6 +1159,16 @@ class UnifiedCopilot:
                 self._safe_detail(values.get("metadata", values.get("patterns", []))),
                 permission_id=permission_id,
                 permission_name=permission_name,
+                permission_always=bool(values.get("always")),
+                permission_scope=str(values.get("always_scope") or "session"),
+                permission_resources=tuple(str(item) for item in (values.get("always") or [])),
+            ))
+            return
+        if event_type == "permission.replied":
+            self._emit(ConversationEvent(
+                "permission_resolved", "Запрос разрешения обработан",
+                str(values.get("reply") or "processed"),
+                permission_id=str(values.get("requestID") or values.get("id") or ""),
             ))
             return
         if event_type == "session.status":

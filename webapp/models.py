@@ -147,6 +147,11 @@ class ChatMessageRequest(StrictModel):
 
 class PermissionReplyRequest(StrictModel):
     allow: bool
+    always: bool = False
+
+
+class MCPToolPolicyRequest(StrictModel):
+    policy: Literal["deny", "ask", "allow"]
 
 
 class SettingsUpdateRequest(StrictModel):

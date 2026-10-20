@@ -155,7 +155,8 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "inputSchema": _object_schema({
             "workflow_id": _WORKFLOW,
             "question": {"type": "string", "minLength": 1, "maxLength": 20000},
-            "environment": _ENV,
+            "environment": {"type": "string", "minLength": 1, "maxLength": 100,
+                            "description": "Default environment or verified repository scope for this investigation; not a restriction. The question may request comparisons across other available scopes."},
             "required_facts": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1, "maxLength": 1000},
