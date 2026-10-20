@@ -64,10 +64,55 @@ def _message(raw: Mapping[str, Any], session_id: str) -> dict[str, Any]:
 class OpenCodeV2Client(OpenCodeClient):
     """Native V2 API; no fallback that could silently drop session permissions."""
 
+    supports_message_queue = True
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._mcp_lock = threading.Lock()
         self._direct_mcp: dict[str, dict[str, Any]] = {}
+        self._queue_lock = threading.RLock()
+        self._active_queues: set[str] = set()
+
+    def list_message_queue(self, session_id):
+        rows = _unwrap_data(self._wire("GET", f"/api/session/{quote(session_id, safe='')}/inbox", quiet=True))
+        if not isinstance(rows, list):
+            raise OpenCodeError("Некорректный ответ очереди OpenCode")
+        return [row for row in rows if row.get("type") == "user" and row.get("delivery") == "queue"]
+
+    def enqueue_message(self, session_id, text, *, metadata=None, require_active=False):
+        # Admission and settling share a lock: an accepted prompt must always
+        # have an observer, even when it races the last idle marker.
+        with self._queue_lock:
+            if require_active and session_id not in self._active_queues:
+                raise OpenCodeError("Текущий ответ уже завершён или ещё не начат; отправьте сообщение снова")
+            result = _unwrap_data(self._wire("POST", f"/api/session/{quote(session_id, safe='')}/prompt", {
+                "text": text, "delivery": "queue", "resume": True,
+                "metadata": metadata or {},
+            }))
+            if not isinstance(result, dict) or not result.get("id"):
+                raise OpenCodeError("OpenCode не вернул ID сообщения очереди")
+            return result
+
+    def cancel_queued_message(self, session_id, message_id):
+        self._wire("DELETE", f"/api/session/{quote(session_id, safe='')}/inbox/{quote(message_id, safe='')}")
+
+    def resume_message_queue(self, session_id, *, cancel_event=None, on_event=None):
+        if cancel_event is not None and cancel_event.is_set():
+            raise OpenCodeCancelled("Операция отменена пользователем")
+        rows = self.list_message_queue(session_id)
+        if not rows:
+            raise OpenCodeError("Очередь OpenCode пуста")
+        first = rows[0]
+        path = f"/api/session/{quote(session_id, safe='')}"
+        # Re-admission by ID is idempotent and wakes the existing native inbox.
+        self._wire("POST", path + "/prompt", {
+            "id": first["id"], "text": first["payload"]["text"], "resume": True,
+            "delivery": "queue",
+        })
+        with self._queue_lock:
+            self._active_queues.add(session_id)
+        return self._wait_for_message(session_id, first["id"], cancel_event, on_event,
+                                      native_queue=True, initial_user=first)
 
     def _wire(self, method: str, path: str, payload=None, **kwargs) -> Any:
         return super()._request(method, path, payload, **kwargs)
@@ -264,13 +309,32 @@ class OpenCodeV2Client(OpenCodeClient):
         admitted = _unwrap_data(self._wire("POST", path + "/prompt", {
             "text": "\n".join(x["text"] for x in body["parts"] if x.get("type") == "text"),
             "resume": True,
+            "delivery": "queue",
         }))
         if not isinstance(admitted, dict) or not admitted.get("id"):
             raise OpenCodeError("OpenCode не вернул ID принятого prompt")
         prompt_id = admitted["id"]
+        native_queue = body.get("agent") == "autodeploy-copilot" and on_event is not None
+        if native_queue:
+            with self._queue_lock:
+                self._active_queues.add(session_id)
+        return self._wait_for_message(session_id, prompt_id, cancel, on_event, native_queue=native_queue)
+
+    def _wait_for_message(self, session_id, prompt_id, cancel_event, on_event,
+                          *, native_queue=False, initial_user=None):
+        cancel = cancel_event if cancel_event is not None else threading.Event()
+        path = f"/api/session/{quote(session_id, safe='')}"
         deadline = time.monotonic() + self.timeout
         seen_parts = {}
         seen_permissions = set()
+        seen_users = set()
+        completed_turns = set()
+        last_queue = None
+
+        def emit(kind, properties):
+            if on_event:
+                self._safe_event_callback(on_event, {"type": kind, "properties": properties}, session_id)
+
         try:
             while True:
                 if cancel.is_set():
@@ -282,7 +346,21 @@ class OpenCodeV2Client(OpenCodeClient):
                 # excludes old idle markers even if generation has not started.
                 rows = self._turn_messages(path, prompt_id, min(2.0, remaining))
                 replies = []
-                for raw in rows:
+                current_user = prompt_id
+                if initial_user and rows and prompt_id not in seen_users:
+                    seen_users.add(prompt_id)
+                    emit("client.queue.user", initial_user)
+                for index, raw in enumerate(rows):
+                    if native_queue and raw.get("type") == "user":
+                        if current_user not in completed_turns and replies:
+                            completed_turns.add(current_user)
+                            emit("client.queue.reply", {"messages": replies})
+                        current_user = raw.get("id", "")
+                        replies = []
+                        if current_user not in seen_users:
+                            seen_users.add(current_user)
+                            deadline = time.monotonic() + self.timeout
+                            emit("client.queue.user", raw)
                     if raw.get("type") == "assistant":
                         projected = _message(raw, session_id)
                         replies.append(projected)
@@ -295,6 +373,9 @@ class OpenCodeV2Client(OpenCodeClient):
                                     "type": "message.part.updated", "properties": {"part": part},
                                 }, session_id)
                     if raw.get("type") == "idle":
+                        if (native_queue and raw.get("outcome") == "succeeded"
+                                and any(item.get("type") == "user" for item in rows[index + 1:])):
+                            continue
                         if raw.get("outcome") == "interrupted":
                             raise OpenCodeCancelled("OpenCode session была отменена")
                         if raw.get("outcome") == "failed":
@@ -304,11 +385,34 @@ class OpenCodeV2Client(OpenCodeClient):
                             raise OpenCodeError("OpenCode завершил turn без ответа ассистента")
                         final = replies[-1]
                         self._raise_message_error(final)
+                        if native_queue:
+                            with self._queue_lock:
+                                pending = self.list_message_queue(session_id)
+                                if pending:
+                                    continue
+                                if self._turn_messages(path, prompt_id, min(2.0, remaining)) != rows:
+                                    continue  # An admission already left the inbox after our first read.
+                                self._active_queues.discard(session_id)
+                            final = {**final, "_turn_messages": replies}
                         return final
+                if native_queue:
+                    pending = self.list_message_queue(session_id)
+                    if pending != last_queue:
+                        last_queue = pending
+                        emit("client.queue.updated", {"items": pending})
                 if on_event:
                     self._poll_pending_permissions(session_id, seen_permissions, on_event)
                 cancel.wait(min(0.25, max(0, deadline - time.monotonic())))
         except (OpenCodeCancelled, OpenCodeError) as exc:
+            with self._queue_lock:
+                self._active_queues.discard(session_id)
+            # Interrupt does not remove a still-pending V2 inbox item.
+            # Cancel admission first so it cannot unexpectedly run on a later wake.
+            try:
+                if initial_user is None:
+                    self.cancel_queued_message(session_id, prompt_id)
+            except OpenCodeError:
+                pass
             # A timed-out async prompt must not keep executing unseen MCP calls.
             try:
                 self.abort_session(session_id)
@@ -317,6 +421,10 @@ class OpenCodeV2Client(OpenCodeClient):
             if cancel.is_set():
                 raise OpenCodeCancelled("Операция отменена пользователем") from exc
             raise
+        finally:
+            if native_queue:
+                with self._queue_lock:
+                    self._active_queues.discard(session_id)
 
     def _turn_messages(self, path, prompt_id, timeout):
         params = {"order": "desc", "limit": 200}

@@ -133,7 +133,7 @@ def test_new_prompt_anchor_can_be_on_an_older_page():
 @pytest.mark.parametrize("outcome,error", [("interrupted", OpenCodeCancelled), ("failed", OpenCodeError)])
 def test_idle_failure_never_returns_partial_success(outcome, error):
     idle = {**IDLE, "outcome": outcome, "error": {"type": "ProviderFailure", "response": {"body": "private"}}}
-    client = Client([None, None, {"data": PROMPT}, page(idle, assistant("partial"), PROMPT), None])
+    client = Client([None, None, {"data": PROMPT}, page(idle, assistant("partial"), PROMPT), None, None])
     with pytest.raises(error) as caught:
         send(client)
     assert "private" not in str(caught.value)
@@ -159,18 +159,88 @@ def test_cancel_after_admission_interrupts_server():
                 cancel.set()
             return result
 
-    client = CancelClient([None, None, {"data": PROMPT}, None])
+    client = CancelClient([None, None, {"data": PROMPT}, None, None])
     with pytest.raises(OpenCodeCancelled):
         send(client, cancel_event=cancel)
     assert client.calls[-1] == ("POST", "/api/session/ses_test/interrupt", {"resume": False})
 
 
 def test_timeout_interrupts_async_execution():
-    client = Client([None, None, {"data": PROMPT}, None])
+    client = Client([None, None, {"data": PROMPT}, None, None])
     with patch("opencode_integration.client_v2.time.monotonic", side_effect=[0, 2]):
         with pytest.raises(OpenCodeError, match="timeout"):
             send(client)
     assert client.calls[-1][1].endswith("/interrupt")
+    assert client.calls[-2] == ("DELETE", "/api/session/ses_test/inbox/msg_prompt", None)
+
+
+def test_native_queue_admission_list_and_removal():
+    queued = {"id": "msg_queued", "type": "user", "delivery": "queue",
+              "payload": {"text": "follow up", "metadata": {"source": "autodeploy-queue"}}}
+    client = Client([{"data": queued}, {"data": [queued, {"type": "compaction"}]}, None])
+    result = client.enqueue_message("ses_test", "follow up", metadata={"source": "autodeploy-queue"})
+    assert result["id"] == queued["id"]
+    assert client.calls[0][2] == {"text": "follow up", "delivery": "queue", "resume": True,
+                                   "metadata": {"source": "autodeploy-queue"}}
+    assert client.list_message_queue("ses_test") == [queued]
+    client.cancel_queued_message("ses_test", "msg_queued")
+    assert client.calls[-1] == ("DELETE", "/api/session/ses_test/inbox/msg_queued", None)
+
+
+def test_queue_admission_cannot_race_a_finished_observer():
+    client = Client()
+    with pytest.raises(OpenCodeError, match="завершён"):
+        client.enqueue_message("ses_test", "follow up", require_active=True)
+    assert not client.calls
+
+
+def test_native_queue_preserves_separate_answers_and_returns_last_turn():
+    second = {"id": "msg_second", "type": "user", "text": "second", "metadata": {"message": "second"}}
+    history = page(IDLE, assistant("second answer", id="answer_second"), second,
+                   assistant("first answer"), PROMPT)
+    client = Client([None, None, {"data": PROMPT}, history, {"data": []}, history])
+    events = []
+    result = client.send_chat_message(session_id="ses_test", prompt="first", agent="autodeploy-copilot",
+                                      on_event=events.append)
+    assert result.text == "second answer"
+    replies = [e for e in events if e["type"] == "client.queue.reply"]
+    assert len(replies) == 1
+    assert replies[0]["properties"]["messages"][0]["parts"][0]["text"] == "first answer"
+    assert len([e for e in events if e["type"] == "client.queue.user"]) == 1
+    assert not client._active_queues
+
+
+def test_resume_wakes_existing_native_prompt_without_reconfiguring_session():
+    queued = {"id": "msg_prompt", "type": "user", "delivery": "queue", "payload": {"text": "hello"}}
+    history = page(IDLE, assistant(), PROMPT)
+    client = Client([{"data": [queued]}, {"data": queued}, history, {"data": []}, history])
+    events = []
+    result = client.resume_message_queue("ses_test", on_event=events.append)
+    assert result["parts"][0]["text"] == "done"
+    assert client.calls[1] == ("POST", "/api/session/ses_test/prompt", {
+        "id": "msg_prompt", "text": "hello", "resume": True, "delivery": "queue",
+    })
+    assert not any(path.endswith(("/model", "/agent")) for _, path, _ in client.calls)
+    assert [e for e in events if e["type"] == "client.queue.user"]
+
+
+def test_cancelled_resume_does_not_wake_native_queue():
+    client = Client()
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(OpenCodeCancelled):
+        client.resume_message_queue("ses_test", cancel_event=cancel)
+    assert not client.calls
+
+
+def test_queued_delivery_does_not_hide_failed_previous_turn():
+    second = {"id": "msg_second", "type": "user", "text": "second"}
+    history = page(second, {**IDLE, "outcome": "failed"}, assistant("partial"), PROMPT)
+    client = Client([None, None, {"data": PROMPT}, history, None, None])
+    events = []
+    with pytest.raises(OpenCodeError):
+        client.send_chat_message(session_id="ses_test", prompt="first", agent="autodeploy-copilot", on_event=events.append)
+    assert not [event for event in events if event["type"] == "client.queue.reply"]
 
 
 def test_tool_progress_and_permission_are_projected_without_raw_errors():

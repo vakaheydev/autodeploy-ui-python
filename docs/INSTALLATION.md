@@ -72,6 +72,13 @@ configuration for each version remains owned by OpenCode/the operator.
 See [AI_AGENT_ARCHITECTURE.md](AI_AGENT_ARCHITECTURE.md) for transport
 and session policy details.
 
+In **Settings → OpenCode**, **Очередь сообщений Copilot** controls native V2
+follow-ups (`AUTODEPLOY_OPENCODE_MESSAGE_QUEUE`, default `true`). It applies
+without restarting. OpenCode 1.x continues to accept one request at a time.
+While an answer is running, Enter adds a follow-up to the native OpenCode inbox;
+the queue panel supports removal and resuming after interruption. The queued
+batch shares the current model, thinking variant and environment.
+
 Logs:
 
 - launcher/update: `logs/launcher.log`;

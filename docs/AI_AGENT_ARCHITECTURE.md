@@ -32,6 +32,43 @@ cannot complete a new turn. Cancellation and timeout interrupt the server loop.
 History follows every pagination cursor. Reasoning and raw provider error
 bodies are excluded from the projection.
 
+### Native V2 message queue
+
+The web Copilot uses OpenCode's durable inbox, with no AutoDeploy execution
+queue. While Copilot is generating, a follow-up is admitted immediately through
+`POST /api/session/{id}/prompt` with `delivery: "queue"` and `resume: true`.
+OpenCode decides when to deliver it. The UI reads pending user items from
+`GET /api/session/{id}/inbox`; removal uses `DELETE .../inbox/{message_id}`.
+Deleting an already-delivered item is a native no-op; it does not cancel a turn.
+
+`AUTODEPLOY_OPENCODE_MESSAGE_QUEUE=true` enables admission by default on V2 only.
+The setting is editable in Settings → OpenCode and takes effect without restart.
+Disabling admission preserves existing native items and still allows their
+removal or resumption. The web UI admits at most ten waiting messages. V1 keeps
+its single-active-request behavior, including server-side rejection of concurrent
+messages. Queue availability is derived from the negotiated adapter.
+
+Model, thinking variant and environment remain fixed during a native batch:
+they are session settings in V2. The server rejects changes while running.
+Each follow-up carries its own bounded operator prompt, resolved references and
+optional ticket context. Display metadata is saved on the native inbox item;
+queue API responses never expose the full prepared context. No system/model
+configuration is changed during admission. Draft refinement cannot be enqueued.
+
+The adapter observes delivered user boundaries and emits each preceding answer
+separately. Draft links and form candidates are derived from that turn's tool
+results, avoiding attribution to a later queued turn. Admission and observer
+completion are synchronized so an accepted follow-up cannot lose its observer.
+
+Stopping interrupts the native runner and leaves follow-ups in the inbox.
+After stop/error the UI shows the pending queue and a resume action. Resumption
+re-admits the first existing message ID with `resume: true`; OpenCode's idempotent
+admission wakes the queue without duplicating the message. The server observes
+execution rather than resending individual requests. Pending items survive a
+page refresh and remain in OpenCode across AutoDeploy restarts. The web API
+exposes `GET /api/v1/ai/sessions/{id}/queue`, `DELETE .../queue/{message_id}` and
+`POST .../queue/resume`, plus `queue` SSE updates and a periodic UI refresh.
+
 V1 retains its existing synchronous message/SSE transport, permission schema,
 configured-model discovery and context storage. Both versions keep the same
 Python validation, exact MCP allowlists and operator confirmation boundaries.

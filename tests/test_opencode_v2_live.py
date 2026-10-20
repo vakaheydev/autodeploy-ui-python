@@ -5,12 +5,14 @@ AUTODEPLOY_TEST_OPENCODE=/path/to/opencode pytest tests/test_opencode_v2_live.py
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from opencode_integration.manager import OpenCodeManager
+from opencode_integration.client import OpenCodeCancelled
 
 
 @pytest.mark.integration
@@ -19,6 +21,8 @@ from opencode_integration.manager import OpenCodeManager
 def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
     requests = []
     tool_calls = []
+    queue_started = threading.Event()
+    queue_release = threading.Event()
 
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -52,10 +56,20 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
                 self.wfile.write(raw)
                 return
             requests.append(body)
+            last_user = json.dumps([m for m in body.get("messages", []) if m.get("role") == "user"][-1:])
+            queue_reply = ""
+            if "QUEUE_FIRST" in last_user:
+                queue_started.set()
+                queue_release.wait(15)
+                queue_reply = "FIRST_REPLY"
+            elif "QUEUE_SECOND" in last_user:
+                queue_reply = "SECOND_REPLY"
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             deltas = [({"role": "assistant", "content": '{"ok":true}'}, None), ({}, "stop")]
+            if queue_reply:
+                deltas = [({"role": "assistant", "content": queue_reply}, None), ({}, "stop")]
             names = [t["function"]["name"] for t in body.get("tools", [])]
             if "test_repo_search" in names and not any(m.get("role") == "tool" for m in body["messages"]):
                 deltas = [({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_search", "type": "function",
@@ -136,6 +150,62 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
         assert history[-1]["parts"][0]["text"] == '{"ok":true}'
         client.update_session_title(session, "Renamed")
         assert client.get_session(session)["title"] == "Renamed"
+        if mcp_policy == "none":
+            # Observe the real V2 inbox while the fake provider holds the first
+            # response. OpenCode itself must deliver the follow-up, with no
+            # Python dispatcher calling send_chat_message a second time.
+            queued_session = client.create_session(agent="autodeploy-copilot", provider_id="local",
+                                                    model_id="test-model", variant="none")
+            events = []
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.send_chat_message, session_id=queued_session, prompt="QUEUE_FIRST",
+                    agent="autodeploy-copilot", provider_id="local", model_id="test-model",
+                    variant="none", on_event=events.append,
+                )
+                try:
+                    assert queue_started.wait(10)
+                    second = client.enqueue_message(queued_session, "QUEUE_SECOND",
+                                                    metadata={"source": "autodeploy-queue", "message": "Second"},
+                                                    require_active=True)
+                    third = client.enqueue_message(queued_session, "QUEUE_REMOVE", require_active=True)
+                    assert [row["id"] for row in client.list_message_queue(queued_session)] == [second["id"], third["id"]]
+                    client.cancel_queued_message(queued_session, third["id"])
+                    assert [row["id"] for row in client.list_message_queue(queued_session)] == [second["id"]]
+                finally:
+                    queue_release.set()
+                assert future.result(timeout=20).text == "SECOND_REPLY"
+            assert client.list_message_queue(queued_session) == []
+            delivered = [event for event in events if event["type"] == "client.queue.user"]
+            assert [event["properties"]["id"] for event in delivered] == [second["id"]]
+            replies = [event for event in events if event["type"] == "client.queue.reply"]
+            assert replies[0]["properties"]["messages"][-1]["parts"][0]["text"] == "FIRST_REPLY"
+            client.delete_session(queued_session)
+            queue_started.clear()
+            queue_release.clear()
+            stopped_session = client.create_session(agent="autodeploy-copilot", provider_id="local",
+                                                     model_id="test-model", variant="none")
+            cancel = threading.Event()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.send_chat_message, session_id=stopped_session, prompt="QUEUE_FIRST",
+                    agent="autodeploy-copilot", provider_id="local", model_id="test-model",
+                    variant="none", cancel_event=cancel, on_event=lambda _event: None,
+                )
+                try:
+                    assert queue_started.wait(10)
+                    pending = client.enqueue_message(stopped_session, "QUEUE_SECOND", require_active=True)
+                    cancel.set()
+                    with pytest.raises(OpenCodeCancelled):
+                        future.result(timeout=10)
+                    assert [row["id"] for row in client.list_message_queue(stopped_session)] == [pending["id"]]
+                finally:
+                    queue_release.set()
+            resumed = client.resume_message_queue(stopped_session, on_event=lambda _event: None)
+            assert resumed["parts"][0]["text"] == "SECOND_REPLY"
+            history = client.list_session_messages(stopped_session)
+            assert sum(row["info"].get("id") == pending["id"] for row in history) == 1
+            client.delete_session(stopped_session)
         client.abort_session(session)
         client.delete_session(session)
         assert not client.list_sessions()

@@ -19,6 +19,14 @@ class ManagerStub:
         self.configured = values
 
 
+def test_native_queue_setting_is_persisted_without_restart(tmp_path):
+    env = EnvManager(tmp_path / ".env")
+    result = update_settings(env, ManagerStub(), {"AUTODEPLOY_OPENCODE_MESSAGE_QUEUE": False}, [])
+    assert env.get("AUTODEPLOY_OPENCODE_MESSAGE_QUEUE") == "false"
+    assert result["restart_required"] is False
+    assert result["reconnect_opencode"] is False
+
+
 def test_secret_settings_are_write_only(tmp_path: Path) -> None:
     env = EnvManager(tmp_path / ".env")
     manager = ManagerStub()

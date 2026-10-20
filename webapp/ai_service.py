@@ -15,6 +15,7 @@ from config.environments import (
     ENVIRONMENT_MAP,
     OPENCODE_ALLOWED_MCP_KEY,
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
+    OPENCODE_MESSAGE_QUEUE_KEY,
     OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
     OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
     OPENCODE_REFERENCE_INLINE_TOTAL_BYTES_KEY,
@@ -82,6 +83,9 @@ class WebCopilotSession:
     events: list[WebEvent] = field(default_factory=list)
     sequence: int = 0
     busy: bool = False
+    queue_supported: bool = False
+    queue_ready: bool = False
+    active_thinking: str = ""
     job_id: str = ""
     cancel_event: Optional[threading.Event] = None
     last_progress: str = ""
@@ -279,6 +283,7 @@ class WebAIService:
             default_variant=default_variant,
             variants=variants,
             form_search=SemanticFormSearchSession(client, forms=forms),
+            queue_supported=getattr(client, "supports_message_queue", False) is True,
             title=title,
             title_custom=title_custom,
             context_limit=max(0, int(context_limit)),
@@ -454,6 +459,7 @@ class WebAIService:
             final_text: list[str] = []
             final_info: Mapping[str, Any] = assistant_messages[-1][0]
             message_drafts: list[dict[str, Any]] = []
+            message_candidates: list[dict[str, Any]] = []
             started_at: Optional[float] = None
             completed_at: Optional[float] = None
             started_ms: Optional[float] = None
@@ -531,6 +537,16 @@ class WebAIService:
                         pass
                 if (
                     status == "completed"
+                    and tool_name.endswith("semantic_search_forms")
+                    and isinstance(decoded_output, Mapping)
+                    and isinstance(decoded_output.get("items"), list)
+                ):
+                    message_candidates = [
+                        {key: item.get(key) for key in ("form_id", "title", "reason", "score")}
+                        for item in decoded_output["items"] if isinstance(item, Mapping)
+                    ]
+                if (
+                    status == "completed"
                     and tool_name.endswith("prepare_form_draft")
                     and isinstance(decoded_output, Mapping)
                     and decoded_output.get("draft_id")
@@ -599,6 +615,8 @@ class WebAIService:
                         "intent": "execution_plan",
                         "drafts": message_drafts,
                     })
+                elif message_candidates:
+                    assistant_payload.update({"intent": "clarification", "form_candidates": message_candidates})
                 append(
                     "assistant",
                     completed_at
@@ -675,6 +693,7 @@ class WebAIService:
     def snapshot(self, session_id: str, *, include_events: bool = True) -> dict[str, Any]:
         session = self._session(session_id)
         return {
+            **self._queue_state(session),
             "id": session.id,
             "title": session.title,
             "busy": session.busy,
@@ -720,14 +739,26 @@ class WebAIService:
         draft_context: Any = None,
         refining_draft_id: str = "",
         ticket_context_provided: bool = False,
+        _resume_queue: bool = False,
     ) -> dict[str, Any]:
+        message = str(message).strip()
+        if not message or len(message) > 20_000:
+            raise ValueError("Сообщение должно содержать от 1 до 20000 символов")
         if environment not in ENVIRONMENT_MAP:
             raise ValueError("Неизвестное окружение")
         resolved_mentions = self._reference_mentions.resolve(environment, mentions)
         session = self._session(session_id)
         with session.condition:
             if session.busy:
-                raise RuntimeError("Предыдущий запрос ещё выполняется")
+                if refining_draft_id or draft_context is not None or _resume_queue:
+                    raise RuntimeError("Предыдущий запрос ещё выполняется")
+                return self._enqueue_message(
+                    session, message=message, environment=environment, ticket_id=ticket_id,
+                    provider_id=provider_id, model_id=model_id, thinking=thinking,
+                    resolved_mentions=resolved_mentions,
+                )
+            if session.queue_supported and not _resume_queue and session.copilot.queued_messages():
+                raise RuntimeError("Сначала продолжите или очистите очередь OpenCode")
             selected_provider = provider_id.strip() or session.provider_id
             selected_model = model_id.strip() or session.model_id
             variants, context_limit = self._model_details(
@@ -747,6 +778,8 @@ class WebAIService:
             session.variants = variants
             session.context_limit = context_limit
             session.busy = True
+            session.queue_ready = False
+            session.active_thinking = actual_thinking
             session.generation_started_at = time.time()
             session.job_id = secrets.token_urlsafe(16)
             session.cancel_event = threading.Event()
@@ -762,24 +795,25 @@ class WebAIService:
                 session.title = self._short_title(message)
             job_id = session.job_id
             generation_started_at = session.generation_started_at
-        session.emit("user", {
-            "text": message,
-            "ticket_id": str(ticket_id or "").strip() or None,
-            "mentions": [
-                {
-                    "catalog": item["catalog"],
-                    "resource": item["resource"],
-                    "identifier": item["identifier"],
-                    "label": item["label"],
-                }
-                for item in resolved_mentions
-            ],
-            "thinking": actual_thinking,
-            "provider_id": selected_provider,
-            "model_id": selected_model,
-            "context_limit": context_limit,
-            "session_title": session.title,
-        })
+        if not _resume_queue:
+            session.emit("user", {
+                "text": message,
+                "ticket_id": str(ticket_id or "").strip() or None,
+                "mentions": [
+                    {
+                        "catalog": item["catalog"],
+                        "resource": item["resource"],
+                        "identifier": item["identifier"],
+                        "label": item["label"],
+                    }
+                    for item in resolved_mentions
+                ],
+                "thinking": actual_thinking,
+                "provider_id": selected_provider,
+                "model_id": selected_model,
+                "context_limit": context_limit,
+                "session_title": session.title,
+            })
         clean_message = redact_text(message.strip())[:20_000]
         if not session.copilot.mcp_native:
             session.operator_messages.append(clean_message)
@@ -818,8 +852,34 @@ class WebAIService:
                     return
                 session.emit("agent_event", dataclasses.asdict(event))
 
+            def queue_event(event: Mapping[str, Any]) -> None:
+                kind = event.get("type")
+                data = event.get("properties") or {}
+                if kind == "client.queue.updated":
+                    session.queue_ready = not session.refining_draft_id and not bool(
+                        session.cancel_event and session.cancel_event.is_set()
+                    )
+                    session.emit("queue", self._queue_state(session, rows=data.get("items", [])))
+                elif kind == "client.queue.user":
+                    metadata = (data.get("payload") or data).get("metadata") or {}
+                    public = self._queued_public(data)
+                    session.generation_started_at = time.time()
+                    session.emit("user", {
+                        "text": public["message"], "thinking": actual_thinking,
+                        "ticket_id": public["ticket_id"], "mentions": metadata.get("mentions", []),
+                    })
+                    session.emit("progress", {"text": "OpenCode выполняет следующее сообщение",
+                                              "generation_started_at": session.generation_started_at})
+                elif kind == "client.queue.reply":
+                    for restored in self._history_from_opencode(data.get("messages") or []):
+                        if restored.kind == "assistant":
+                            session.tokens_used = int(restored.payload.get("tokens_used") or 0)
+                            session.emit("assistant", {**restored.payload, "thinking": actual_thinking})
+
             try:
-                outcome = session.copilot.ask(
+                outcome = session.copilot.resume_queued_messages(
+                    cancel_event=session.cancel_event, on_event=conversation, on_queue_event=queue_event,
+                ) if _resume_queue else session.copilot.ask(
                     message,
                     environment=environment,
                     ticket_id=ticket_id,
@@ -832,12 +892,14 @@ class WebAIService:
                     draft_context=draft_context,
                     operator_references=resolved_mentions,
                     detect_ticket_references=not ticket_context_provided,
+                    on_queue_event=queue_event,
                 )
                 session.tokens_used = max(0, int(outcome.tokens_used))
                 self._sync_session_title(session)
                 payload = self._outcome_payload(session, outcome)
                 payload["thinking"] = actual_thinking
-                payload["elapsed_seconds"] = outcome.elapsed_seconds or (time.monotonic() - started)
+                if payload.get("elapsed_seconds") is None:
+                    payload["elapsed_seconds"] = outcome.elapsed_seconds or (time.monotonic() - started)
                 payload["tokens_used"] = session.tokens_used
                 payload["context_limit"] = session.context_limit
                 payload["session_title"] = session.title
@@ -873,16 +935,22 @@ class WebAIService:
                 with session.condition:
                     if session.job_id == job_id:
                         session.busy = False
+                        session.queue_ready = False
                         session.job_id = ""
                         session.cancel_event = None
                         session.refining_draft_id = ""
                         session.active_environment = ""
                         session.generation_started_at = 0.0
-                session.emit("idle", {
-                    "tokens_used": session.tokens_used,
-                    "context_limit": session.context_limit,
-                    "session_title": session.title,
-                })
+                        session.emit("idle", {
+                            "tokens_used": session.tokens_used,
+                            "context_limit": session.context_limit,
+                            "session_title": session.title,
+                        })
+                if session.queue_supported:
+                    try:
+                        session.emit("queue", self._queue_state(session))
+                    except Exception:
+                        _log.warning("Could not refresh native queue session=%s", session.id)
 
         threading.Thread(
             target=worker,
@@ -890,10 +958,108 @@ class WebAIService:
             daemon=True,
         ).start()
         return {
+            "queued": False,
             "job_id": job_id,
             "thinking": actual_thinking,
             "generation_started_at": generation_started_at,
         }
+
+    def _queue_enabled(self, session: WebCopilotSession) -> bool:
+        return session.queue_supported and setting_enabled(
+            self.container.env_manager.load().get(OPENCODE_MESSAGE_QUEUE_KEY, "true")
+        )
+
+    @staticmethod
+    def _queued_public(row: Mapping[str, Any]) -> dict[str, Any]:
+        payload = row.get("payload") or row
+        metadata = payload.get("metadata") or {}
+        trusted_shape = isinstance(metadata, Mapping) and metadata.get("source") == "autodeploy-queue"
+        def value(key, default=""):
+            return redact_text(str(metadata.get(key) or default)) if trusted_shape else default
+        return {
+            "id": str(row["id"]), "message": value("message", "Сообщение из OpenCode")[:20_000],
+            "environment": value("environment")[:80], "ticket_id": value("ticket_id")[:200] or None,
+            "model_id": value("model_id")[:200], "thinking": value("thinking")[:80],
+        }
+
+    def _queue_state(self, session: WebCopilotSession, *, rows=None) -> dict[str, Any]:
+        if rows is None:
+            rows = session.copilot.queued_messages() if session.queue_supported else []
+        return {
+            "queue_supported": session.queue_supported,
+            "queue_enabled": self._queue_enabled(session),
+            "queue_ready": session.queue_ready,
+            "queue_paused": bool(rows) and not session.busy,
+            "queue_limit": 10,
+            "queue": [self._queued_public(row) for row in rows],
+            "active_environment": session.active_environment,
+        }
+
+    def message_queue(self, session_id: str) -> dict[str, Any]:
+        return self._queue_state(self._session(session_id))
+
+    def _enqueue_message(self, session, *, message, environment, ticket_id,
+                         provider_id, model_id, thinking, resolved_mentions):
+        if not self._queue_enabled(session):
+            raise RuntimeError("Очередь сообщений доступна только при включённой настройке в OpenCode v2")
+        if session.refining_draft_id:
+            raise RuntimeError("Дождитесь завершения работы с черновиком")
+        if not session.queue_ready or (session.cancel_event and session.cancel_event.is_set()):
+            raise RuntimeError("Дождитесь начала ответа Copilot")
+        # V2 model, variant and environment context are session-scoped. Never
+        # mutate them while the runner is executing already-admitted prompts.
+        if (environment != session.active_environment
+                or (provider_id.strip() or session.provider_id) != session.provider_id
+                or (model_id.strip() or session.model_id) != session.model_id
+                or thinking not in {"auto", session.active_thinking}):
+            raise ValueError("Для очереди сохраните текущее окружение, модель и thinking")
+        if len(session.copilot.queued_messages()) >= 10:
+            raise RuntimeError("Очередь заполнена: не более 10 сообщений")
+        metadata = {
+            "source": "autodeploy-queue", "message": redact_text(message),
+            "environment": environment, "ticket_id": ticket_id,
+            "provider_id": session.provider_id, "model_id": session.model_id,
+            "thinking": session.active_thinking,
+            "mentions": [{key: item[key] for key in ("catalog", "resource", "identifier", "label")}
+                         for item in resolved_mentions],
+        }
+        admitted = session.copilot.enqueue_message(
+            message, environment=environment, ticket_id=ticket_id,
+            operator_references=resolved_mentions, metadata=metadata,
+        )
+        try:
+            session.emit("queue", self._queue_state(session))
+        except Exception:
+            # Admission already succeeded. A read failure must not tell the
+            # browser to resubmit a duplicate native prompt.
+            _log.warning("Could not refresh queue after admission session=%s", session.id)
+        return {"queued": True, "queue_id": admitted["id"]}
+
+    def remove_queued_message(self, session_id: str, message_id: str):
+        session = self._session(session_id)
+        if not session.queue_supported:
+            raise RuntimeError("Очередь требует OpenCode v2")
+        session.copilot.remove_queued_message(message_id)
+        state = self._queue_state(session)
+        session.emit("queue", state)
+        return state
+
+    def resume_queue(self, session_id: str):
+        session = self._session(session_id)
+        with session.condition:
+            if not session.queue_supported or session.busy:
+                raise RuntimeError("Дождитесь остановки текущего запроса")
+            rows = session.copilot.queued_messages()
+            if not rows:
+                raise RuntimeError("Очередь OpenCode пуста")
+            metadata = rows[0].get("payload", {}).get("metadata", {})
+            if metadata.get("source") != "autodeploy-queue":
+                raise RuntimeError("Продолжите эту очередь в OpenCode")
+            return self.start_message(
+                session_id, message="Продолжить очередь", environment=metadata["environment"],
+                ticket_id=None, provider_id=metadata["provider_id"], model_id=metadata["model_id"],
+                thinking=metadata["thinking"], _resume_queue=True,
+            )
 
     def search_reference_mentions(
         self,
@@ -906,8 +1072,10 @@ class WebAIService:
 
     def cancel(self, session_id: str) -> None:
         session = self._session(session_id)
-        if session.cancel_event:
-            session.cancel_event.set()
+        with session.condition:
+            session.queue_ready = False
+            if session.cancel_event:
+                session.cancel_event.set()
         session.copilot.cancel()
         session.form_search.cancel()
         if session.active_researcher:
@@ -1558,6 +1726,13 @@ class WebAIService:
                 job.error = "Операция отменена" if job.cancel_event.is_set() else str(exc)
 
     def _outcome_payload(self, session: WebCopilotSession, outcome: CopilotOutcome) -> dict[str, Any]:
+        if getattr(outcome, "messages", ()):
+            # Native queued turns can execute before Python sees their boundary.
+            # Attribute drafts to the actual message's tool results, never to a
+            # shared mutable "current turn" accumulator.
+            for event in reversed(self._history_from_opencode(outcome.messages)):
+                if event.kind == "assistant":
+                    return event.payload
         if session.copilot.mcp_native:
             job_id = session.job_id
             candidates = (

@@ -280,6 +280,8 @@ def build_session_permissions(
 class OpenCodeClient:
     """Клиент общего сервера с auth и жёстко закреплённой runtime-директорией."""
 
+    supports_message_queue = False
+
     def __init__(
         self,
         base_url: str,

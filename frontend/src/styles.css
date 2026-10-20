@@ -554,7 +554,26 @@ textarea.text-control { min-height: 120px; resize: vertical; line-height: 1.55; 
   box-shadow: 0 0 0 3px rgb(72 145 245 / 18%), 0 5px 16px rgb(0 0 0 / 24%);
 }
 
+.message-queue { margin: 0 20px 12px; padding: 14px; border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border)); border-radius: 14px; background: linear-gradient(120deg, var(--primary-soft), var(--surface)); }
+.message-queue > header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.queue-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 10px; background: var(--surface); color: var(--primary); }
+.message-queue > header > div { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.message-queue strong { font-size: 11px; display: flex; align-items: center; gap: 7px; }
+.message-queue small { color: var(--muted); font-size: 9px; }
+.queue-count { background: var(--primary); color: var(--surface); border-radius: 99px; min-width: 19px; text-align: center; padding: 1px 5px; font-size: 9px; }
+.message-queue ol { display: grid; gap: 5px; list-style: none; margin: 0; padding: 0; max-height: 248px; overflow-y: auto; scrollbar-width: thin; }
+.message-queue li { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+.queue-position { flex: none; display: grid; place-items: center; border-radius: 50%; width: 22px; height: 22px; color: var(--primary); background: var(--primary-soft); font-size: 10px; font-weight: 750; }
+.queue-message { flex: 1; min-width: 0; }
+.queue-message p { margin: 0; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.queue-message-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); margin-top: 5px; font-size: 8px; overflow-wrap: anywhere; }
+.message-queue.paused { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: linear-gradient(120deg, var(--warning-soft), var(--surface)); }
+.message-queue.paused .queue-icon { color: var(--warning); }
+.queue-composer-hint { margin: 0; color: var(--muted); font-size: 9px; }
 @media (max-width: 760px) {
+  .message-queue { margin: 0 10px 10px; padding: 10px; }
+  .message-queue > header { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; }
+  .message-queue > header > button { grid-column: 2; justify-self: start; }
   .configuration-grid { grid-template-columns: 1fr; }
   .catalog-search { grid-template-columns: 22px minmax(0, 1fr) auto; }.catalog-search > span { display: none; }
   .settings-actions { bottom: 70px; }

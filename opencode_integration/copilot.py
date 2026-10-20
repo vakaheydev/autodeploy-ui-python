@@ -164,6 +164,7 @@ class CopilotOutcome:
     opencode_seconds: Optional[float] = None
     generation_seconds: Optional[float] = None
     tokens_used: int = 0
+    messages: tuple[Mapping[str, Any], ...] = ()
 
 
 def detect_ticket_reference(message: str) -> Optional[str]:
@@ -533,6 +534,47 @@ class UnifiedCopilot:
     def mcp_native(self) -> bool:
         return bool(self._workflow_id)
 
+    def queued_messages(self):
+        if not self._session_id:
+            return []
+        return self._client.list_message_queue(self._session_id)
+
+    def enqueue_message(self, message, *, environment, ticket_id, operator_references, metadata):
+        if not self._workflow_id or not self._session_id or not self._session_context_initialized:
+            raise RuntimeError("Дождитесь начала ответа Copilot")
+        prompt = build_mcp_copilot_prompt(
+            operator_message=redact_text(message), operator_references=operator_references,
+        )
+        requested_ticket = ticket_id or detect_ticket_reference(message)
+        if requested_ticket:
+            context = self._context_builder.build(ticket_id=requested_ticket, environment=environment)
+            prompt = build_copilot_ticket_context(
+                ticket_id=requested_ticket, environment=environment,
+                itsm_data=context.itsm, ado_data=context.ado, context_warnings=context.warnings,
+                ticket_type=context.ticket_type, ai_instructions=context.ai_instructions,
+            ) + "\n\n" + prompt
+        return self._client.enqueue_message(self._session_id, prompt, metadata=metadata, require_active=True)
+
+    def remove_queued_message(self, message_id):
+        self._client.cancel_queued_message(self._require_session(), message_id)
+
+    def resume_queued_messages(self, *, cancel_event, on_event, on_queue_event):
+        with self._operation_lock:
+            self._cancel_event = cancel_event
+            self._on_event = on_event
+            self._on_queue_event = on_queue_event
+            response = self._client.resume_message_queue(
+                self._require_session(), cancel_event=cancel_event, on_event=self._handle_raw_event,
+            )
+            info = response.get("info") or {}
+            return CopilotOutcome(
+                intent="conversation", answer=OpenCodeClient._message_text(response), question=None,
+                selected_form_id=None, form_candidates=(), extraction=None, plan=(),
+                repository_items=(), diagnostics=None, warnings=(),
+                tokens_used=opencode_context_tokens(info),
+                messages=tuple(response.get("_turn_messages") or (response,)),
+            )
+
     def resume_session(self, session_id: str) -> None:
         """Attach to a persisted AutoDeploy-owned OpenCode session."""
         clean_id = str(session_id).strip()
@@ -587,6 +629,7 @@ class UnifiedCopilot:
         draft_context: Any = None,
         operator_references: Any = None,
         detect_ticket_references: bool = True,
+        on_queue_event: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> CopilotOutcome:
         with self._operation_lock:
             text = redact_text(str(message).strip())
@@ -597,6 +640,7 @@ class UnifiedCopilot:
             notify = on_progress or (lambda _message: None)
             self._cancel_event = cancel_event
             self._on_event = on_event or (lambda _event: None)
+            self._on_queue_event = on_queue_event
             self._on_session = on_session or (lambda _session: None)
             self._provider_id = provider_id
             self._model_id = model_id
@@ -649,6 +693,7 @@ class UnifiedCopilot:
 
             if self._workflow_id:
                 notify("Copilot анализирует запрос и выбирает нужные инструменты…")
+                native_messages = []
                 message_result = self._client.send_chat_message(
                     session_id=self._require_session(),
                     prompt=build_mcp_copilot_prompt(
@@ -664,6 +709,7 @@ class UnifiedCopilot:
                     variant=variant,
                     cancel_event=cancel_event,
                     on_event=self._handle_raw_event,
+                    on_response=lambda response: native_messages.extend(response.get("_turn_messages", ())),
                 )
                 answer = visible_assistant_text({
                     "type": "text",
@@ -690,6 +736,7 @@ class UnifiedCopilot:
                         message_result.parts
                     ),
                     tokens_used=opencode_context_tokens(message_result.info),
+                    messages=tuple(native_messages),
                 )
                 _log.info(
                     "mcp-native copilot success session=%s ticket=%s duration=%.2fs",
@@ -1034,6 +1081,13 @@ class UnifiedCopilot:
 
     def _handle_raw_event(self, event: Mapping[str, Any]) -> None:
         event_type = str(event.get("type") or "")
+        if event_type.startswith("client.queue."):
+            if event_type == "client.queue.reply":
+                self._discard_pending_text_parts()
+            callback = getattr(self, "_on_queue_event", None)
+            if callback:
+                callback(event)
+            return
         props = event.get("properties")
         values = props if isinstance(props, dict) else {}
         if event_type == "client.sse.disconnected":

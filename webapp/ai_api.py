@@ -129,6 +129,30 @@ def cancel(session_id: str, request: Request):
         translate(exc)
 
 
+@router.get("/sessions/{session_id}/queue")
+def message_queue(session_id: str, request: Request):
+    try:
+        return service(request).message_queue(session_id)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.delete("/sessions/{session_id}/queue/{message_id}")
+def remove_queued_message(session_id: str, message_id: str, request: Request):
+    try:
+        return service(request).remove_queued_message(session_id, message_id)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.post("/sessions/{session_id}/queue/resume", status_code=status.HTTP_202_ACCEPTED)
+def resume_queue(session_id: str, request: Request):
+    try:
+        return service(request).resume_queue(session_id)
+    except Exception as exc:
+        translate(exc)
+
+
 @router.post("/sessions/{session_id}/permissions/{permission_id}")
 def permission(
     session_id: str, permission_id: str, body: PermissionReplyRequest, request: Request

@@ -23,6 +23,7 @@ from config.environments import (
     OPENCODE_MAX_CONTEXT_CHARS_KEY,
     OPENCODE_LOG_LEVEL_KEY,
     OPENCODE_MODEL_ID_KEY,
+    OPENCODE_MESSAGE_QUEUE_KEY,
     OPENCODE_PROVIDER_ID_KEY,
     OPENCODE_REFERENCE_INLINE_MAX_BYTES_KEY,
     OPENCODE_REFERENCE_INLINE_MAX_ITEMS_KEY,
@@ -111,6 +112,12 @@ def _specs() -> tuple[SettingSpec, ...]:
         SettingSpec(
             "AUTODEPLOY_OPENCODE_AUTO_CONNECT", "Автоподключение OpenCode", "OpenCode",
             "boolean", "true", "Применится после перезапуска.", restart_required=True,
+        ),
+        SettingSpec(
+            OPENCODE_MESSAGE_QUEUE_KEY, "Очередь сообщений Copilot", "OpenCode",
+            "boolean", "true",
+            "Только OpenCode v2. До 10 сообщений ожидают завершения текущего запроса. "
+            "Остановка или ошибка приостанавливает очередь. Применяется без перезапуска.",
         ),
         SettingSpec(
             "AUTODEPLOY_OPEN_BROWSER", "Открывать браузер при старте", "Общие",
