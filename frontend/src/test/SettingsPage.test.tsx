@@ -2,7 +2,12 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsPage } from '../pages/SettingsPage'
+import { SettingsPage as SettingsPageContent } from '../pages/SettingsPage'
+import { OpenCodeProvider } from '../opencode'
+
+function SettingsPage() {
+  return <OpenCodeProvider><SettingsPageContent /></OpenCodeProvider>
+}
 
 const settings = {
   groups: [{ name: 'Доступ', fields: [{

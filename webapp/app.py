@@ -198,6 +198,11 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error(_request: Request, exc: RequestValidationError):
+        if _request.url.path == "/api/v1/opencode/authenticate":
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "Введите пароль OpenCode (от 1 до 4096 символов)."},
+            )
         return JSONResponse(
             status_code=422,
             content={

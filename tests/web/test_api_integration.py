@@ -81,6 +81,21 @@ def request(base: str, path: str, *, method: str = "GET", body=None, headers=Non
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("body", [
+    {"password": "invalid-secret", "unexpected": "also-secret"},
+    {"password": {"secret": "invalid-secret"}},
+    {"password": ""},
+])
+def test_opencode_password_validation_never_echoes_input(server: str, body) -> None:
+    status, _, content = request(
+        server, "/api/v1/opencode/authenticate", method="POST", body=body,
+    )
+    assert status == 422
+    assert b"invalid-secret" not in content
+    assert b"also-secret" not in content
+
+
+@pytest.mark.integration
 def test_health_catalog_openapi_and_spa(server: str) -> None:
     status, headers, content = request(server, "/api/v1/health")
     assert status == 200

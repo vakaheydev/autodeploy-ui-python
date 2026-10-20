@@ -59,6 +59,12 @@ V1 preserves optional Basic Auth and the configured username.
 
 For **Подключиться**, start a V2 server with a known `OPENCODE_PASSWORD`, then
 save the same password and its localhost address in AutoDeploy settings.
+If OpenCode returns HTTP 401, AutoDeploy opens a dismissible password dialog.
+The login form also remains in **Настройки → OpenCode** until authentication
+succeeds. Closing the dialog does not hide that settings form or reopen the
+dialog on every status refresh. **Сохранить и подключиться** saves the password
+as a write-only local setting and checks the current server without restarting
+it. A rejected password leaves the form available for another attempt.
 `OPENCODE_SERVER_PASSWORD` remains an upstream alias. Opening the separate
 OpenCode Web UI requires its own login; set a known password before creating
 the server if you need that UI. Passwords are never included in session links.

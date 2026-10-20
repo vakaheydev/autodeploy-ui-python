@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class OpenCodeAuthenticateRequest(StrictModel):
+    password: SecretStr = Field(min_length=1, max_length=4096)
 
 
 class ValuesRequest(StrictModel):

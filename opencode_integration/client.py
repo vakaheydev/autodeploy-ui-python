@@ -50,7 +50,7 @@ class OpenCodeHttpError(OpenCodeError):
     def __init__(self, status: int, message: str) -> None:
         self.status = status
         if status == 401:
-            message = "неверные credentials OpenCode Server"
+            message = "OpenCode Server требует пароль или отклонил введённый пароль"
         super().__init__(f"OpenCode HTTP {status}: {redact_text(message)[:2000]}")
 
 
@@ -290,6 +290,7 @@ class OpenCodeClient:
         directory: Path | str | None = None,
         username: str = "opencode",
         password: str = "",
+        on_auth_error: Optional[Callable[[], None]] = None,
     ) -> None:
         parsed = urllib.parse.urlparse(base_url)
         if (
@@ -314,6 +315,7 @@ class OpenCodeClient:
         self.directory = str(Path(directory).resolve()) if directory else ""
         self.username = username.strip() or "opencode"
         self._password = password
+        self._on_auth_error = on_auth_error
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             _NoRedirectHandler(),
@@ -1182,6 +1184,10 @@ class OpenCodeClient:
                             discard_event = True
                         else:
                             data_lines.append(line[5:].lstrip())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and self._on_auth_error is not None:
+                self._on_auth_error()
+            return
         except (urllib.error.URLError, OSError):
             return
 
@@ -1352,6 +1358,8 @@ class OpenCodeClient:
                 except json.JSONDecodeError as exc:
                     raise OpenCodeProtocolError("OpenCode вернул невалидный JSON") from exc
         except urllib.error.HTTPError as exc:
+            if exc.code == 401 and self._on_auth_error is not None:
+                self._on_auth_error()
             raw = exc.read(16_384).decode("utf-8", errors="replace")
             # Не переносим response body в UI/исключение: provider способен
             # вернуть фрагмент prompt или внешних данных. Для диагностики

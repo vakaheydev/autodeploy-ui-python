@@ -14,7 +14,7 @@ import socket
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlsplit
@@ -25,6 +25,7 @@ from opencode_integration.client import (
     OpenCodeAgentMissingError,
     OpenCodeClient,
     OpenCodeError,
+    OpenCodeHttpError,
 )
 from opencode_integration.connection import OpenCodeConnection
 
@@ -61,6 +62,7 @@ class ManagerStatus:
     agent_loaded: bool = False
     ownership: str = "none"  # none | external | owned
     runtime_dir: str = ""
+    auth_required: bool = False
 
 
 def default_runtime_dir() -> Path:
@@ -204,6 +206,7 @@ class OpenCodeManager:
                         pid=self._process.pid,
                         ownership="owned",
                         runtime_dir=str(self.runtime_dir),
+                        auth_required=self._status.auth_required,
                     )
                 )
                 self._client = None
@@ -235,6 +238,7 @@ class OpenCodeManager:
                 health = client.health(timeout=self._remaining(deadline))
                 if not health.healthy:
                     raise OpenCodeManagerError("health check вернул healthy=false")
+                self._authentication_succeeded()
                 self._prepare_runtime(version=health.version)
                 self._set_status(
                     "connecting",
@@ -254,6 +258,7 @@ class OpenCodeManager:
                     "error",
                     f"Не удалось подключиться к серверу {target}: {exc}",
                     address=target,
+                    auth_required=True if self._requires_auth(exc) else None,
                 )
                 raise OpenCodeManagerError(self._status.message) from exc
 
@@ -421,7 +426,7 @@ class OpenCodeManager:
         thread.start()
         return thread
 
-    def check_status(self) -> ManagerStatus:
+    def check_status(self, *, refresh_credentials: bool = False) -> ManagerStatus:
         """Повторяет health/agent-check текущего адреса без создания процесса."""
         with self._lifecycle_lock:
             with self._lock:
@@ -437,6 +442,11 @@ class OpenCodeManager:
                     else "external"
                 )
                 process = self._process
+                if refresh_credentials:
+                    existing = None
+                    self._client = None
+                    if self._ownership == "owned":
+                        self._owned_password = self.password
             self._set_status(
                 "checking",
                 f"Проверяю состояние сервера {address}…",
@@ -449,6 +459,7 @@ class OpenCodeManager:
                 health = client.health(timeout=self.connect_timeout)
                 if not health.healthy:
                     raise OpenCodeManagerError("health check вернул healthy=false")
+                self._authentication_succeeded()
                 self._prepare_runtime(version=health.version)
                 self._require_agents(
                     client,
@@ -461,6 +472,7 @@ class OpenCodeManager:
                     address=address,
                     ownership=ownership,
                     pid=process.pid if process else None,
+                    auth_required=True if self._requires_auth(exc) else None,
                 )
                 raise OpenCodeManagerError(self._status.message) from exc
             with self._lock:
@@ -508,6 +520,7 @@ class OpenCodeManager:
                     address=previous.address,
                     pid=process.pid if process else previous.pid,
                     ownership=ownership,
+                    auth_required=True if self._requires_auth(exc) else None,
                 )
                 raise OpenCodeManagerError(self._status.message) from exc
             return self.status
@@ -649,13 +662,38 @@ class OpenCodeManager:
 
     def _make_client(self, address: str) -> OpenCodeConnection:
         owned_v2 = self._ownership == "owned" and not self._launch_version.removeprefix("v").startswith("1.")
-        return OpenCodeConnection(
+        client = OpenCodeConnection(
             address,
             timeout=self.request_timeout,
             directory=self.runtime_dir,
             username="opencode" if owned_v2 else self.username,
             password=self._owned_password if self._ownership == "owned" else self.password,
+            on_auth_error=lambda: self._authentication_failed(client),
         )
+        return client
+
+    def _authentication_failed(self, client: OpenCodeConnection) -> None:
+        with self._lock:
+            # Late responses from a replaced connection must not revoke a new login.
+            if self._client is client:
+                self._set_status_locked(replace(
+                    self._status, state="error", auth_required=True,
+                    message="OpenCode Server требует пароль. Войдите в настройках OpenCode.",
+                ))
+
+    def _authentication_succeeded(self) -> None:
+        with self._lock:
+            self._status = replace(self._status, auth_required=False)
+
+    @staticmethod
+    def _requires_auth(error: BaseException | None) -> bool:
+        seen: set[int] = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, OpenCodeHttpError) and error.status == 401:
+                return True
+            error = error.__cause__
+        return False
 
     def _detect_version(self, executable: str) -> str:
         try:
@@ -800,6 +838,7 @@ class OpenCodeManager:
             try:
                 health = client.health(timeout=min(0.8, self._remaining(deadline)))
                 if health.healthy:
+                    self._authentication_succeeded()
                     return
                 last_error = OpenCodeManagerError("health check вернул healthy=false")
             except Exception as exc:
@@ -807,7 +846,7 @@ class OpenCodeManager:
             time.sleep(0.15)
         raise OpenCodeManagerError(
             f"OpenCode не прошёл health check за {self.startup_timeout:g} с: {last_error}"
-        )
+        ) from last_error
 
     @staticmethod
     def _remaining(deadline: float) -> float:
@@ -830,7 +869,10 @@ class OpenCodeManager:
         *,
         version: str = "",
     ) -> OpenCodeConnection:
-        self._set_status("error", message, version=version)
+        self._set_status(
+            "error", message, version=version,
+            auth_required=True if self._requires_auth(cause) else None,
+        )
         error = OpenCodeManagerError(message)
         if cause is not None:
             raise error from cause
@@ -886,6 +928,7 @@ class OpenCodeManager:
                             pid=process.pid,
                             ownership="owned",
                             runtime_dir=str(self.runtime_dir),
+                            auth_required=previous.auth_required,
                         )
                     )
 
@@ -929,6 +972,7 @@ class OpenCodeManager:
         pid: Optional[int] = None,
         agent_loaded: bool = False,
         ownership: str = "none",
+        auth_required: Optional[bool] = None,
     ) -> None:
         with self._lock:
             self._set_status_locked(
@@ -941,6 +985,7 @@ class OpenCodeManager:
                     agent_loaded=agent_loaded,
                     ownership=ownership,
                     runtime_dir=str(self.runtime_dir),
+                    auth_required=self._status.auth_required if auth_required is None else auth_required,
                 )
             )
 
@@ -958,6 +1003,7 @@ class OpenCodeManager:
             status.agent_loaded,
             status.ownership,
             status.runtime_dir,
+            status.auth_required,
         )
         self._status = safe
         level = logging.ERROR if safe.state == "error" else logging.INFO

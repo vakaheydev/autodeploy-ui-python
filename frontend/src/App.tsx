@@ -4,6 +4,7 @@ import { api } from './api'
 import { Shell } from './components/Shell'
 import { EnvironmentProvider, useEnvironment } from './environment'
 import type { Category, Environment } from './types'
+import { OpenCodeProvider } from './opencode'
 
 const FormPage = lazy(() => import('./pages/FormPage').then((module) => ({ default: module.FormPage })))
 const FormsPage = lazy(() => import('./pages/FormsPage').then((module) => ({ default: module.FormsPage })))
@@ -42,5 +43,5 @@ function RoutesWithBootstrap() {
 }
 
 export function App() {
-  return <EnvironmentProvider><RoutesWithBootstrap /></EnvironmentProvider>
+  return <EnvironmentProvider><OpenCodeProvider><RoutesWithBootstrap /></OpenCodeProvider></EnvironmentProvider>
 }

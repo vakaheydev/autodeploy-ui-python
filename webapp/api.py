@@ -11,7 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from config.categories import CATEGORIES, CATEGORY_ORDER
-from config.environments import ENVIRONMENTS
+from config.environments import ENVIRONMENTS, OPENCODE_SERVER_PASSWORD_KEY
+from opencode_integration.manager import OpenCodeManagerError
 from forms.registry import FormRegistry
 from tickets import TicketNotFound, TicketUserError
 from webapp.configuration import SettingsValidationError, settings_snapshot, update_settings
@@ -28,6 +29,7 @@ from webapp.models import (
     ActionDialogReferenceRequest,
     ActionDialogStateRequest,
     ActionRequest,
+    OpenCodeAuthenticateRequest,
     DraftSaveRequest,
     EnvironmentActivationRequest,
     ITSMPromptSettingsUpdateRequest,
@@ -740,6 +742,27 @@ def poll_submission(submission_id: str, request: Request):
 @router.get("/opencode/status", tags=["opencode"])
 def opencode_status(request: Request):
     return dataclasses.asdict(container(request).opencode_manager.status)
+
+
+@router.post("/opencode/authenticate", tags=["opencode"])
+def opencode_authenticate(body: OpenCodeAuthenticateRequest, request: Request):
+    """Save a write-only password and return the resulting connection status."""
+    app_container = container(request)
+    manager = app_container.opencode_manager
+    try:
+        update_settings(
+            app_container.env_manager, manager,
+            {OPENCODE_SERVER_PASSWORD_KEY: body.password.get_secret_value()}, [],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        # Preserve the active address and ownership, including a managed server's
+        # dynamically allocated port. Login must not stop/restart that process.
+        manager.check_status(refresh_credentials=True)
+    except OpenCodeManagerError:
+        pass  # The status carries the typed auth failure or another check error.
+    return dataclasses.asdict(manager.status)
 
 
 @router.post("/opencode/{action}", tags=["opencode"])
