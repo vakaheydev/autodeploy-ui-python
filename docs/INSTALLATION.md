@@ -54,7 +54,8 @@ in the isolated runtime. The CLI version determines its launch configuration;
 connections automatically select the V1 or V2 adapter from the server's reported
 version. V2 requires authentication: AutoDeploy uses the saved
 server password or generates an in-memory password for its owned process.
-The V2 username is `opencode`. Shell password aliases cannot override it.
+The V2 username is always `opencode`, including connections to an external server;
+a saved **Basic Auth username** applies only to V1. Shell password aliases cannot override it.
 V1 preserves optional Basic Auth and the configured username.
 
 For **Подключиться**, start a V2 server with a known `OPENCODE_PASSWORD`, then

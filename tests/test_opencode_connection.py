@@ -71,6 +71,18 @@ def test_timeout_update_reaches_both_adapters():
     assert connection._v1.timeout == connection._v2.timeout == 15
 
 
+def test_custom_v1_password_rejection_never_selects_legacy_protocol():
+    connection = OpenCodeConnection("http://127.0.0.1:4096", username="legacy-user", password="wrong")
+    with patch.object(connection._v2, "health", side_effect=OpenCodeHttpError(401, "auth")), \
+         patch.object(connection._v1, "_request", side_effect=OpenCodeHttpError(401, "auth")) as probe, \
+         patch.object(connection._v1, "health") as legacy:
+        with pytest.raises(OpenCodeHttpError):
+            connection.health()
+        assert probe.call_args.args[:2] == ("GET", "/api/info")
+        legacy.assert_not_called()
+        assert connection._adapter is None
+
+
 @pytest.mark.parametrize("version", ["1.18.18", "2.0.32"])
 def test_runtime_config_can_switch_versions_without_stale_managed_entry(tmp_path, version):
     manager = OpenCodeManager(Path(__file__).parents[1], runtime_dir=tmp_path,

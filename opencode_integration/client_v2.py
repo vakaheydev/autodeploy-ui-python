@@ -68,6 +68,8 @@ class OpenCodeV2Client(OpenCodeClient):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # V2 fixes this identity server-side; a saved V1 username is not valid.
+        self.username = "opencode"
         self._mcp_lock = threading.Lock()
         self._direct_mcp: dict[str, dict[str, Any]] = {}
         self._queue_lock = threading.RLock()

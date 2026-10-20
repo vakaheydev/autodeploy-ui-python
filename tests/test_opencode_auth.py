@@ -19,7 +19,7 @@ from webapp.api import router
 
 @pytest.fixture(params=["1.18.18", "2.0.32"])
 def protected_server(request):
-    state = SimpleNamespace(password="test-password", offline=False)
+    state = SimpleNamespace(password="test-password", username="opencode", version=request.param, offline=False)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -27,7 +27,7 @@ def protected_server(request):
 
         def do_GET(self):
             expected = "Basic " + base64.b64encode(
-                f"opencode:{state.password}".encode()
+                f"{state.username}:{state.password}".encode()
             ).decode()
             code, body = 200, {}
             if state.offline:
@@ -95,6 +95,18 @@ def test_initial_401_retry_and_active_connection_expiry(manager, protected_serve
         old.health()
     assert not manager.status.auth_required  # Ignore an obsolete client's 401.
     assert manager.is_ready
+
+
+def test_saved_legacy_username_is_used_only_for_v1(manager, protected_server):
+    if protected_server.version.startswith("1."):
+        protected_server.username = "legacy-user"
+    manager.configure(username="legacy-user", password=protected_server.password)
+    client = manager.connect()
+    assert manager.is_ready
+    assert client.username == protected_server.username
+    assert not manager.status.auth_required
+    # Every later operation must use the selected identity, too.
+    assert client.health().version == protected_server.version
 
 
 def test_password_api_is_write_only_and_preserves_owned_server(manager, protected_server, tmp_path):

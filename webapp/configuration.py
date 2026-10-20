@@ -149,7 +149,7 @@ def _specs() -> tuple[SettingSpec, ...]:
         ),
         SettingSpec(
             OPENCODE_SERVER_USERNAME_KEY, "Basic Auth username", "OpenCode", "text",
-            "opencode",
+            "opencode", "Только OpenCode v1. В OpenCode v2 логин всегда opencode.",
         ),
         SettingSpec(
             OPENCODE_SERVER_PASSWORD_KEY, "Basic Auth password", "OpenCode", "secret",

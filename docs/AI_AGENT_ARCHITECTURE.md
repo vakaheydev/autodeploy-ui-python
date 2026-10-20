@@ -8,7 +8,10 @@ Supported reference versions are **OpenCode 1.18.18 and 2.0.32**.
 `connection.py` automatically selects `client.py` for 1.x or `client_v2.py` for
 2.x before sending any session mutation. It probes `/api/info` first and falls
 back to `/global/health` only for a missing route or the V1 Web UI HTML response.
-Authentication, network and server errors never trigger fallback. The selected
+V2 always authenticates as `opencode`. If that login receives 401 and a different
+V1 username is configured, the same `/api/info` route is probed with the V1
+credentials. Only a missing route or HTML permits switching to `/global/health`;
+401 alone never selects V1. Network and server errors never trigger fallback. The selected
 adapter stays fixed until reconnect. V2 projects its native `/api` messages into
 the same Python agent contract used by V1.
 
