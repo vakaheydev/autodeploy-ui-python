@@ -1,4 +1,4 @@
-"""Получение, нормализация и очистка недоверенного ITSM/ADO-контекста."""
+"""Получение, нормализация и ограничение недоверенного ITSM/ADO-контекста."""
 from __future__ import annotations
 
 import copy
@@ -33,19 +33,6 @@ _SECRET_KEY_RE = re.compile(
     r"client[_-]?secret|credential|credentials|connection[_-]?string|authorization|"
     r"auth[_-]?header|private[_-]?key|cookie|set[_-]?cookie)(?:$|[_\-.])",
     re.IGNORECASE,
-)
-_PEM_RE = re.compile(
-    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?"
-    r"-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
-    re.IGNORECASE | re.DOTALL,
-)
-_AUTH_RE = re.compile(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9+/._~=-]{8,}", re.IGNORECASE)
-_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
-_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b([a-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|pat|"
-    r"password|passwd|client[_-]?secret|connection[_-]?string|authorization|"
-    r"private[_-]?key|cookie)[a-z0-9_.-]*)"
-    r"\b[\"']?\s*[:=]\s*[\"']?([^\"'\s,;}]{6,})"
 )
 _ADO_PR_URL_RE = re.compile(
     r"https?://[^\s<>\"']+/(?:pullrequest|pullrequests?)/\d+[^\s<>\"']*",
@@ -97,20 +84,16 @@ def is_unneeded_technical_key(key: str) -> bool:
 
 
 def redact_text(value: str) -> str:
-    """Удаляет распространённые секреты, сохраняя полезный окружающий текст."""
-    value = _PEM_RE.sub("[REDACTED_PRIVATE_KEY]", value)
-    value = _AUTH_RE.sub("[REDACTED_AUTHORIZATION]", value)
-    value = _JWT_RE.sub("[REDACTED_JWT]", value)
-    value = _ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", value)
+    """Compatibility helper: AI text passes through without content masking.
+
+    Keep the existing import contract for corporate integrations. Operational
+    log filtering is independent and belongs to ``core.logging_setup``.
+    """
     return value
 
 
 def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
-    """Приводит произвольный ответ API к JSON-совместимому очищенному объекту."""
-    if key and is_secret_key(key):
-        return "[REDACTED]"
-    if key and is_unneeded_technical_key(key):
-        return "[REMOVED_TECHNICAL_DATA]"
+    """Нормализует и ограничивает JSON-контекст без маскирования полей/текста."""
     if depth >= MAX_DEPTH:
         return "[TRUNCATED_MAX_DEPTH]"
     if value is None or isinstance(value, (bool, int)):
@@ -120,7 +103,6 @@ def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
     if isinstance(value, str):
         normalized = unicodedata.normalize("NFKC", value).replace("\x00", "")
         normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
-        normalized = redact_text(normalized)
         if len(normalized) > MAX_STRING_CHARS:
             return normalized[:MAX_STRING_CHARS] + "\n[TRUNCATED]"
         return normalized
@@ -151,11 +133,11 @@ def resolve_itsm_ai_prompt(
     form_id: str = "",
     prompt_override: Optional[Callable[[str], Optional[str]]] = None,
 ) -> Optional[ITSMAIPrompt]:
-    """Resolve optional trusted corporate guidance for one sanitized ticket.
+    """Resolve optional trusted corporate guidance for one normalized ticket.
 
     The capability is deliberately discovered with ``getattr`` so pre-existing
     corporate adapters that only implement ``get_ticket`` remain compatible.
-    The hook result is bounded and secret-redacted before it reaches OpenCode.
+    The hook result is normalized and bounded before it reaches OpenCode.
     """
     hook = getattr(itsm_service, "get_ai_prompt", None)
     if not callable(hook):

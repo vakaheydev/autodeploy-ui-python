@@ -1,6 +1,6 @@
 """OpenCode 2.0.32 transport, projected onto AutoDeploy's stable AI contract.
 
-The V1 client supplies localhost/auth/redaction and JSON-validation primitives.
+The V1 client supplies localhost/auth and JSON-validation primitives.
 V2 prompts are durable inbox items; only a subsequent idle marker completes a
 turn. Polling the persisted projection also recovers progress missed by SSE.
 """

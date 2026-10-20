@@ -1372,13 +1372,13 @@ def test_ai_itsm_mode_delegates_sanitized_context_to_exact_form(
         )
         assert fake_ai.arguments["source_context"] == {
             "summary": "Create from REQ-42",
-            "access_token": "[REDACTED]",
+            "access_token": "must-not-reach-opencode",
         }
         assert prompt_itsm.request is not None
         assert prompt_itsm.request.form_id == "test.ticket-ai"
         assert prompt_itsm.request.ticket_context == {
             "summary": "Create from REQ-42",
-            "access_token": "[REDACTED]",
+            "access_token": "must-not-reach-opencode",
         }
     finally:
         container.ai = None

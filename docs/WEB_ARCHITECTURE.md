@@ -80,7 +80,8 @@ string `self.current_environment`; use it instead of
 exact Python patch, while `ai(context)` starts the main MCP-native Copilot for
 the already selected form and creates a persistent inline-review draft. A plain
 mapping remains a deterministic compatibility result. AI source context is
-sanitized server-side and never returned to React.
+normalized and bounded server-side without automatic content masking, and never
+returned to React.
 
 For AI mode the corporate ITSM capability remains responsible for returning a
 stable `ticket_type`. An operator may maintain an exact `ticket_type -> prompt`

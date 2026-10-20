@@ -36,6 +36,14 @@ config не переписывается, `execute` остаётся запре�
 требует разового подтверждения через session-scoped permission reply.
 Корпоративные extension contracts и Python draft lifecycle не меняются.
 
+AI-контекст, сообщения, результаты инструментов и их подробности в чате
+передаются без автоматической подстановки `[REDACTED]` по именам полей или
+текстовым шаблонам. Это относится и к `token`, `password`, `authorization`,
+ключам и техническим полям внутри переданного контекста. Public core сохраняет
+нормализацию, лимиты размера/глубины, declared reference fields и границы
+недоверенных данных. Фильтрация эксплуатационных логов и write-only настройки
+приложения работают отдельно.
+
 `autodeploy-copilot` — единственный агент, разговаривающий с пользователем.
 Обычный вопрос или приветствие не запускает form search. Main session не
 получает полный catalog при инициализации и сохраняет history между turns.
@@ -246,7 +254,7 @@ OpenCode session.
 
 - workflow/session ID и ссылку на OpenCode web session;
 - model + thinking variant;
-- tool name/status/duration и раскрываемые sanitized input/output;
+- tool name/status/duration и раскрываемые input/output с лимитом размера, без маскирования значений;
 - AutoDeploy server request ID и error type;
 - состояние OpenCode connection и MCP connections.
 

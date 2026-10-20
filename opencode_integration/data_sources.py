@@ -16,9 +16,9 @@ class DataSourceNotConfiguredError(RuntimeError):
 
 @dataclass(frozen=True)
 class ITSMAIPromptRequest:
-    """Safe context passed to an optional corporate ticket-prompt hook.
+    """Normalized context passed to an optional corporate ticket-prompt hook.
 
-    ``ticket_context`` has already passed through the public redaction layer.
+    ``ticket_context`` is normalized and bounded, without field/text masking.
     ``form_id`` is empty while the main Copilot still has to choose a form and
     is populated for an exact-form ``fetch_from_itsm`` workflow.
     """

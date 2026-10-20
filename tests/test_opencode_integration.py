@@ -739,12 +739,12 @@ class ContextTests(unittest.TestCase):
                 ticket_id="x" * 201, environment="test_int"
             )
 
-    def test_context_is_redacted_and_bounded(self) -> None:
+    def test_context_preserves_values_and_remains_bounded(self) -> None:
         context = ContextBuilder(_FakeITSM(), _FakeTFS(), max_context_chars=20_000).build(
             ticket_id="REQ-1", environment="test_int"
         )
-        self.assertEqual(context.itsm["authorization"], "[REDACTED]")
-        self.assertEqual(context.ado["token"], "[REDACTED]")
+        self.assertEqual(context.itsm["authorization"], "Bearer this-is-a-secret-token")
+        self.assertEqual(context.ado["token"], "secret")
         self.assertEqual(context.pull_request_id, "42")
         self.assertFalse(hasattr(context, "references"))
 
@@ -760,11 +760,11 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(source.request.environment, "test_int")
         self.assertEqual(source.request.form_id, "")
         self.assertEqual(
-            source.request.ticket_context["authorization"], "[REDACTED]"
+            source.request.ticket_context["authorization"], "Bearer this-is-a-secret-token"
         )
         self.assertEqual(context.ticket_type, "create_api_v2")
         self.assertIn("Use service_name", context.ai_instructions)
-        self.assertNotIn("must-not-reach-opencode", context.ai_instructions)
+        self.assertIn("access_token=must-not-reach-opencode", context.ai_instructions)
 
     def test_operator_prompt_override_replaces_hook_prompt_for_exact_type(self) -> None:
         source = _PromptITSM()
@@ -781,7 +781,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(context.ticket_type, "create_api_v2")
         self.assertIn("operator-managed mapping", context.ai_instructions)
         self.assertNotIn("Use service_name", context.ai_instructions)
-        self.assertNotIn("redact-me", context.ai_instructions)
+        self.assertIn("token=redact-me", context.ai_instructions)
 
     def test_invalid_corporate_prompt_contract_fails_without_leaking_body(self) -> None:
         class InvalidPromptITSM(_FakeITSM):
@@ -840,7 +840,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(prompt.count("END_UNTRUSTED_ITSM_DATA"), 1)
         self.assertIn("[REMOVED_EXTERNAL_BOUNDARY_END]_ITSM_DATA", prompt)
 
-    def test_nested_secrets_are_removed(self) -> None:
+    def test_nested_context_values_are_not_masked(self) -> None:
         value = sanitize({
             "nested": {
                 "client_secret": "123456789",
@@ -850,12 +850,11 @@ class ContextTests(unittest.TestCase):
             "body": 'MY_TOKEN=abcdefghi {"client_secret":"quoted-secret"}',
             "environmentVariables": {"SAFE_LOOKING": "must-not-be-sent"},
         })
-        self.assertEqual(value["nested"]["client_secret"], "[REDACTED]")
-        self.assertEqual(value["nested"]["awsAccessKeyId"], "[REDACTED]")
-        self.assertEqual(value["nested"]["oauthToken"], "[REDACTED]")
-        self.assertNotIn("abcdefghi", value["body"])
-        self.assertNotIn("quoted-secret", value["body"])
-        self.assertEqual(value["environmentVariables"], "[REMOVED_TECHNICAL_DATA]")
+        self.assertEqual(value["nested"]["client_secret"], "123456789")
+        self.assertEqual(value["nested"]["awsAccessKeyId"], "AKIAEXAMPLE")
+        self.assertEqual(value["nested"]["oauthToken"], "oauth-secret-value")
+        self.assertEqual(value["body"], 'MY_TOKEN=abcdefghi {"client_secret":"quoted-secret"}')
+        self.assertEqual(value["environmentVariables"], {"SAFE_LOOKING": "must-not-be-sent"})
 
 
 class _ReferenceBackend:
@@ -2820,7 +2819,7 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertEqual(outcome.context.ticket_type, "create_api_v2")
         self.assertIn("TRUSTED_ITSM_AI_PROMPT", client.context_prompts[0])
         self.assertIn("Use service_name as the API name.", client.context_prompts[0])
-        self.assertNotIn("must-not-reach-opencode", client.context_prompts[0])
+        self.assertIn("access_token=must-not-reach-opencode", client.context_prompts[0])
 
     def test_same_ticket_context_is_not_resent_on_follow_up(self) -> None:
         client = _CopilotClient(_copilot_payload())
@@ -2924,7 +2923,7 @@ class CopilotWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(outcome.context)
         self.assertEqual(outcome.context.itsm["operator_request"], "Нужно что-то сделать с Payments")
 
-    def test_diagnostic_payload_is_redacted_and_bounded(self) -> None:
+    def test_diagnostic_payload_preserves_values_and_remains_bounded(self) -> None:
         copilot = UnifiedCopilot(
             _CopilotClient(_copilot_payload()),  # type: ignore[arg-type]
             _FakeITSM(), _FakeTFS(), forms=_all_forms(), max_context_chars=10_000,
@@ -2934,7 +2933,7 @@ class CopilotWorkflowTests(unittest.TestCase):
             "response": "x" * 20_000,
         })
         rendered = json.dumps(clean)
-        self.assertNotIn("super-secret-value", rendered)
+        self.assertIn("super-secret-value", rendered)
         self.assertLessEqual(len(rendered), 5_200)
         self.assertTrue(clean["_truncated"])
 

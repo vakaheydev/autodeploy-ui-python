@@ -90,8 +90,9 @@ class CreateAPIForm(BaseForm):
 `context` обязан быть JSON-объектом (`dict`/`Mapping`). Включайте только данные,
 нужные для этой формы. Не передавайте raw HTTP response, headers, cookies,
 credentials, полную историю заявки или unrelated attachments. Public runtime
-дополнительно выполняет redaction и ограничение коллекций, но это страховка, а
-не замена корпоративной выборке.
+нормализует JSON и ограничивает размер/глубину коллекций. Автоматического
+маскирования значений и фильтрации по названиям полей нет; состав контекста
+задаётся корпоративной выборкой.
 
 `instruction` необязателен. Он уточняет только правила сопоставления конкретной
 формы; endpoint, credentials, вызовы write API и секреты туда не помещаются.
@@ -149,7 +150,7 @@ class CorporateITSM:
 |---|---|
 | `ticket_id` | нормализованный номер заявки |
 | `environment` | выбранный key окружения, например `test_int` |
-| `ticket_context` | уже secret-redacted JSON-контекст заявки |
+| `ticket_context` | нормализованный JSON-контекст заявки с ограничением размера, без маскирования значений |
 | `form_id` | пусто при выборе формы главным Copilot; exact ID при `fetch_from_itsm` |
 
 `get_ai_prompt` — опциональная возможность, а не новый обязательный метод
@@ -278,7 +279,7 @@ warning, правило не применяется, а AI продолжает 
 Сервер выполняет AI-режим так:
 
 ```text
-fetch_from_itsm -> sanitized JSON context
+fetch_from_itsm -> normalized, bounded JSON context
                 -> новая основная Copilot session
                 -> persistent pending draft точной формы и environment
                 -> get_form_schema + reference tools при необходимости

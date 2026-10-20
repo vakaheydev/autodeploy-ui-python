@@ -68,6 +68,23 @@ def test_mentions_search_only_configured_fields_in_current_environment(
     assert service.search("test_int", "Production only", 20)["items"] == []
 
 
+def test_declared_mention_fields_are_not_filtered_by_name(tmp_path, monkeypatch):
+    cache = ReferenceCache(tmp_path / "cache")
+    cache.set("gravitee_apis", "test_int", [{
+        "token": "example-id", "name": "Example", "authorization": "Bearer example-value",
+    }])
+    service = _service(cache, monkeypatch)
+    service.container.search_catalogs = {"api": ReferenceConfig(
+        source="corp_http", resource="gravitee_apis", value_key="token",
+        label_key="name", search_keys=("authorization",),
+    )}
+    result = service.search("test_int", "example-value", 20)
+    assert result["items"][0]["identifier"] == "example-id"
+    assert result["items"][0]["search_fields"] == [
+        {"key": "authorization", "value": "Bearer example-value"},
+    ]
+
+
 def test_mention_search_does_not_implicitly_add_label_or_identifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from core.reference_cache import CachedReferenceEntry
 from forms.fields import ReferenceConfig
-from opencode_integration.context_builder import is_secret_key, sanitize
+from opencode_integration.context_builder import sanitize
 
 
 _MAX_PUBLIC_VALUE_CHARS = 2_000
@@ -141,8 +141,6 @@ class ReferenceMentionService:
     def _catalogs(self) -> tuple[_MentionCatalog, ...]:
         result: list[_MentionCatalog] = []
         for kind, reference in sorted(self.container.search_catalogs.items()):
-            if is_secret_key(reference.value_key) or is_secret_key(reference.label_key):
-                continue
             identity = self._reference_identity(reference)
             encoded = json.dumps(
                 (kind, identity), ensure_ascii=False, separators=(",", ":")
@@ -165,7 +163,6 @@ class ReferenceMentionService:
             reference = catalog.reference
             search_keys = tuple(dict.fromkeys(
                 key for key in (reference.search_keys or (reference.label_key,))
-                if not is_secret_key(key)
             ))
             public_keys = tuple(dict.fromkeys((
                 reference.value_key,
@@ -190,7 +187,7 @@ class ReferenceMentionService:
                     context = {
                         key: cls._safe_value(item[key], key)
                         for key in public_keys
-                        if key in item and not is_secret_key(key)
+                        if key in item
                     }
                     record = _MentionRecord(
                         catalog=catalog,

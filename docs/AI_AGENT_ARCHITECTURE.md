@@ -15,6 +15,14 @@ credentials. Only a missing route or HTML permits switching to `/global/health`;
 adapter stays fixed until reconnect. V2 projects its native `/api` messages into
 the same Python agent contract used by V1.
 
+AI messages, ITSM/ADO context, diagnostics and tool input/output are passed
+without automatic field-name or text-pattern masking. Values such as
+`contextPath`, `token`, authorization headers and key material are not replaced
+with `[REDACTED]`. Context normalization, size/depth limits, declared reference
+field selection and untrusted-data boundaries still apply. Operational logs
+use their independent filtering; application credentials remain write-only
+settings and are not added to AI context.
+
 V2 readiness uses `/api/info` followed by bounded polling for required agents,
 because the first plugin scan can finish after the HTTP listener starts.
 Models and variants come from `/api/model`, providers from `/api/provider`, and
@@ -187,7 +195,7 @@ free chat request, the Python runtime has already selected the form and creates
 its persistent pending draft before starting Copilot:
 
 ```text
-form hook -> sanitized source context -> exact form/draft prompt
+form hook -> normalized, bounded source context -> exact form/draft prompt
           -> get_form_schema (no semantic form search)
           -> prepare_form_draft(existing draft_id)
           -> the same inline field-review and submit lifecycle
@@ -201,7 +209,7 @@ Python-produced patch; legacy mappings retain that deterministic meaning.
 
 Corporate ITSM adapters may also implement the optional
 `get_ai_prompt(ITSMAIPromptRequest) -> ITSMAIPrompt | None` capability. Public
-core invokes it with already sanitized ticket context and stores the bounded
+core invokes it with normalized, bounded ticket context and stores the bounded
 result in `TRUSTED_ITSM_AI_PROMPT`. This gives the model stable routing and field
 mapping rules per corporate request type without promoting ticket prose across
 the trust boundary. The returned instructions must be static, reviewed

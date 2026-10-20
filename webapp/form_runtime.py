@@ -38,7 +38,6 @@ from forms.fields import (
 from forms.registry import FormRegistry
 from opencode_integration.context_builder import (
     MAX_ITSM_AI_INSTRUCTIONS_CHARS,
-    is_secret_key,
     redact_text,
     resolve_itsm_ai_prompt,
     sanitize,
@@ -202,8 +201,6 @@ def _public_item(item: Mapping[str, Any], reference: ReferenceConfig) -> dict[st
         keys.extend(str(key) for key in item.keys())
     result: dict[str, Any] = {}
     for key in dict.fromkeys(keys):
-        if is_secret_key(key):
-            continue
         if key in item:
             result[key] = _json_safe(item[key])
     return result
