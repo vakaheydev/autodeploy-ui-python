@@ -23,7 +23,7 @@ from forms.fields import (
 )
 from forms.loader import register_all_forms
 from forms.registry import FormRegistry
-from forms.result_config import ResultStatus
+from forms.result_config import ResultScreenConfig, ResultStatus, ResultTextBlock
 from opencode_integration.data_sources import ITSMAIPrompt, ITSMAIPromptRequest
 from webapp.container import ApplicationContainer
 from webapp.extensions import RuntimeServices
@@ -1452,6 +1452,7 @@ def test_submit_uses_original_python_hooks_and_full_reference_item(
             "",
         )
         assert result["success"] is True
+        assert result["blocks"] == []
         assert capture.request == (
             "https://submit.example.invalid/forms",
             {"category": "internal", "categoryLabel": "Внутреннее АПИ"},
@@ -1460,6 +1461,67 @@ def test_submit_uses_original_python_hooks_and_full_reference_item(
         assert container.run_storage.load_all()[0].form_id == form.form_id
     finally:
         container.new_submit_service = original  # type: ignore[method-assign]
+        registry.clear()
+        register_all_forms()
+
+
+def test_result_blocks_survive_submit_and_are_replaced_by_poll(
+    container: ApplicationContainer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "  First line\n\tSecond line\nhttps://example.invalid/result?id=42&view=full\n"
+
+    class BlockForm(_SubmitHookForm):
+        def get_result_config(self):
+            return ResultScreenConfig(poll_interval_ms=500)
+
+        def build_result_content(self, environment, response):
+            return "Legacy result"
+
+        def build_result_blocks(self, environment, response):
+            assert environment == "test_int"
+            return [ResultTextBlock(text, "Copy all", True), ResultTextBlock("Plain text")]
+
+        def get_poll_endpoint(self, environment, response):
+            return "https://example.invalid/poll"
+
+        def build_poll_content(self, environment, response):
+            return "Legacy poll"
+
+        def build_poll_blocks(self, environment, response):
+            return [ResultTextBlock(response["message"], copyable=True)] if response["running"] else []
+
+        def should_continue_polling(self, environment, response):
+            return response["running"]
+
+    class PollClient(_CaptureHttpClient):
+        def get(self, endpoint):
+            assert endpoint == "https://example.invalid/poll"
+            return next(responses)
+
+    registry = FormRegistry()
+    registry.register(BlockForm())
+    capture = _CaptureHttpClient()
+    responses = iter([{"message": "Fresh status", "running": True}, {"running": False}])
+    monkeypatch.setattr(container, "new_submit_service", lambda: SubmitService(capture, container.env_manager))
+    monkeypatch.setattr(container, "new_http_client", PollClient)
+    try:
+        form = container.forms.get_form("test.submit-hooks")
+        result = container.forms.submit(form.form_id, "test_int", {
+            "category": "internal", "category_2": "external",
+        }, form_version(form), "")
+        assert result["content"] == "Legacy result"
+        assert result["blocks"] == [
+            {"text": text, "label": "Copy all", "copyable": True},
+            {"text": "Plain text", "label": "", "copyable": False},
+        ]
+        polled = container.forms.poll(result["submission_id"])
+        assert polled["content"] == "Legacy poll"
+        assert polled["blocks"] == [{"text": "Fresh status", "label": "", "copyable": True}]
+        stopped = container.forms.poll(result["submission_id"])
+        assert stopped["blocks"] == []
+        assert stopped["polling"] is False
+        assert container.forms.poll(result["submission_id"]) == {"polling": False, "status": "stopped"}
+    finally:
         registry.clear()
         register_all_forms()
 

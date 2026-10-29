@@ -21,6 +21,19 @@ class ResultStatus(Enum):
     ERROR   = "error"
 
 
+@dataclass(frozen=True)
+class ResultTextBlock:
+    """Additional plain-text result block rendered by the web client.
+
+    ``copyable`` copies the entire ``text`` verbatim, without the label.
+    URLs within the text can be copied independently. No HTML is interpreted.
+    """
+
+    text: str
+    label: str = ""
+    copyable: bool = False
+
+
 @dataclass
 class ResultScreenConfig:
     """

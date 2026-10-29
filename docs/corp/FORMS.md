@@ -261,6 +261,39 @@ state/normalize
 Auth устанавливает public `SubmitService`; подробности — в
 [SERVICES_AND_ENVIRONMENT.md](SERVICES_AND_ENVIRONMENT.md).
 
+## Копируемые блоки результата в web UI
+
+После отправки формы или дополнительного действия UI плавно прокручивается к
+результату. Обновления polling не перетягивают прокрутку. Ссылки HTTP(S), FTP,
+`mailto:` и `www.` в тексте копируются по нажатию с уведомлением.
+
+Для отдельных блоков используйте публичный контракт:
+
+```python
+from forms.result_config import ResultTextBlock
+
+def build_result_blocks(self, environment: str, response) -> list[ResultTextBlock]:
+    return [ResultTextBlock(
+        label="Данные для передачи",
+        text="Операция завершена.\nhttps://example.invalid/operations/42",
+        copyable=True,
+    )]
+
+def build_poll_blocks(self, environment: str, poll_response) -> list[ResultTextBlock]:
+    return [ResultTextBlock(text="Обработка завершена", copyable=True)]
+```
+
+Поля: `text: str`, `label: str = ""`, `copyable: bool = False`. Клик по блоку
+или его кнопке копирует весь `text` без заголовка, сохраняя переносы и пробелы.
+Клик по ссылке внутри блока копирует только ссылку. Это обычный текст, не HTML.
+Нельзя передавать приватные credentials в результат, предназначенный оператору.
+
+Блоки идут после `build_result_content()` / `build_poll_content()`. Каждый
+poll-ответ полностью заменяет список; оба новых hook по умолчанию возвращают
+`[]`. Если нужен только блок, соответствующий legacy content hook может вернуть
+пустую строку. Старые формы работают без изменений. Блоки отображаются в web UI;
+для Tkinter сохраняйте нужный текст в существующих content hooks.
+
 ## Доступ к окружению и selected reference items
 
 Используйте `environment` из аргумента hook либо `self.current_environment`:

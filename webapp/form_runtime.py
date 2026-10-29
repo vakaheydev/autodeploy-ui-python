@@ -1594,6 +1594,7 @@ class FormRuntime:
             "status": status.value,
             "title": result_config.title or form.title,
             "content": form.build_result_content(environment, result.raw_response),
+            "blocks": [asdict(block) for block in form.build_result_blocks(environment, result.raw_response)],
             "response": _json_safe(result.raw_response),
             "payload": _json_safe(result.payload),
             "polling": polling,
@@ -1624,6 +1625,7 @@ class FormRuntime:
             "polling": state.polling,
             "status": status.value,
             "content": form.build_poll_content(state.environment, response),
+            "blocks": [asdict(block) for block in form.build_poll_blocks(state.environment, response)],
             "response": _json_safe(response),
             "info": (
                 form.build_info_after_polling(state.environment, state.payload)

@@ -4,6 +4,7 @@ import { ApiError, api, post } from '../api'
 import { ArrowLeft, Check, FileJson, LoaderCircle, RefreshCw, Send, Sparkles, X } from '../components/Icons'
 import { ErrorBanner, Modal, Spinner } from '../components/Feedback'
 import { FormFields } from '../components/FormFields'
+import { ResultContent } from '../components/ResultContent'
 import { useEnvironment } from '../environment'
 import type {
   ActionDialogButtonDocument,
@@ -12,6 +13,7 @@ import type {
   FormDocument,
   FieldDocument,
   PreviewResult,
+  PollResult,
   SubmitResult,
   ValidationError,
   ValidationResult,
@@ -165,7 +167,7 @@ export function FormPage() {
   const [ticketError, setTicketError] = useState('')
   const [result, setResult] = useState<SubmitResult | null>(null)
   const resultRef = useRef<HTMLElement | null>(null)
-  const [actionResultRevision, setActionResultRevision] = useState(0)
+  const [resultRevision, setResultRevision] = useState(0)
   const stateSequence = useRef(0)
   const stateRequest = useRef<AbortController | null>(null)
   const lastStateValues = useRef<Record<string, unknown> | null>(null)
@@ -203,13 +205,14 @@ export function FormPage() {
   useEffect(() => { latestValuesRef.current = values }, [values])
 
   useEffect(() => {
-    if (!actionResultRevision) return
+    if (!resultRevision) return
     const timer = window.setTimeout(() => {
-      resultRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+      resultRef.current?.scrollIntoView?.({ behavior, block: 'start' })
       resultRef.current?.focus({ preventScroll: true })
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [actionResultRevision])
+  }, [resultRevision])
 
   useEffect(() => {
     const first = errors.find((item) => Boolean(item.field))
@@ -288,7 +291,7 @@ export function FormPage() {
       polling: false,
       poll_interval_ms: null,
     })
-    setActionResultRevision((current) => current + 1)
+    setResultRevision((current) => current + 1)
   }
 
   useEffect(() => {
@@ -564,8 +567,16 @@ export function FormPage() {
     if (!result?.polling || !result.poll_interval_ms) return
     let active = true
     const timer = window.setInterval(() => {
-      post<{ polling: boolean; status: SubmitResult['status']; content: string; info?: string }>(`/api/v1/submissions/${result.submission_id}/poll`, {})
-        .then((poll) => active && setResult((current) => current ? { ...current, polling: poll.polling, status: poll.status, content: poll.content + (poll.info ? `\n\n${poll.info}` : '') } : current))
+      post<PollResult>(`/api/v1/submissions/${result.submission_id}/poll`, {})
+        .then((poll) => active && setResult((current) => current ? {
+          ...current,
+          polling: poll.polling,
+          ...(poll.status === 'stopped' ? {} : {
+            status: poll.status,
+            content: (poll.content ?? '') + (poll.info ? `\n\n${poll.info}` : ''),
+            blocks: poll.blocks ?? [],
+          }),
+        } : current))
         .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : String(reason)))
     }, Math.max(500, result.poll_interval_ms))
     return () => { active = false; window.clearInterval(timer) }
@@ -643,6 +654,7 @@ export function FormPage() {
       })
       setValues(submission.values)
       setResult(submitted)
+      setResultRevision((current) => current + 1)
       setPreview(null)
       activeDraftIdRef.current = ''
       setActiveDraftId('')
@@ -1054,7 +1066,7 @@ export function FormPage() {
 
       {result && <section ref={resultRef} className={`result-card ${result.status}`} role={result.status === 'error' ? 'alert' : 'status'} tabIndex={-1}>
         <div className="result-icon">{result.status === 'success' ? <Check /> : result.status === 'error' ? <X /> : <LoaderCircle className={result.polling ? 'spin' : ''} />}</div>
-        <div><span className="eyebrow">Результат операции</span><h2>{result.title}</h2><p>{result.message}</p>{result.content && <pre>{result.content}</pre>}{result.polling && <small>Статус обновляется автоматически</small>}</div>
+        <div className="result-body"><span className="eyebrow">Результат операции</span><h2>{result.title}</h2><ResultContent key={resultRevision} message={result.message} content={result.content} blocks={result.blocks} />{result.polling && <small>Статус обновляется автоматически</small>}</div>
       </section>}
 
       <footer className={`form-actions ${Object.keys(review).length ? 'reviewing' : ''}`}>

@@ -179,6 +179,31 @@ p { color: var(--muted); line-height: 1.58; }
 .result-card { display: grid; grid-template-columns: 48px 1fr; gap: 15px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); outline: 0; background: var(--surface); scroll-margin-block: 24px; }.result-card:focus-visible { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 13%, transparent), var(--shadow-sm); }.result-card.success { border-color: #a9dbc8; }.result-card.error { border-color: #efbdc4; }.result-card.waiting { border-color: color-mix(in srgb, var(--warning) 52%, var(--border)); }.result-card.pending { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }.result-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 13px; color: var(--success); background: var(--success-soft); }.result-card.error .result-icon { color: var(--danger); background: var(--danger-soft); }.result-card.waiting .result-icon { color: var(--warning); background: var(--warning-soft); }.result-card.pending .result-icon { color: var(--primary); background: var(--primary-soft); }.result-card pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 9px; color: #cad6e4; background: #142033; font-size: 11px; white-space: pre-wrap; }
 
 .alert { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid; border-radius: 11px; font-size: 12px; }.alert p { margin: 0; color: inherit; }.alert.error { color: #a92c3d; border-color: #efc0c7; background: var(--danger-soft); }.alert.warning { color: #8d580c; border-color: #edd09c; background: var(--warning-soft); }
+.result-card { grid-template-columns: 48px minmax(0, 1fr); }
+.result-body { min-width: 0; }
+.result-body h2 { font-size: 22px; overflow-wrap: anywhere; }
+.result-message { font-size: 16px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-card pre.result-text { max-height: 420px; margin: 12px 0; padding: 18px; font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; tab-size: 2; }
+.result-link { display: inline; padding: 0; border: 0; border-radius: 2px; color: var(--primary); background: transparent; font: inherit; text-align: inherit; text-decoration: underline; text-underline-offset: 3px; white-space: inherit; overflow-wrap: anywhere; cursor: copy; }
+.result-text .result-link { color: #8ecbff; }
+.result-link:hover { text-decoration-thickness: 2px; }
+.result-link:focus-visible, .result-block-copy:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.result-text-block { margin-top: 16px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.result-text-block.copyable { cursor: copy; }
+.result-text-block.copyable:hover { border-color: var(--primary); }
+.result-block-label, .result-block-copy { padding: 12px 16px; font-size: 14px; font-weight: 600; }
+.result-block-copy { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; border: 0; color: var(--text); background: var(--surface); text-align: left; cursor: copy; }
+.result-block-copy > span:last-child { display: inline-flex; align-items: center; gap: 6px; color: var(--primary); font-size: 12px; }
+.result-card .result-text-block pre { margin: 0; border-radius: 0; }
+.result-copy-notice { position: fixed; z-index: 1000; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100vw - 32px); padding: 12px 16px; border: 1px solid var(--success); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: var(--shadow-sm); font-size: 14px; }
+.result-copy-notice > svg { flex-shrink: 0; color: var(--success); }
+.result-copy-notice.error { border-color: var(--danger); }
+.result-copy-notice.error > svg { color: var(--danger); }
+@media (max-width: 640px) {
+  .result-card { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  .result-block-copy { align-items: flex-start; flex-direction: column; }
+}
+
 .loading-state, .empty-state { min-height: 170px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: var(--muted); border: 1px dashed var(--border-strong); border-radius: var(--radius); background: rgb(255 255 255 / 45%); }.empty-state h3 { margin: 3px 0 0; }.empty-state p { max-width: 410px; margin: 0; text-align: center; font-size: 12px; }.empty-orb { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(145deg, #d8e9ff, #ece8ff); box-shadow: 0 0 0 9px rgb(225 235 248 / 45%); }
 .spin { animation: spin .9s linear infinite; }
 

@@ -76,6 +76,30 @@ Every request-scoped form also receives the selected environment as the plain
 string `self.current_environment`; use it instead of
 `self.screen.app.current_environment.get()`.
 
+### Operation results
+
+After submit or a server action, the web client smoothly scrolls to and focuses
+the result card (without animation when reduced motion is requested). Polling
+updates its contents without moving the reader. Result text uses a larger font;
+HTTP(S), FTP, `mailto:` and `www.` links copy their exact displayed URL on click
+and show a notification. They do not navigate away from the form.
+
+Existing `build_result_content(environment, response) -> str` and
+`build_poll_content(environment, poll_response) -> str` remain unchanged.
+Forms can additionally implement `build_result_blocks(environment, response)`
+and `build_poll_blocks(environment, poll_response)`, both returning
+`list[ResultTextBlock]` from `forms.result_config`. Each block has `text: str`,
+`label: str = ""`, and `copyable: bool = False`. Blocks appear after the legacy
+content; a copyable block copies its complete text, preserving whitespace and
+excluding the label. Links inside it copy just that URL. HTML is never executed.
+These blocks are a web presentation extension; the Tkinter client continues to
+render the legacy text hooks.
+
+Submit/poll JSON includes `blocks: [{text, label, copyable}]`. Each actual poll
+replaces all prior blocks; the default hooks return `[]`. A `status: "stopped"`
+response without fresh content retains the last displayed result. Clipboard
+failures show an error instead of a success notification.
+
 `fetch_from_itsm()` returns `ITSMFetchResult`: `deterministic(values)` applies an
 exact Python patch, while `ai(context)` starts the main MCP-native Copilot for
 the already selected form and creates a persistent inline-review draft. A plain

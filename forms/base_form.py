@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from services.tfs_service import TfsService
 
 from forms.fields import FieldDefinition
-from forms.result_config import ResultScreenConfig, ResultStatus
+from forms.result_config import ResultScreenConfig, ResultStatus, ResultTextBlock
 
 
 @dataclass
@@ -401,6 +401,21 @@ class BaseForm(ABC):
         if response is None:
             return "Форма успешно отправлена."
         return json.dumps(response, ensure_ascii=False, indent=2)
+
+    def build_result_blocks(self, environment: str, response: Any) -> list[ResultTextBlock]:
+        """Additional web result blocks, shown after ``build_result_content``.
+
+        Return ``ResultTextBlock(text=..., label=..., copyable=True)`` to let
+        the operator copy a whole block. Existing forms need no changes.
+        """
+        return []
+
+    def build_poll_blocks(self, environment: str, poll_response: Any) -> list[ResultTextBlock]:
+        """Web result blocks replacing the previous blocks on each poll.
+
+        The default empty list clears blocks belonging to the previous status.
+        """
+        return []
 
     def get_poll_endpoint(self, environment: str, response: Any) -> Optional[str]:
         """

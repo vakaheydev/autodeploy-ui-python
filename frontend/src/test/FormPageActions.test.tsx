@@ -254,7 +254,7 @@ describe('FormPage custom actions', () => {
     expect(result).toHaveTextContent('TFS не вернул данные')
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: 'smooth',
-      block: 'center',
+      block: 'start',
     }))
     expect(result).toHaveFocus()
   })
@@ -469,6 +469,8 @@ describe('FormPage custom actions', () => {
 
   it('keeps submit progress and failures in the dialog and refreshes confirmation before retry', async () => {
     const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
     let previewCalls = 0
     const submitBodies: Array<Record<string, unknown>> = []
     let finishFirstSubmit: ((response: Response) => void) | undefined
@@ -540,11 +542,14 @@ describe('FormPage custom actions', () => {
     const submitAlert = await within(dialog).findByRole('alert')
     expect(submitAlert).toHaveTextContent('Не удалось отправить форму')
     expect(submitAlert).toHaveTextContent('TFS вернул 401 Unauthorized')
+    expect(scrollIntoView).not.toHaveBeenCalled()
     expect(within(dialog).getByRole('button', { name: 'Повторить отправку' })).toBeEnabled()
 
     await user.click(within(dialog).getByRole('button', { name: 'Повторить отправку' }))
     await waitFor(() => expect(submitBodies).toHaveLength(2))
     expect(submitBodies[1]).toMatchObject({ confirmation_token: 'confirmation-3' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Подтвердите операцию' })).not.toBeInTheDocument())
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' }))
+    expect(screen.getByText('Результат операции').closest('section')).toHaveFocus()
   })
 })

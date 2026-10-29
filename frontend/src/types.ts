@@ -164,6 +164,20 @@ export interface PreviewResult extends ValidationResult {
   confirmation_token?: string
 }
 
+export interface ResultTextBlock {
+  text: string
+  label: string
+  copyable: boolean
+}
+
+export interface PollResult {
+  polling: boolean
+  status: ActionResultStatus | 'stopped'
+  content?: string
+  blocks?: ResultTextBlock[]
+  info?: string
+}
+
 export interface SubmitResult {
   success: true
   message: string
@@ -171,6 +185,7 @@ export interface SubmitResult {
   status: ActionResultStatus
   title: string
   content: string
+  blocks?: ResultTextBlock[]
   response: unknown
   payload: unknown
   polling: boolean
