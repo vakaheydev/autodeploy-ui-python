@@ -544,7 +544,7 @@ class UnifiedCopilot:
             return []
         return self._client.list_message_queue(self._session_id)
 
-    def enqueue_message(self, message, *, environment, ticket_id, operator_references, metadata):
+    def enqueue_message(self, message, *, environment, ticket_id, operator_references, metadata, delivery="queue"):
         if not self._workflow_id or not self._session_id or not self._session_context_initialized:
             raise RuntimeError("Дождитесь начала ответа Copilot")
         prompt = build_mcp_copilot_prompt(
@@ -558,12 +558,18 @@ class UnifiedCopilot:
                 itsm_data=context.itsm, ado_data=context.ado, context_warnings=context.warnings,
                 ticket_type=context.ticket_type, ai_instructions=context.ai_instructions,
             ) + "\n\n" + prompt
-        return self._client.enqueue_message(self._session_id, prompt, metadata=metadata, require_active=True)
+        return self._client.enqueue_message(self._session_id, prompt, metadata=metadata, require_active=True, delivery=delivery)
 
     def remove_queued_message(self, message_id):
         self._client.cancel_queued_message(self._require_session(), message_id)
 
-    def resume_queued_messages(self, *, cancel_event, on_event, on_queue_event):
+    def steer_queued_message(self, message_id):
+        self._client.steer_queued_message(self._require_session(), message_id)
+
+    def reorder_queued_messages(self, message_ids):
+        self._client.reorder_message_queue(self._require_session(), message_ids)
+
+    def resume_queued_messages(self, *, cancel_event, on_event, on_queue_event, message_id=None):
         with self._operation_lock:
             self._cancel_event = cancel_event
             self._on_event = on_event
@@ -571,7 +577,7 @@ class UnifiedCopilot:
             if self._mcp_configuration:
                 self._ensure_session(lambda _message: None)
             response = self._client.resume_message_queue(
-                self._require_session(), cancel_event=cancel_event, on_event=self._handle_raw_event,
+                self._require_session(), cancel_event=cancel_event, on_event=self._handle_raw_event, message_id=message_id,
             )
             info = response.get("info") or {}
             return CopilotOutcome(

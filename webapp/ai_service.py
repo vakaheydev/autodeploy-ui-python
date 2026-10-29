@@ -741,6 +741,8 @@ class WebAIService:
         refining_draft_id: str = "",
         ticket_context_provided: bool = False,
         _resume_queue: bool = False,
+        _resume_message_id: str | None = None,
+        delivery: str = "queue",
     ) -> dict[str, Any]:
         message = str(message).strip()
         if not message or len(message) > 20_000:
@@ -748,6 +750,8 @@ class WebAIService:
         if environment not in ENVIRONMENT_MAP:
             raise ValueError("Неизвестное окружение")
         resolved_mentions = self._reference_mentions.resolve(environment, mentions)
+        if delivery not in {"queue", "steer"}:
+            raise ValueError("Некорректный режим отправки")
         session = self._session(session_id)
         with session.condition:
             if session.busy:
@@ -757,6 +761,7 @@ class WebAIService:
                     session, message=message, environment=environment, ticket_id=ticket_id,
                     provider_id=provider_id, model_id=model_id, thinking=thinking,
                     resolved_mentions=resolved_mentions,
+                    delivery=delivery,
                 )
             if session.queue_supported and not _resume_queue and session.copilot.queued_messages():
                 raise RuntimeError("Сначала продолжите или очистите очередь OpenCode")
@@ -880,6 +885,7 @@ class WebAIService:
             try:
                 outcome = session.copilot.resume_queued_messages(
                     cancel_event=session.cancel_event, on_event=conversation, on_queue_event=queue_event,
+                    message_id=_resume_message_id,
                 ) if _resume_queue else session.copilot.ask(
                     message,
                     environment=environment,
@@ -1000,8 +1006,8 @@ class WebAIService:
         return self._queue_state(self._session(session_id))
 
     def _enqueue_message(self, session, *, message, environment, ticket_id,
-                         provider_id, model_id, thinking, resolved_mentions):
-        if not self._queue_enabled(session):
+                         provider_id, model_id, thinking, resolved_mentions, delivery="queue"):
+        if not session.queue_supported or (delivery == "queue" and not self._queue_enabled(session)):
             raise RuntimeError("Очередь сообщений доступна только при включённой настройке в OpenCode v2")
         if session.refining_draft_id:
             raise RuntimeError("Дождитесь завершения работы с черновиком")
@@ -1014,7 +1020,7 @@ class WebAIService:
                 or (model_id.strip() or session.model_id) != session.model_id
                 or thinking not in {"auto", session.active_thinking}):
             raise ValueError("Для очереди сохраните текущее окружение, модель и thinking")
-        if len(session.copilot.queued_messages()) >= 10:
+        if delivery == "queue" and len(session.copilot.queued_messages()) >= 10:
             raise RuntimeError("Очередь заполнена: не более 10 сообщений")
         metadata = {
             "source": "autodeploy-queue", "message": redact_text(message),
@@ -1027,6 +1033,7 @@ class WebAIService:
         admitted = session.copilot.enqueue_message(
             message, environment=environment, ticket_id=ticket_id,
             operator_references=resolved_mentions, metadata=metadata,
+            delivery=delivery,
         )
         try:
             session.emit("queue", self._queue_state(session))
@@ -1045,7 +1052,31 @@ class WebAIService:
         session.emit("queue", state)
         return state
 
-    def resume_queue(self, session_id: str):
+    def reorder_queue(self, session_id: str, message_ids: list[str]):
+        session = self._session(session_id)
+        with session.condition:
+            if not session.queue_supported:
+                raise RuntimeError("Очередь требует OpenCode v2")
+            session.copilot.reorder_queued_messages(message_ids)
+            state = self._queue_state(session)
+            session.emit("queue", state)
+            return state
+
+    def send_queued_message(self, session_id: str, message_id: str):
+        session = self._session(session_id)
+        with session.condition:
+            if not session.queue_supported:
+                raise RuntimeError("Очередь требует OpenCode v2")
+            if not session.busy:
+                return self.resume_queue(session_id, message_id=message_id)
+            if not session.queue_ready or (session.cancel_event and session.cancel_event.is_set()):
+                raise RuntimeError("Дождитесь начала ответа Copilot")
+            session.copilot.steer_queued_message(message_id)
+            state = self._queue_state(session)
+            session.emit("queue", state)
+            return state
+
+    def resume_queue(self, session_id: str, *, message_id: str | None = None):
         session = self._session(session_id)
         with session.condition:
             if not session.queue_supported or session.busy:
@@ -1053,13 +1084,17 @@ class WebAIService:
             rows = session.copilot.queued_messages()
             if not rows:
                 raise RuntimeError("Очередь OpenCode пуста")
-            metadata = rows[0].get("payload", {}).get("metadata", {})
+            first = next((row for row in rows if row["id"] == message_id), None) if message_id else rows[0]
+            if first is None:
+                raise RuntimeError("Сообщение уже отправлено или удалено")
+            metadata = first.get("payload", {}).get("metadata", {})
             if metadata.get("source") != "autodeploy-queue":
                 raise RuntimeError("Продолжите эту очередь в OpenCode")
             return self.start_message(
                 session_id, message="Продолжить очередь", environment=metadata["environment"],
                 ticket_id=None, provider_id=metadata["provider_id"], model_id=metadata["model_id"],
                 thinking=metadata["thinking"], _resume_queue=True,
+                _resume_message_id=message_id,
             )
 
     def search_reference_mentions(

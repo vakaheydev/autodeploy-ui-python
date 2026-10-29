@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MarkdownContent } from './MarkdownContent'
 import { PermissionRequest } from './PermissionRequest'
 import { api, post } from '../api'
-import { Bot, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, Pencil, Send, Sparkles, Trash2, X } from './Icons'
+import { Bot, ChevronDown, Clock3, Code2, LoaderCircle, MessageSquareText, Pencil, Send, Sparkles, Trash2, X, Zap } from './Icons'
 import { useEnvironment } from '../environment'
 import { SearchableSelect } from './SearchableSelect'
 import { Modal } from './Feedback'
@@ -249,13 +249,35 @@ export function Copilot() {
     && queued.length < (queueState.queue_limit ?? 10)
     && queueState.active_environment === environment)
   const canSend = Boolean(session && !sending && !queuePending && (busy ? canQueue : !queued.length))
+  const canSteer = Boolean(session && busy && !sending && !queuePending && queueState.queue_supported
+    && queueState.queue_ready && queueState.active_environment === environment)
+
+  useLayoutEffect(() => {
+    const field = composer.current
+    if (!field) return
+    const resize = () => {
+      field.style.height = 'auto'
+      const maximum = Math.min(240, window.innerHeight * 0.35)
+      field.style.height = `${Math.min(field.scrollHeight, maximum)}px`
+      field.style.overflowY = field.scrollHeight > maximum ? 'auto' : 'hidden'
+    }
+    resize()
+    const observer = new ResizeObserver(() => {
+      if (field.clientWidth !== width) { width = field.clientWidth; resize() }
+    })
+    let width = field.clientWidth
+    observer.observe(field)
+    window.addEventListener('resize', resize)
+    return () => { observer.disconnect(); window.removeEventListener('resize', resize) }
+  }, [message, session?.id])
 
   const sendText = async (
     text: string,
     attachedTicket: string | null = null,
     attachedMentions: SelectedReferenceMention[] = [],
+    delivery: 'queue' | 'steer' = 'queue',
   ) => {
-    if (!session || !text.trim() || !canSend || sendingRef.current) return false
+    if (!session || !text.trim() || !(delivery === 'steer' ? canSteer : canSend) || sendingRef.current) return false
     sendingRef.current = true
     setSending(true)
     const sessionId = session.id
@@ -266,6 +288,7 @@ export function Copilot() {
     try {
       const started = await post<{ generation_started_at?: number; queued: boolean }>(`/api/v1/ai/sessions/${encodeURIComponent(session.id)}/messages`, {
         message: text.trim(),
+        delivery,
         environment,
         ticket_id: attachedTicket,
         provider_id: providerId,
@@ -292,16 +315,16 @@ export function Copilot() {
     }
   }
 
-  const send = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!message.trim() || !canSend || sendingRef.current) return
+  const send = async (event: FormEvent | null, delivery: 'queue' | 'steer' = 'queue') => {
+    event?.preventDefault()
+    if (!message.trim() || !(delivery === 'steer' ? canSteer : canSend) || sendingRef.current) return
     const text = message.trim()
     const sessionId = session?.id
     const attachedTicket = ticketId.trim() || null
     const attachedMentions = mentions.filter((item) => text.includes(item.marker))
     setMessage('')
     try {
-      const sent = await sendText(text, attachedTicket, attachedMentions)
+      const sent = await sendText(text, attachedTicket, attachedMentions, delivery)
       if (!sent) return
       setTicketId(''); setTicketVisible(false)
       setMentions([]); setMentionOpen(false); setMentionAnchor(-1)
@@ -310,13 +333,23 @@ export function Copilot() {
     }
   }
 
-  const changeQueue = async (messageId?: string) => {
+  const changeQueue = async (action: 'remove' | 'resume' | 'send' | 'up' | 'down', messageId?: string) => {
     if (!session || queuePending) return
     const id = session.id
     setQueuePending(true); setError('')
+    queueRevision.current += 1
     try {
-      if (messageId) {
-        await api(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(messageId)}`, { method: 'DELETE' })
+      if (action === 'remove') {
+        await api(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(messageId!)}`, { method: 'DELETE' })
+      } else if (action === 'send') {
+        await post(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(messageId!)}/send`, {})
+      } else if (action === 'up' || action === 'down') {
+        const ids = queued.map(item => item.id)
+        const from = ids.indexOf(messageId!)
+        const to = from + (action === 'up' ? -1 : 1)
+        if (from < 0 || to < 0 || to >= ids.length) return
+        ;[ids[from], ids[to]] = [ids[to], ids[from]]
+        await post(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue/reorder`, { message_ids: ids })
       } else {
         await post(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue/resume`, {})
       }
@@ -325,6 +358,8 @@ export function Copilot() {
       if (activeSession.current === id && revision === queueRevision.current) { queueRevision.current += 1; setQueueState(value) }
     } catch (reason) {
       if (activeSession.current === id) setError(reason instanceof Error ? reason.message : String(reason))
+      const value = await api<MessageQueueState>(`/api/v1/ai/sessions/${encodeURIComponent(id)}/queue`).catch(() => null)
+      if (value && activeSession.current === id) { queueRevision.current += 1; setQueueState(value) }
     } finally { setQueuePending(false) }
   }
 
@@ -476,22 +511,27 @@ export function Copilot() {
         </div>
       </header>
       <p className="copilot-intro">Опишите задачу или приложите номер заявки. Copilot выберет форму, подготовит план или найдёт объект в Gravitee Repository.</p>
+      <div className={`copilot-workspace${queued.length ? ' with-queue' : ''}`}>
+      <div className="copilot-main">
       <div className="chat-transcript" ref={transcript}>
         {visibleEvents.map((event) => <ChatEventView event={event} sessionId={session?.id ?? ''} busy={busy} permissionActive={busy && event.sequence > lastIdle} permissionResolution={permissionResolutions.get(String(event.payload.permission_id))} onCandidate={(formId) => { void sendText(`Выбираю форму ${formId}. Подготовь её заполнение на основе уже собранного контекста.`).catch(() => undefined) }} key={`${session?.id}:${event.sequence}`} />)}
         {!session && !error && <div className="chat-welcome"><LoaderCircle className="spin" /> Подготавливаю защищённую сессию…</div>}
         {session && busy && <div className="message-row assistant generating-message" aria-live="polite"><div className="message-meta"><span>Copilot</span><span>готовит ответ</span></div><div className="message-bubble"><span className="generating-orb"><Sparkles size={15} /></span><span className="generating-copy"><strong>{waitingLabel(waitingSeconds)}</strong>{progress && <small>{progress}</small>}<span className="typing-dots" aria-hidden="true"><i /><i /><i /></span></span><span className="generation-timer"><Clock3 size={13} /> {waitingSeconds} с</span><button type="button" onClick={() => post(`/api/v1/ai/sessions/${session.id}/cancel`, {})}>Остановить</button></div></div>}
       </div>
       {error && <div className="chat-error"><X size={16} /><span>{error}</span></div>}
-      <MessageQueue items={queued} paused={Boolean(queueState.queue_paused)} busy={busy} pending={queuePending}
-        onRemove={(id) => void changeQueue(id)} onResume={() => void changeQueue()} />
       <form className="chat-composer" onSubmit={(event) => void send(event)}>
         {ticketVisible && <div className="ticket-attachment"><MessageSquareText size={16} /><input value={ticketId} onChange={(event) => setTicketId(event.target.value)} placeholder="Номер заявки, например REQ-12345" autoFocus /><button type="button" className="icon-button" onClick={() => { setTicketVisible(false); setTicketId('') }}><X size={15} /></button></div>}
         {mentions.length > 0 && <div className="composer-mentions" aria-label="Прикреплённые объекты">{mentions.map((item) => <span key={`${item.catalog_id}:${item.cache_resource}:${item.identifier}`}><b>@{item.label}</b><code>{item.identifier}</code><button type="button" aria-label={`Убрать ${item.label}`} onClick={() => { setMentions((current) => current.filter((value) => value !== item)); setMessage((current) => current.replace(item.marker, '').replace(/ {2,}/g, ' ')) }}><X size={12} /></button></span>)}</div>}
         <textarea ref={composer} disabled={sending} value={message} onChange={(event) => changeMessage(event.target.value, event.target.selectionStart)} placeholder="Опишите результат, который нужен… Используйте @ для ссылки на объект." rows={2} onKeyDown={(event) => { if (event.key === 'Escape' && mentionOpen) { event.preventDefault(); setMentionOpen(false); setMentionAnchor(-1); return } if (event.key === 'Enter' && !event.shiftKey && !mentionOpen) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
         <ReferenceMentionPicker open={mentionOpen} environment={environment} onSelect={selectMention} onClose={() => { setMentionOpen(false); setMentionAnchor(-1); composer.current?.focus() }} />
-        <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" disabled={busy || queued.length > 0} value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" disabled={busy || queued.length > 0} value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><button className="send-button" disabled={!canSend || !message.trim()} aria-label={busy && queueState.queue_enabled ? "В очередь" : "Отправить"} title={busy && queueState.queue_enabled ? "Добавить в очередь OpenCode" : "Отправить"}>{sending ? <LoaderCircle size={19} className="spin" /> : busy && queueState.queue_enabled ? <Clock3 size={19} /> : <Send size={19} />}</button></div>
+        <div className="composer-footer"><div className="composer-options"><button type="button" className={`button ghost small ${ticketVisible ? 'selected' : ''}`} onClick={() => setTicketVisible((value) => !value)}><MessageSquareText size={15} /> Заявка</button><SearchableSelect compact clearable={false} ariaLabel="Модель" disabled={busy || queued.length > 0} value={modelKey} onChange={setModelKey} options={models.map((model) => ({ value: `${model.provider_id}/${model.model_id}`, label: model.model_name, description: model.provider_name }))} searchPlaceholder="Найти модель…" /><SearchableSelect compact clearable={false} ariaLabel="Thinking" disabled={busy || queued.length > 0} value={thinking} onChange={setThinking} options={[{ value: 'auto', label: 'Thinking: Auto' }, ...(selectedModel?.variants ?? session?.variants ?? []).map((variant) => ({ value: variant, label: `Thinking: ${variant}` }))]} searchPlaceholder="Найти режим…" /></div><div className="composer-send-actions">{busy && queueState.queue_supported && <button type="button" className="send-button send-now" disabled={!canSteer || !message.trim()} aria-label="Отправить сейчас" title="Отправить сейчас — на ближайшем шаге OpenCode" onClick={() => void send(null, 'steer')}><Zap size={19} /></button>}<button className="send-button" disabled={!canSend || !message.trim()} aria-label={busy && queueState.queue_enabled ? "В очередь" : "Отправить"} title={busy && queueState.queue_enabled ? "Добавить в очередь OpenCode" : "Отправить"}>{sending ? <LoaderCircle size={19} className="spin" /> : busy && queueState.queue_enabled ? <Clock3 size={19} /> : <Send size={19} />}</button></div></div>
         {busy && queueState.queue_enabled && <p className="queue-composer-hint">{queued.length >= (queueState.queue_limit ?? 10) ? "Очередь заполнена — дождитесь ответа или уберите сообщение" : queueState.active_environment !== environment ? "Вернитесь в окружение текущего запроса, чтобы добавить сообщение" : !queueState.queue_ready ? "Очередь станет доступна, когда OpenCode начнёт ответ" : "Enter — в очередь · Shift+Enter — новая строка"}</p>}
       </form>
+      </div>
+      <MessageQueue items={queued} paused={Boolean(queueState.queue_paused)} busy={busy} pending={queuePending}
+        onRemove={(id) => void changeQueue('remove', id)} onResume={() => void changeQueue('resume')}
+        onSend={(id) => void changeQueue('send', id)} onMove={(id, direction) => void changeQueue(direction, id)} />
+      </div>
       {renameOpen && <Modal title="Переименовать чат" onClose={() => !renamingSession && setRenameOpen(false)} footer={<><button type="button" className="button secondary" disabled={renamingSession} onClick={() => setRenameOpen(false)}>Отмена</button><button type="button" className="button primary" disabled={renamingSession || !renameValue.trim()} onClick={() => void renameChat()}>{renamingSession ? <LoaderCircle className="spin" size={16} /> : <Pencil size={16} />} Сохранить</button></>}><label className="rename-session-field"><span>Короткое название</span><input className="text-control" value={renameValue} maxLength={80} autoFocus onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void renameChat() } }} /></label></Modal>}
       {sessionToDelete && <Modal title="Удалить сессию?" onClose={() => !deletingSession && setSessionToDelete(null)} footer={<><button type="button" className="button secondary" disabled={deletingSession} onClick={() => setSessionToDelete(null)}>Отмена</button><button type="button" className="button danger" disabled={deletingSession} onClick={() => void deleteChat()}>{deletingSession ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Удалить</button></>}><div className="delete-session-confirm"><strong>{sessionToDelete.title}</strong><p>История этой сессии будет удалена из AutoDeploy и OpenCode. Созданные черновики форм останутся доступны в каталоге.</p></div></Modal>}
     </section>

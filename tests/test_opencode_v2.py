@@ -194,6 +194,85 @@ def test_queue_admission_cannot_race_a_finished_observer():
     assert not client.calls
 
 
+def test_steer_uses_native_delivery_without_cancelling_the_current_turn():
+    row = {"id": "msg_next", "type": "user", "delivery": "queue",
+           "payload": {"text": "Prepared context", "metadata": {"source": "autodeploy-queue"}}}
+    client = Client([{"data": row}, {"data": [row]}, None, {"data": [{**row, "delivery": "steer"}]}])
+    client._active_queues.add("ses_test")
+    client.enqueue_message("ses_test", "Now", delivery="steer", require_active=True)
+    assert client.calls[0][2]["delivery"] == "steer"
+    client.steer_queued_message("ses_test", "msg_next")
+    assert client.calls[-1] == ("PATCH", "/api/session/ses_test/inbox/msg_next", {"delivery": "steer"})
+    assert client.list_message_queue("ses_test") == []
+
+
+class QueueClient(OpenCodeV2Client):
+    def __init__(self):
+        super().__init__("http://127.0.0.1:4096", timeout=1)
+        self.rows = [{"id": id_, "type": "user", "delivery": "queue", "payload": {
+            "text": "Prepared " + id_, "metadata": {"source": "autodeploy-queue", "message": id_, "ticket_id": "TASK-42"},
+        }} for id_ in ["a", "b", "c"]]
+        self.admissions = []
+        self.fail_admission = False
+
+    def _wire(self, method, path, payload=None, **kwargs):
+        if method == "GET":
+            return {"data": copy.deepcopy(self.rows)}
+        if method == "POST":
+            self.admissions.append(payload)
+            row = {"id": payload["id"], "type": "user", "delivery": payload["delivery"],
+                   "payload": {"text": payload["text"], "metadata": payload["metadata"]}}
+            self.rows.append(row)
+            if self.fail_admission and len(self.admissions) == 2:
+                raise OpenCodeError("Lost response after admission")
+            return {"data": copy.deepcopy(row)}
+        if method == "DELETE":
+            self.rows = [row for row in self.rows if row["id"] != path.split('/')[-1]]
+
+
+def test_reorder_preserves_context_and_metadata_and_rewrites_only_changed_suffix():
+    client = QueueClient()
+    client.reorder_message_queue("ses_test", ["a", "c", "b"])
+    assert client.rows[0]["id"] == "a"
+    assert [row["payload"]["text"] for row in client.rows] == ["Prepared a", "Prepared c", "Prepared b"]
+    assert all(item["resume"] is False for item in client.admissions)
+    assert all(row["payload"]["metadata"]["ticket_id"] == "TASK-42" for row in client.rows)
+    assert len({row["id"] for row in client.rows}) == 3
+
+
+def test_reorder_failed_admission_rolls_back_without_losing_originals():
+    client = QueueClient()
+    original = copy.deepcopy(client.rows)
+    client.fail_admission = True
+    with pytest.raises(OpenCodeError, match="Lost response"):
+        client.reorder_message_queue("ses_test", ["b", "a", "c"])
+    assert client.rows == original
+
+
+def test_reorder_lost_delete_response_never_withdraws_the_only_remaining_copy():
+    class LostDeleteResponse(QueueClient):
+        def _wire(self, method, path, payload=None, **kwargs):
+            if method == "GET" and "/message/" in path:
+                raise OpenCodeError("OpenCode HTTP 404: message not delivered")
+            result = super()._wire(method, path, payload, **kwargs)
+            if method == "DELETE" and path.endswith('/a'):
+                raise OpenCodeError("Lost delete response")
+            return result
+
+    client = LostDeleteResponse()
+    with pytest.raises(OpenCodeError, match="Lost delete response"):
+        client.reorder_message_queue("ses_test", ["b", "a", "c"])
+    assert sorted(row["payload"]["text"] for row in client.rows) == ["Prepared a", "Prepared b", "Prepared c"]
+
+
+@pytest.mark.parametrize("ids", [["a", "a", "c"], ["b", "a"], ["a", "b", "missing"]])
+def test_reorder_rejects_stale_or_duplicate_ids_before_writing(ids):
+    client = QueueClient()
+    with pytest.raises(OpenCodeError, match="Очередь изменилась"):
+        client.reorder_message_queue("ses_test", ids)
+    assert not client.admissions
+
+
 def test_context_and_ordinary_prompt_are_not_operator_queue_items():
     context = {"id": "context", "type": "user", "delivery": "queue",
                "payload": {"text": "internal context"}}

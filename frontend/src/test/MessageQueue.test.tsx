@@ -37,6 +37,15 @@ function mount(overrides: Record<string, unknown> = {}, reject = false) {
       return json({ queued: true, queue_id: 'msg_1' }, 202)
     }
     if (path.endsWith('/queue/msg_1') && init?.method === 'DELETE') { state.queue = []; return json(state) }
+    if (path.endsWith('/queue/reorder')) {
+      const ids = JSON.parse(String(init?.body)).message_ids as string[]
+      state.queue = ids.map(id => state.queue.find(item => item.id === id)!)
+      return json(state)
+    }
+    if (path.endsWith('/send')) {
+      state.queue = state.queue.filter(item => !path.endsWith(`/queue/${item.id}/send`))
+      return json(state)
+    }
     if (path.endsWith('/queue/resume')) return json({ job_id: 'job' }, 202)
     if (path.endsWith('/queue') || path.endsWith('/chat')) return json(state)
     if (path.endsWith('/opencode/models')) return json({ items: [{ provider_id: 'corp', model_id: 'model', model_name: 'Model', variants: ['none'] }] })
@@ -101,6 +110,37 @@ describe('Native OpenCode queue', () => {
     expect(await screen.findByText('Очередь недоступна')).toBeVisible()
     expect(screen.getByRole('textbox')).toHaveValue('Не потерять')
     expect(screen.getByRole('button', { name: 'Остановить' })).toBeVisible()
+  })
+
+  it('sends a composer draft immediately using steer and retains it on failure', async () => {
+    const { user, fetch } = mount({}, true)
+    await user.type(await screen.findByRole('textbox'), 'Срочное уточнение')
+    await user.click(screen.getByRole('button', { name: 'Отправить сейчас' }))
+    const request = fetch.mock.calls.find(([path]) => String(path).endsWith('/messages'))!
+    expect(JSON.parse(String(request[1]?.body))).toMatchObject({ message: 'Срочное уточнение', delivery: 'steer' })
+    expect(await screen.findByText('Очередь недоступна')).toBeVisible()
+    expect(screen.getByRole('textbox')).toHaveValue('Срочное уточнение')
+    expect(fetch.mock.calls.some(([path]) => String(path).endsWith('/cancel'))).toBe(false)
+  })
+
+  it('shows a concise queue, changes server order and sends an individual item now', async () => {
+    const { user, fetch } = mount({ queue: [
+      { id: 'msg_1', message: 'Первая', environment: 'test_int', model_id: 'model', thinking: 'none' },
+      { id: 'msg_2', message: 'Вторая', environment: 'test_int', model_id: 'model', thinking: 'none' },
+    ] })
+    const queue = await screen.findByRole('region', { name: 'Очередь сообщений' })
+    expect(queue).not.toHaveTextContent('Далее в диалоге')
+    expect(queue).not.toHaveTextContent('OpenCode выполнит')
+    expect(queue).not.toHaveTextContent('Thinking:')
+    expect(within(queue).getByRole('button', { name: 'Переместить сообщение 1 выше' })).toBeDisabled()
+    expect(within(queue).getByRole('button', { name: 'Переместить сообщение 2 ниже' })).toBeDisabled()
+    await user.click(within(queue).getByRole('button', { name: 'Переместить сообщение 2 выше' }))
+    await waitFor(() => expect(within(queue).getAllByRole('listitem')[0]).toHaveTextContent('Вторая'))
+    const request = fetch.mock.calls.find(([path]) => String(path).endsWith('/queue/reorder'))!
+    expect(JSON.parse(String(request[1]?.body))).toEqual({ message_ids: ['msg_2', 'msg_1'] })
+    await user.click(within(queue).getByRole('button', { name: 'Отправить сообщение 1 сейчас' }))
+    await waitFor(() => expect(within(queue).getAllByRole('listitem')).toHaveLength(1))
+    expect(fetch.mock.calls.some(([path]) => String(path).endsWith('/queue/msg_2/send'))).toBe(true)
   })
 
   it.each([{ queue_supported: false, queue_enabled: false }, { queue_enabled: false }])('does not discard Enter while sending is unavailable: %j', async (overrides) => {

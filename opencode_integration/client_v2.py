@@ -10,6 +10,7 @@ import base64
 import re
 import threading
 import time
+import uuid
 from typing import Any, Mapping
 from urllib.parse import quote, urlencode
 
@@ -84,23 +85,27 @@ class OpenCodeV2Client(OpenCodeClient):
         self._active_queues: set[str] = set()
 
     def list_message_queue(self, session_id):
-        return [row for row in self._list_pending_messages(session_id) if _is_operator_queue_item(row)]
+        with self._queue_lock:
+            return [row for row in self._list_pending_messages(session_id)
+                    if row.get("delivery") == "queue" and _is_operator_queue_item(row)]
 
     def _list_pending_messages(self, session_id):
         """All native pending prompts, including the active turn's admission."""
         rows = _unwrap_data(self._wire("GET", f"/api/session/{quote(session_id, safe='')}/inbox", quiet=True))
         if not isinstance(rows, list):
             raise OpenCodeError("Некорректный ответ очереди OpenCode")
-        return [row for row in rows if row.get("type") == "user" and row.get("delivery") == "queue"]
+        return [row for row in rows if row.get("type") == "user" and row.get("delivery") in {"queue", "steer"}]
 
-    def enqueue_message(self, session_id, text, *, metadata=None, require_active=False):
+    def enqueue_message(self, session_id, text, *, metadata=None, require_active=False, delivery="queue"):
+        if delivery not in {"queue", "steer"}:
+            raise ValueError("Некорректный режим отправки")
         # Admission and settling share a lock: an accepted prompt must always
         # have an observer, even when it races the last idle marker.
         with self._queue_lock:
             if require_active and session_id not in self._active_queues:
                 raise OpenCodeError("Текущий ответ уже завершён или ещё не начат; отправьте сообщение снова")
             result = _unwrap_data(self._wire("POST", f"/api/session/{quote(session_id, safe='')}/prompt", {
-                "text": text, "delivery": "queue", "resume": True,
+                "text": text, "delivery": delivery, "resume": True,
                 "metadata": {**(metadata or {}), "source": "autodeploy-queue"},
             }))
             if not isinstance(result, dict) or not result.get("id"):
@@ -110,19 +115,100 @@ class OpenCodeV2Client(OpenCodeClient):
     def cancel_queued_message(self, session_id, message_id):
         self._wire("DELETE", f"/api/session/{quote(session_id, safe='')}/inbox/{quote(message_id, safe='')}")
 
-    def resume_message_queue(self, session_id, *, cancel_event=None, on_event=None):
+    def steer_queued_message(self, session_id, message_id):
+        with self._queue_lock:
+            if session_id not in self._active_queues:
+                raise OpenCodeError("Текущий ответ завершён; обновите очередь и повторите отправку")
+            if message_id not in {row["id"] for row in self.list_message_queue(session_id)}:
+                raise OpenCodeError("Сообщение уже отправлено или удалено")
+            self._wire("PATCH", f"/api/session/{quote(session_id, safe='')}/inbox/{quote(message_id, safe='')}",
+                       {"delivery": "steer"})
+
+    def reorder_message_queue(self, session_id, message_ids):
+        # V2 has no atomic reorder endpoint. Match its own UI: stage the changed
+        # suffix without waking the runner, then withdraw the original rows.
+        # Preserve prepared context and metadata; never reconstruct from UI text.
+        with self._queue_lock:
+            path = f"/api/session/{quote(session_id, safe='')}"
+            pending = _unwrap_data(self._wire("GET", path + "/inbox", quiet=True))
+            current = [row for row in pending if row.get("delivery") == "queue"]
+            ids = [row["id"] for row in current]
+            if (len(message_ids) != len(set(message_ids)) or set(ids) != set(message_ids)
+                    or any(row.get("type") != "user" or not _is_operator_queue_item(row) for row in current)):
+                raise OpenCodeError("Очередь изменилась; обновите её и повторите перемещение")
+            changed = next((i for i, id_ in enumerate(message_ids) if id_ != ids[i]), len(ids))
+            if changed == len(ids):
+                return
+            by_id = {row["id"]: row for row in current}
+            replacements = {}
+
+            def withdraw(original_ids):
+                for original in original_ids:
+                    try:
+                        self.cancel_queued_message(session_id, replacements[original])
+                    except Exception:
+                        pass  # Keep the original failure; a subsequent refresh reconciles native state.
+
+            try:
+                for original in message_ids[changed:]:
+                    replacement = "msg_" + uuid.uuid4().hex
+                    replacements[original] = replacement
+                    payload = by_id[original]["payload"]
+                    if payload.get("files") or payload.get("agents") or payload.get("skills"):
+                        raise OpenCodeError("Переместите сообщение с вложениями в OpenCode")
+                    self._wire("POST", path + "/prompt", {
+                        "id": replacement, "text": payload["text"], "metadata": payload.get("metadata", {}),
+                        "delivery": "queue", "resume": False,
+                    })
+                actual = _unwrap_data(self._wire("GET", path + "/inbox", quiet=True))
+                if [row["id"] for row in actual if row.get("delivery") == "queue"] != ids + list(replacements.values()):
+                    raise OpenCodeError("Очередь изменилась во время перемещения; повторите действие")
+            except Exception:
+                withdraw(replacements)
+                raise
+            remaining = ids[changed:]
+            for index, original in enumerate(remaining):
+                try:
+                    self.cancel_queued_message(session_id, original)
+                except Exception:
+                    # Retain replacements for originals already withdrawn.
+                    # A DELETE can succeed even if its response is lost: only
+                    # withdraw a replacement when its original is still pending
+                    # or is confirmed delivered. Unknown state must not lose text.
+                    try:
+                        pending_ids = {row["id"] for row in _unwrap_data(self._wire("GET", path + "/inbox", quiet=True))}
+                        for uncertain in remaining[index:]:
+                            if uncertain in pending_ids:
+                                withdraw([uncertain])
+                                continue
+                            try:
+                                delivered = _unwrap_data(self._wire("GET", path + f"/message/{quote(uncertain, safe='')}", quiet=True))
+                                if isinstance(delivered, dict) and delivered.get("id") == uncertain:
+                                    withdraw([uncertain])
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    raise
+
+    def resume_message_queue(self, session_id, *, cancel_event=None, on_event=None, message_id=None):
         if cancel_event is not None and cancel_event.is_set():
             raise OpenCodeCancelled("Операция отменена пользователем")
         rows = self.list_message_queue(session_id)
         if not rows:
             raise OpenCodeError("Очередь OpenCode пуста")
-        first = rows[0]
+        first = next((row for row in rows if row["id"] == message_id), None) if message_id else rows[0]
+        if first is None:
+            raise OpenCodeError("Сообщение уже отправлено или удалено")
         path = f"/api/session/{quote(session_id, safe='')}"
         # Re-admission by ID is idempotent and wakes the existing native inbox.
-        self._wire("POST", path + "/prompt", {
-            "id": first["id"], "text": first["payload"]["text"], "resume": True,
-            "delivery": "queue",
-        })
+        if message_id:
+            self._wire("PATCH", path + f"/inbox/{quote(message_id, safe='')}", {"delivery": "steer"})
+        else:
+            self._wire("POST", path + "/prompt", {
+                "id": first["id"], "text": first["payload"]["text"], "resume": True,
+                "delivery": "queue",
+            })
         with self._queue_lock:
             self._active_queues.add(session_id)
         return self._wait_for_message(session_id, first["id"], cancel_event, on_event,

@@ -15,6 +15,7 @@ from webapp.models import (
     ChatSessionRequest,
     ChatSessionUpdateRequest,
     PermissionReplyRequest,
+    QueueReorderRequest,
     StrictModel,
 )
 
@@ -115,6 +116,7 @@ def message(session_id: str, body: ChatMessageRequest, request: Request):
             model_id=body.model_id,
             thinking=body.thinking,
             mentions=[item.model_dump() for item in body.mentions],
+            delivery=body.delivery,
         )
     except Exception as exc:
         translate(exc)
@@ -149,6 +151,22 @@ def remove_queued_message(session_id: str, message_id: str, request: Request):
 def resume_queue(session_id: str, request: Request):
     try:
         return service(request).resume_queue(session_id)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.post("/sessions/{session_id}/queue/reorder")
+def reorder_queue(session_id: str, body: QueueReorderRequest, request: Request):
+    try:
+        return service(request).reorder_queue(session_id, body.message_ids)
+    except Exception as exc:
+        translate(exc)
+
+
+@router.post("/sessions/{session_id}/queue/{message_id}/send", status_code=status.HTTP_202_ACCEPTED)
+def send_queued_message(session_id: str, message_id: str, request: Request):
+    try:
+        return service(request).send_queued_message(session_id, message_id)
     except Exception as exc:
         translate(exc)
 

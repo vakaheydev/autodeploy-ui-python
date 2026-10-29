@@ -214,6 +214,11 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
                                                     require_active=True)
                     third = client.enqueue_message(queued_session, "QUEUE_REMOVE", require_active=True)
                     assert [row["id"] for row in client.list_message_queue(queued_session)] == [second["id"], third["id"]]
+                    client.reorder_message_queue(queued_session, [third["id"], second["id"]])
+                    reordered = client.list_message_queue(queued_session)
+                    assert [row["payload"]["text"] for row in reordered] == ["QUEUE_REMOVE", "QUEUE_SECOND"]
+                    assert reordered[1]["payload"]["metadata"]["message"] == "Second"
+                    third, second = reordered
                     client.cancel_queued_message(queued_session, third["id"])
                     assert [row["id"] for row in client.list_message_queue(queued_session)] == [second["id"]]
                 finally:
@@ -245,11 +250,29 @@ def test_real_v2_cli_turn_and_restoration(tmp_path, monkeypatch, mcp_policy):
                     assert [row["id"] for row in client.list_message_queue(stopped_session)] == [pending["id"]]
                 finally:
                     queue_release.set()
-            resumed = client.resume_message_queue(stopped_session, on_event=lambda _event: None)
+            resumed = client.resume_message_queue(stopped_session, message_id=pending["id"], on_event=lambda _event: None)
             assert resumed["parts"][0]["text"] == "SECOND_REPLY"
             history = client.list_session_messages(stopped_session)
             assert sum(row["info"].get("id") == pending["id"] for row in history) == 1
             client.delete_session(stopped_session)
+            queue_started.clear()
+            queue_release.clear()
+            steer_session = client.create_session(agent="autodeploy-copilot", provider_id="local",
+                                                  model_id="test-model", variant="none")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.send_chat_message, session_id=steer_session, prompt="QUEUE_FIRST",
+                    agent="autodeploy-copilot", provider_id="local", model_id="test-model",
+                    variant="none", on_event=lambda _event: None,
+                )
+                try:
+                    assert queue_started.wait(10)
+                    client.enqueue_message(steer_session, "QUEUE_SECOND", delivery="steer", require_active=True)
+                finally:
+                    queue_release.set()
+                assert future.result(timeout=20).text == "SECOND_REPLY"
+            assert client.list_message_queue(steer_session) == []
+            client.delete_session(steer_session)
         client.abort_session(session)
         client.delete_session(session)
         assert not client.list_sessions()

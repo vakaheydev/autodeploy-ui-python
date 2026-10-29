@@ -83,6 +83,28 @@ page refresh and remain in OpenCode across AutoDeploy restarts. The web API
 exposes `GET /api/v1/ai/sessions/{id}/queue`, `DELETE .../queue/{message_id}` and
 `POST .../queue/resume`, plus `queue` SSE updates and a periodic UI refresh.
 
+The compact queue is a right-hand panel (right-aligned below the composer on
+narrow screens), titled “Очередь сообщений”. Each item has send-now, up/down and
+remove controls. The composer grows with its text, capped at 240 px / 35% of the
+viewport, then scrolls internally and shrinks after sending.
+
+`POST .../messages` accepts optional `delivery: "queue" | "steer"` (default
+`queue`). During generation, “Отправить сейчас” uses native `steer`, which makes
+input available at the next runner step without cancelling the answer. It is
+available on V2 even when queue admission is disabled. Existing items use
+`POST .../queue/{message_id}/send`, mapping to native inbox PATCH
+`{delivery: "steer"}`; paused sessions start an observer for the selected item.
+Pending steers are included in completion checks but not shown as waiting items.
+
+`POST .../queue/reorder` accepts `{message_ids: [...]}`, the complete desired
+order of pending operator items. The adapter validates the current IDs and
+rewrites only the changed suffix, preserving prepared text and metadata, using
+new native IDs and `resume: false`, then withdrawing originals. This mirrors
+OpenCode's own UI because V2 has no atomic reorder API. Failed admissions are
+withdrawn before originals are removed; concurrent queue changes are rejected
+and the UI refreshes from the server. Control items and foreign prompts cannot
+be reordered through AutoDeploy. The ordering remains owned by OpenCode.
+
 V1 retains its existing synchronous message/SSE transport, permission schema,
 configured-model discovery and context storage. Both versions keep the same
 Python validation, exact MCP allowlists and operator confirmation boundaries.

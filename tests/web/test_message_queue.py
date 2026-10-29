@@ -11,6 +11,7 @@ def make_service(*, supported=True, enabled="true"):
     copilot = SimpleNamespace(
         queued_messages=Mock(return_value=[]), enqueue_message=Mock(return_value={"id": "msg_native"}),
         remove_queued_message=Mock(), cancel=Mock(), mcp_native=True, session_id="ses_native",
+        steer_queued_message=Mock(), reorder_queued_messages=Mock(),
     )
     service = WebAIService(SimpleNamespace(env_manager=SimpleNamespace(
         load=lambda: {OPENCODE_MESSAGE_QUEUE_KEY: enabled},
@@ -38,6 +39,38 @@ def test_busy_message_is_admitted_to_opencode_immediately():
     assert session.copilot.enqueue_message.call_args.kwargs["metadata"]["source"] == "autodeploy-queue"
     assert session.busy
     assert not any(event.kind == "user" for event in session.events)
+
+
+def test_immediate_message_uses_native_steer_even_when_queue_admission_is_disabled():
+    service, session = make_service(enabled="false")
+    assert send(service, delivery="steer")["queue_id"] == "msg_native"
+    assert session.copilot.enqueue_message.call_args.kwargs["delivery"] == "steer"
+    assert session.copilot.enqueue_message.call_args.kwargs["metadata"]["message"] == "Следующее сообщение"
+    session.copilot.cancel.assert_not_called()
+
+
+def test_queue_controls_use_existing_native_items():
+    service, session = make_service()
+    service.send_queued_message("chat", "msg_native")
+    session.copilot.steer_queued_message.assert_called_once_with("msg_native")
+    service.reorder_queue("chat", ["msg_b", "msg_a"])
+    session.copilot.reorder_queued_messages.assert_called_once_with(["msg_b", "msg_a"])
+    session.copilot.enqueue_message.assert_not_called()
+
+
+def test_paused_send_now_observes_the_selected_message(monkeypatch):
+    service, session = make_service()
+    session.busy = False
+    session.copilot.queued_messages.return_value = [{"id": id_, "payload": {"metadata": {
+        "source": "autodeploy-queue", "environment": "test_int", "provider_id": "provider",
+        "model_id": "model", "thinking": "none",
+    }}} for id_ in ["first", "selected"]]
+    start = Mock(return_value={"job_id": "observer"})
+    monkeypatch.setattr(service, "start_message", start)
+    service.send_queued_message("chat", "selected")
+    assert start.call_args.kwargs["_resume_message_id"] == "selected"
+    with pytest.raises(RuntimeError, match="уже отправлено"):
+        service.send_queued_message("chat", "missing")
 
 
 @pytest.mark.parametrize("supported,enabled", [(False, "true"), (True, "false")])
@@ -130,6 +163,9 @@ def test_queue_http_contracts():
         assert client.get("/api/v1/ai/sessions/chat/queue").json()["queue_supported"] is True
         assert client.delete("/api/v1/ai/sessions/chat/queue/msg_native").status_code == 200
         assert client.post("/api/v1/ai/sessions/chat/queue/resume").status_code == 409
+        assert client.post("/api/v1/ai/sessions/chat/queue/msg_native/send").status_code == 202
+        assert client.post("/api/v1/ai/sessions/chat/queue/reorder", json={"message_ids": ["b", "a"]}).status_code == 200
+        assert client.post("/api/v1/ai/sessions/chat/queue/reorder", json={"message_ids": []}).status_code == 422
     session.copilot.remove_queued_message.assert_called_once_with("msg_native")
 
 

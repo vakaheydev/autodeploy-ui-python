@@ -143,6 +143,11 @@ class ChatMessageRequest(StrictModel):
     model_id: str = Field(default="", max_length=300)
     thinking: str = Field(default="auto", max_length=100)
     mentions: List[ChatReferenceMention] = Field(default_factory=list, max_length=20)
+    delivery: Literal["queue", "steer"] = "queue"
+
+
+class QueueReorderRequest(StrictModel):
+    message_ids: List[str] = Field(min_length=1, max_length=10)
 
 
 class PermissionReplyRequest(StrictModel):
