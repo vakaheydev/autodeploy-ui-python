@@ -16,6 +16,126 @@
 Python-контрактом, public React renderer показывает те же `FieldDefinition`, а
 вся загрузка данных, валидация и обработка кнопок остаются на Python-сервере.
 
+## Кнопки непосредственно под полем
+
+В основной web-форме `FieldDefinition.actions` принимает последовательность
+`FieldAction`. Кнопки отображаются под соответствующим полем, включая вложенные
+блоки и конкретные повторяемые экземпляры (`target_2`, `block_2.value`).
+Идентификаторы кнопок уникальны **внутри одного поля**. Старые footer actions
+и Tkinter-кнопки сохраняют прежний контракт; новые field actions относятся к web UI.
+
+Все новые типы импортируются из `forms.field_actions`:
+
+```python
+from forms.field_actions import (
+    FieldAction, FieldActionContext, FieldActionDialog, FieldDialogAction,
+)
+from forms.fields import FieldDefinition, FieldType, ReferenceConfig
+from forms.base_form import ServerActionResult, ServerDialogActionResult
+
+
+def apply_categories(ctx: FieldActionContext):
+    # Полные записи, а не только идентификаторы выбранных пунктов.
+    items = ctx.get_selected_items("categories")
+    text = "\n".join(item["name"] for item in items)
+    ctx.set_value(text)
+    return ServerDialogActionResult(message="Категории подставлены")
+
+
+description_field = FieldDefinition(
+    key="description",
+    label="Описание",
+    field_type=FieldType.TEXTAREA,
+    actions=(FieldAction(
+        action_id="choose_categories",
+        label="Выбрать категории",
+        dialog=FieldActionDialog(
+            title="Категории для описания",
+            fields=(FieldDefinition(
+                key="categories",
+                label="Категории",
+                field_type=FieldType.MULTISELECT,
+                reference=ReferenceConfig(
+                    source="local",
+                    resource="api_categories.json",
+                    value_key="id",
+                    label_key="name",
+                ),
+            ),),
+            actions=(FieldDialogAction(
+                action_id="apply", label="Подставить", handler=apply_categories,
+            ),),
+        ),
+    ),),
+)
+```
+
+При нажатии открывается обычный серверный диалог. Справочник поддерживает поиск,
+множественный выбор, обновление и просмотр записей. Для HTTP-справочника укажите
+его `ReferenceConfig`; загрузка пройдёт через зарегистрированные Python handlers.
+`apply_categories` вызывается **после** выбора и нажатия «Подставить», получает
+выбор и устанавливает значение ровно того экземпляра поля, откуда открыли окно.
+Это двухэтапное взаимодействие через HTTP, не блокирующий вызов Tkinter/modal.
+
+Для кнопки без окна задайте `FieldAction(handler=callback)`. Callback получает
+один `FieldActionContext` и может вернуть `ServerActionResult` или `None`:
+
+```python
+def fill_from_reference(ctx: FieldActionContext):
+    records = ctx.load_reference(ReferenceConfig("local", "api_categories.json"))
+    ctx.set_value("; ".join(item["name"] for item in records))
+    return ServerActionResult(message="Поле заполнено")
+
+button = FieldAction("fill", "Заполнить из справочника", handler=fill_from_reference)
+```
+
+Контекст обработчика:
+
+| Член | Назначение |
+|---|---|
+| `environment: str` | Выбранное рабочее окружение |
+| `field_path: str`, `field: FieldDefinition` | Точный путь экземпляра и его Python-описание |
+| `value` | Текущее значение поля |
+| `form_values: dict` | Нормализованный снимок основной формы |
+| `dialog_values: dict` | Нормализованные значения окна; `{}` у прямой кнопки |
+| `http` | Штатный `core.http_client.HttpClient` для `get/post/put/...` |
+| `services` | Сервисы установленного provider: `.itsm`, `.tfs`, `.gravitee` |
+| `load_reference(reference, *, extra_params=None)` | Загрузить полные записи через штатные обработчики и кэш текущего окружения |
+| `get_selected_items(key)` | Полные выбранные записи в обработчике; поля диалога имеют приоритет над одноимёнными полями формы |
+| `set_value(value)` | Установить значение текущего поля с серверной нормализацией, сохранив соседние поля |
+
+Для произвольного HTTP вызовите, например, `ctx.http.get(url)` внутри callback.
+Доменную интеграцию и credentials держите в private services. Не выполняйте I/O
+в `fields`, при конструировании `FieldAction` или `FieldActionDialog`: эти описания
+читаются при построении схемы и версии формы.
+
+`FieldAction` объявляет ровно один `handler` или `dialog`. Дополнительные параметры:
+`style="Secondary"`, `require_valid_form=False`, `confirmation_text=""`.
+Для диалога подтверждение задаётся на конкретном `FieldDialogAction`, а не на
+открывающей кнопке. `FieldDialogAction` принимает `handler(context)`,
+`style="Primary"`, `require_valid_dialog=True`, `confirmation_text=""`,
+`close_on_success=True`. Возвращаемый `ServerDialogActionResult` поддерживает
+сообщение, статус, патч значений окна и `close_dialog`, как у footer-диалогов.
+
+`FieldActionDialog.initial_values` — mapping или callback `(context) -> mapping`,
+вызываемый при открытии. `validate(context)` возвращает те же ошибки, что обычный
+валидатор диалога; он должен быть read-only. `set_value` разрешён только внутри
+обработчиков кнопок. При исключении или `ResultStatus.ERROR` значение, переданное
+через `set_value`, не применяется. При успешном ответе поле получает обновление,
+а ручной черновик сохраняется обычным механизмом формы.
+
+Зависимые справочники окна используют прежний `ReferenceDependency`, включая
+`scope="form"`; это не передаёт справочнику всю форму. Внутри окон используйте
+`FieldDialogAction`: вложенные `FieldDefinition.actions` в диалоге не поддерживаются.
+Сервер отклоняет вызовы для скрытого или удалённого экземпляра, устаревшую версию
+формы и подтверждение, полученное для другого поля/значений.
+
+REST использует существующие `/forms/{form_id}/actions/{action_id}` и `.../dialog`
+маршруты с дополнительным `owner_field_path` в body. Его нужно передавать при
+открытии, пересчёте, загрузке справочника и выполнении кнопки. При пустом пути
+сохраняется обычное поведение footer action. Ответ окна сохраняет `owner_field_path`.
+Callables, HTTP-клиент и service objects никогда не попадают в JSON схемы.
+
 ## Контракты
 
 ```python

@@ -7,7 +7,10 @@
 """
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forms.field_actions import FieldAction
 
 
 class FieldType(Enum):
@@ -96,5 +99,6 @@ class FieldDefinition:
     depends_on:       str                   = ""    # ключ поля-родителя для зависимого справочника
     depends_on_field: str                   = ""    # поле из item родителя (по умолч. — value_key)
     reference_dependencies: tuple[ReferenceDependency, ...] = ()
+    actions: tuple['FieldAction', ...] = ()
     # Несколько явных sibling-зависимостей. Старые depends_on/depends_on_field
     # остаются полностью совместимыми и могут использоваться одновременно.

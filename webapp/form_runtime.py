@@ -150,6 +150,26 @@ def _field_shape(field: FieldDefinition) -> dict[str, Any]:
             else None
         ),
         "fields": [_field_shape(item) for item in field.block_fields],
+        **({"actions": [_field_action_shape(action) for action in field.actions]} if field.actions else {}),
+    }
+
+
+def _field_action_shape(action) -> dict[str, Any]:
+    dialog = action.dialog
+    return {
+        "id": action.action_id, "label": action.label, "style": action.style,
+        "confirmation": action.confirmation_text, "require_valid_form": action.require_valid_form,
+        "handler": _condition_identity(action.handler),
+        "dialog": None if dialog is None else {
+            "title": dialog.title, "description": dialog.description,
+            "fields": [_field_shape(field) for field in dialog.fields],
+            "initial_values": _condition_identity(dialog.initial_values) if callable(dialog.initial_values) else _json_safe(dialog.initial_values),
+            "validate": _condition_identity(dialog.validate),
+            "actions": [{"id": button.action_id, "label": button.label, "style": button.style,
+                         "handler": _condition_identity(button.handler), "confirmation": button.confirmation_text,
+                         "require_valid_dialog": button.require_valid_dialog, "close_on_success": button.close_on_success}
+                        for button in dialog.actions],
+        },
     }
 
 
@@ -285,6 +305,8 @@ class FormRuntime:
         form.tfs_service = services.tfs
         form.itsm_service = services.itsm
         form.gravitee_service = services.gravitee
+        form._runtime_http_client = client
+        form._runtime_services = services
         form.screen = None
         form.current_environment = str(environment)
         return form
@@ -453,8 +475,15 @@ class FormRuntime:
                     allow_form_scope=allow_form_scope,
                 )
 
-    def _server_action(self, form: BaseForm, action_id: str) -> ServerAction:
-        actions = tuple(form.get_server_actions())
+    def _server_action(self, form: BaseForm, action_id: str, owner_field_path: str = "", values=None) -> ServerAction:
+        form._active_field_action_path = owner_field_path
+        if owner_field_path:
+            from webapp.field_actions import adapt, target
+            normalized = self._normalize_object(form.fields, dict(values or {}), [], form.current_environment, prefix="")
+            field, _ = target(self, form, owner_field_path, normalized)
+            actions = tuple(adapt(self, form, owner_field_path, declaration) for declaration in field.actions)
+        else:
+            actions = tuple(form.get_server_actions())
         self._validate_server_actions(actions, form.fields)
         action = next(
             (item for item in actions if item.action_id == action_id),
@@ -565,11 +594,12 @@ class FormRuntime:
         values: Mapping[str, Any],
         version: str,
         confirmation_token: str,
+        owner_field_path: str = "",
     ) -> dict[str, Any]:
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = self._server_action(form, action_id)
+        action = self._server_action(form, action_id, owner_field_path, values)
         if action.dialog is not None:
             raise ValueError(
                 "Это действие открывает диалог; используйте dialog endpoint"
@@ -588,7 +618,7 @@ class FormRuntime:
                 "message": "Форма не прошла валидацию",
             }
         fingerprint = self.container.fingerprint(
-            f"{form_id}:action:{action_id}",
+            f"{form_id}:action:{action_id}:field:{owner_field_path}",
             environment,
             validation.values,
             form_version(form),
@@ -706,12 +736,13 @@ class FormRuntime:
         environment: str,
         form_values: Mapping[str, Any],
         version: str,
+        owner_field_path: str = "",
     ) -> dict[str, Any]:
         """Create a fresh server-rendered dialog document for one form action."""
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = self._server_action(form, action_id)
+        action = self._server_action(form, action_id, owner_field_path, form_values)
         dialog = self._require_action_dialog(action)
         form_validation = self.validate(
             form_id,
@@ -782,12 +813,13 @@ class FormRuntime:
         form_values: Mapping[str, Any],
         dialog_values: Mapping[str, Any],
         version: str,
+        owner_field_path: str = "",
     ) -> dict[str, Any]:
         """Recompute conditions and inline options after dialog field changes."""
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = self._server_action(form, action_id)
+        action = self._server_action(form, action_id, owner_field_path, form_values)
         dialog = self._require_action_dialog(action)
         form_validation = self.validate(
             form_id,
@@ -827,12 +859,13 @@ class FormRuntime:
         limit: int,
         refresh: bool,
         cache_status_only: bool = False,
+        owner_field_path: str = "",
     ) -> dict[str, Any]:
         """Resolve one dialog reference using only explicitly declared inputs."""
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = self._server_action(form, action_id)
+        action = self._server_action(form, action_id, owner_field_path, form_values)
         dialog = self._require_action_dialog(action)
         field, siblings = self._find_field_context(dialog.fields, field_path)
         if field.reference is None:
@@ -948,12 +981,13 @@ class FormRuntime:
         dialog_values: Mapping[str, Any],
         version: str,
         confirmation_token: str = "",
+        owner_field_path: str = "",
     ) -> dict[str, Any]:
         """Execute one dialog button and return authoritative UI patches."""
         self._ensure_environment(environment)
         form = self.get_form(form_id, environment)
         self._check_version(form, version)
-        action = self._server_action(form, action_id)
+        action = self._server_action(form, action_id, owner_field_path, form_values)
         dialog = self._require_action_dialog(action)
         button = next(
             (item for item in dialog.actions if item.action_id == dialog_action_id),
@@ -994,7 +1028,7 @@ class FormRuntime:
             }
 
         fingerprint = self.container.fingerprint(
-            f"{form_id}:action:{action_id}:dialog:{dialog_action_id}",
+            f"{form_id}:action:{action_id}:dialog:{dialog_action_id}:field:{owner_field_path}",
             environment,
             {
                 "form": form_validation.values,
@@ -1131,6 +1165,7 @@ class FormRuntime:
             "success": True,
             "id": action.action_id,
             "title": dialog.title,
+            **({"owner_field_path": form._active_field_action_path} if getattr(form, "_active_field_action_path", "") else {}),
             "description": dialog.description,
             "form_version": form_version(form),
             "values": _json_safe(dict(dialog_values)),
@@ -1318,6 +1353,14 @@ class FormRuntime:
                 for item in field.reference_dependencies
             ],
         }
+        if field.actions:
+            from webapp.field_actions import adapt
+            actions = tuple(adapt(self, form, path, declaration) for declaration in field.actions)
+            self._validate_server_actions(actions, form.fields)
+            document["actions"] = [{
+                "id": action.action_id, "label": action.label, "style": action.style,
+                "dialog": action.dialog is not None, "confirmation_required": bool(action.confirmation_text),
+            } for action in actions] if visible else []
         if field.plural:
             document["plural_contract"] = {
                 "first_instance_path": path,

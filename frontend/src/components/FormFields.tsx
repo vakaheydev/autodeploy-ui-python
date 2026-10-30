@@ -27,9 +27,11 @@ interface FieldProps {
   onObjectChange?: (key: string, value: unknown) => void
   onObjectDelete?: (key: string) => void
   onFieldChange?: (path: string) => void
+  onFieldAction?: (path: string, action: NonNullable<FieldDocument['actions']>[number]) => void
   review?: Record<string, ReviewEntry>
   onReview?: (key: string, accept: boolean) => void
   dialogContext?: {
+    ownerFieldPath?: string
     formValues: Record<string, unknown>
     formVersion: string
   }
@@ -115,6 +117,7 @@ function sameFieldProps(previous: FieldProps, next: FieldProps) {
   return previous.formId === next.formId
     && previous.environment === next.environment
     && previous.disabled === next.disabled
+    && Boolean(previous.onFieldAction) === Boolean(next.onFieldAction)
     && Object.is(previous.value, next.value)
     && fieldSignature(previous.field) === fieldSignature(next.field)
     && pluralValuesSignature(previous.field, previous.values) === pluralValuesSignature(next.field, next.values)
@@ -122,6 +125,7 @@ function sameFieldProps(previous: FieldProps, next: FieldProps) {
     && fieldErrorsSignature(previous.field, previous.errors) === fieldErrorsSignature(next.field, next.errors)
     && fieldReviewSignature(previous.field, previous.review) === fieldReviewSignature(next.field, next.review)
     && previous.dialogContext?.formVersion === next.dialogContext?.formVersion
+    && previous.dialogContext?.ownerFieldPath === next.dialogContext?.ownerFieldPath
 }
 
 function errorsForField(field: FieldDocument, errors: ValidationError[]) {
@@ -223,6 +227,7 @@ function ReferenceField(props: FieldProps) {
     form_values: props.dialogContext.formValues,
     dialog_values: rootValues,
     form_version: props.dialogContext.formVersion,
+    ...(props.dialogContext.ownerFieldPath ? { owner_field_path: props.dialogContext.ownerFieldPath } : {}),
     ...extra,
   } : {
     environment,
@@ -509,6 +514,7 @@ function SingleField(props: FieldProps) {
             )
           })}
         </div>
+        <FieldActionButtons {...props} />
         <FieldError field={field} errors={errors} />
       </fieldset>
     )
@@ -518,6 +524,7 @@ function SingleField(props: FieldProps) {
       <div className="field-label-row"><label className="field-label" htmlFor={field.path}>{field.label}{field.required && <b>*</b>}</label>{fieldReview && <ReviewControls fieldLabel={field.label} reviewKey={reviewKey} review={fieldReview} onReview={props.onReview} />}</div>
       {field.hint && <p className="field-hint">{field.hint}</p>}
       <BasicField {...props} />
+      <FieldActionButtons {...props} />
       <FieldError field={field} errors={errors} />
     </div>
   )
@@ -557,9 +564,20 @@ export function PluralField(props: FieldProps) {
   )
 }
 
+function FieldActionButtons({ field, disabled, onFieldAction }: FieldProps) {
+  if (!field.actions?.length) return null
+  return <div className="field-actions" role="group" aria-label={`Действия поля ${field.label}`}>
+    {field.actions.map(action => <button key={action.id} type="button"
+      className={`button ${['primary', 'secondary', 'success', 'danger'].includes(action.style.toLowerCase()) ? action.style.toLowerCase() : 'secondary'} small`}
+      disabled={disabled || !onFieldAction} onClick={() => onFieldAction?.(field.path, action)}>
+      {action.label}
+    </button>)}
+  </div>
+}
+
 const MemoizedPluralField = memo(PluralField, sameFieldProps)
 
-export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, review, onReview, dialogContext }: {
+export function FormFields({ fields, values, environment, formId, errors, disabled, onValuesChange, onFieldChange, onFieldAction, review, onReview, dialogContext }: {
   fields: FieldDocument[]
   values: Record<string, unknown>
   environment: string
@@ -568,14 +586,15 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
   disabled?: boolean
   onValuesChange: (values: Record<string, unknown>) => void
   onFieldChange?: (path: string) => void
+  onFieldAction?: FieldProps['onFieldAction']
   review?: FieldProps['review']
   onReview?: FieldProps['onReview']
   dialogContext?: FieldProps['dialogContext']
 }) {
   const valuesRef = useRef(values)
-  const callbacksRef = useRef({ onValuesChange, onFieldChange, onReview })
+  const callbacksRef = useRef({ onValuesChange, onFieldChange, onFieldAction, onReview })
   valuesRef.current = values
-  callbacksRef.current = { onValuesChange, onFieldChange, onReview }
+  callbacksRef.current = { onValuesChange, onFieldChange, onFieldAction, onReview }
   const change = useCallback((key: string, value: unknown) => {
     callbacksRef.current.onValuesChange({ ...valuesRef.current, [key]: value })
   }, [])
@@ -585,6 +604,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
     callbacksRef.current.onValuesChange(next)
   }, [])
   const fieldChanged = useCallback((path: string) => callbacksRef.current.onFieldChange?.(path), [])
+  const fieldAction = useCallback<NonNullable<FieldProps['onFieldAction']>>((path, action) => callbacksRef.current.onFieldAction?.(path, action), [])
   const reviewField = useCallback((key: string, accept: boolean) => callbacksRef.current.onReview?.(key, accept), [])
   return <div className="fields-grid">{fields.map((field) => (
     <MemoizedPluralField
@@ -601,6 +621,7 @@ export function FormFields({ fields, values, environment, formId, errors, disabl
       onObjectChange={change}
       onObjectDelete={remove}
       onFieldChange={fieldChanged}
+      onFieldAction={onFieldAction ? fieldAction : undefined}
       review={review}
       onReview={reviewField}
       dialogContext={dialogContext}

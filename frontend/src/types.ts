@@ -34,6 +34,7 @@ export interface ReferenceDependencyDescriptor {
 }
 
 export interface FieldDocument {
+  actions?: Array<{ id: string; label: string; style: string; dialog: boolean; confirmation_required: boolean }>
   key: string
   path: string
   label: string
@@ -106,6 +107,7 @@ export interface ActionDialogButtonDocument {
 }
 
 export interface ActionDialogDocument {
+  owner_field_path?: string
   success: boolean
   id: string
   title: string

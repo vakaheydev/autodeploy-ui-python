@@ -181,7 +181,7 @@ export function FormPage() {
   const [reviewBaseline, setReviewBaseline] = useState<Record<string, unknown>>({})
   const [refineModal, setRefineModal] = useState(false)
   const [guidance, setGuidance] = useState('')
-  const [actionConfirm, setActionConfirm] = useState<{ id: string; text: string; token: string } | null>(null)
+  const [actionConfirm, setActionConfirm] = useState<{ id: string; text: string; token: string; ownerFieldPath?: string } | null>(null)
   const [actionDialog, setActionDialog] = useState<ActionDialogDocument | null>(null)
   const [actionDialogValues, setActionDialogValues] = useState<Record<string, unknown>>({})
   const [actionDialogErrors, setActionDialogErrors] = useState<ValidationError[]>([])
@@ -479,6 +479,7 @@ export function FormPage() {
       actionDialogStateRequest.current?.abort()
       actionDialogStateRequest.current = controller
       post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionDialog.id)}/dialog/state`, {
+        ...(actionDialog.owner_field_path ? { owner_field_path: actionDialog.owner_field_path } : {}),
         environment,
         form_values: values,
         dialog_values: actionDialogValues,
@@ -505,7 +506,7 @@ export function FormPage() {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [actionDialog?.id, actionDialog?.form_version, actionDialogValues, document, environment, formId, values])
+  }, [actionDialog?.id, actionDialog?.owner_field_path, actionDialog?.form_version, actionDialogValues, document, environment, formId, values])
 
   useEffect(() => {
     if (
@@ -870,15 +871,16 @@ export function FormPage() {
     } catch (reason) { setBusy(false); setError(reason instanceof Error ? reason.message : String(reason)) }
   }
 
-  const runAction = async (actionId: string, confirmationToken = '') => {
+  const runAction = async (actionId: string, confirmationToken = '', ownerFieldPath = '') => {
     if (!document) return
     setBusy(true); setError('')
     try {
       const response = await post<FormActionResponse>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionId)}`, {
         environment, values, form_version: document.version, confirmation_token: confirmationToken,
+        ...(ownerFieldPath ? { owner_field_path: ownerFieldPath } : {}),
       })
       if (response.confirmation_required && response.confirmation_token) {
-        setActionConfirm({ id: actionId, text: response.confirmation_text ?? 'Подтвердите действие', token: response.confirmation_token })
+        setActionConfirm({ id: actionId, text: response.confirmation_text ?? 'Подтвердите действие', token: response.confirmation_token, ownerFieldPath })
       } else if (!response.success) {
         const actionErrors = response.validation?.errors ?? []
         setErrors(actionErrors)
@@ -911,7 +913,7 @@ export function FormPage() {
     } finally { setBusy(false) }
   }
 
-  const openActionDialog = async (actionId: string) => {
+  const openActionDialog = async (actionId: string, ownerFieldPath = '') => {
     if (!document) return
     setBusy(true)
     setError('')
@@ -920,6 +922,7 @@ export function FormPage() {
     setActionDialogErrors([])
     try {
       const response = await post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionId)}/dialog`, {
+        ...(ownerFieldPath ? { owner_field_path: ownerFieldPath } : {}),
         environment,
         form_values: values,
         form_version: document.version,
@@ -969,6 +972,7 @@ export function FormPage() {
     setActionDialogNotice('')
     try {
       const response = await post<ActionDialogDocument>(`/api/v1/forms/${encodeURIComponent(formId)}/actions/${encodeURIComponent(actionDialog.id)}/dialog/actions/${encodeURIComponent(dialogAction.id)}`, {
+        ...(actionDialog.owner_field_path ? { owner_field_path: actionDialog.owner_field_path } : {}),
         environment,
         form_values: values,
         dialog_values: actionDialogValues,
@@ -1058,6 +1062,7 @@ export function FormPage() {
           disabled={busy}
           onValuesChange={(next) => { setValues(next); setEditRevision((current) => current + 1) }}
           onFieldChange={clearFieldErrors}
+          onFieldAction={(path, action) => void (action.dialog ? openActionDialog(action.id, path) : runAction(action.id, '', path))}
           review={review}
           onReview={decideReview}
         />
@@ -1098,7 +1103,7 @@ export function FormPage() {
         {ticketError && <div className="submit-error" role="alert"><span className="submit-feedback-icon"><X size={21} /></span><span><strong>Не удалось получить заявку</strong><small>{ticketError}</small></span></div>}
       </Modal>}
       {refineModal && <Modal title="Уточнить AI-предложения" onClose={() => setRefineModal(false)} footer={<><button className="button secondary" onClick={() => setRefineModal(false)}>Отмена</button><button className="button primary" disabled={!guidance.trim()} onClick={() => void refine()}><Sparkles size={17} /> Отправить агенту</button></>}><label className="form-field"><span className="field-label">Что нужно изменить?</span><textarea className="text-control" rows={6} autoFocus value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="Например: оставь текущего владельца, а context path замени на /payments/v2" /></label></Modal>}
-      {actionConfirm && <Modal title="Подтвердите дополнительное действие" onClose={() => setActionConfirm(null)} footer={<><button className="button secondary" onClick={() => setActionConfirm(null)}>Отмена</button><button className="button primary" disabled={busy} onClick={() => void runAction(actionConfirm.id, actionConfirm.token)}><Check size={17} /> Подтвердить</button></>}><p>{actionConfirm.text}</p></Modal>}
+      {actionConfirm && <Modal title="Подтвердите дополнительное действие" onClose={() => setActionConfirm(null)} footer={<><button className="button secondary" onClick={() => setActionConfirm(null)}>Отмена</button><button className="button primary" disabled={busy} onClick={() => void runAction(actionConfirm.id, actionConfirm.token, actionConfirm.ownerFieldPath)}><Check size={17} /> Подтвердить</button></>}><p>{actionConfirm.text}</p></Modal>}
       {actionDialog && <Modal className="action-dialog-modal" title={actionDialog.title} onClose={closeActionDialog} closeDisabled={Boolean(actionDialogBusy)} footer={<><button className="button secondary" disabled={Boolean(actionDialogBusy)} onClick={closeActionDialog}>Отмена</button>{actionDialog.actions.map((dialogAction) => <button className={`button ${['primary', 'secondary', 'success', 'danger'].includes(dialogAction.style) ? dialogAction.style : 'secondary'}`} disabled={Boolean(actionDialogBusy)} key={dialogAction.id} onClick={() => void runActionDialogButton(dialogAction)}>{actionDialogBusy === dialogAction.id ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{actionDialogBusy === dialogAction.id ? 'Выполняю…' : dialogAction.label}</button>)}</>}>
         {actionDialog.description && <p className="action-dialog-description">{actionDialog.description}</p>}
         {actionDialogError && <ErrorBanner message={actionDialogError} onClose={() => setActionDialogError('')} />}
@@ -1107,12 +1112,12 @@ export function FormPage() {
           fields={actionDialog.fields}
           values={actionDialogValues}
           environment={environment}
-          formId={`${formId}:${actionDialog.id}`}
+          formId={`${formId}:${actionDialog.id}:${actionDialog.owner_field_path ?? ""}`}
           errors={actionDialogErrors}
           disabled={Boolean(actionDialogBusy)}
           onValuesChange={setActionDialogValues}
           onFieldChange={(path) => setActionDialogErrors((current) => current.filter((item) => item.field !== path))}
-          dialogContext={{ formValues: values, formVersion: document.version }}
+          dialogContext={{ formValues: values, formVersion: document.version, ownerFieldPath: actionDialog.owner_field_path }}
         />
       </Modal>}
       {actionDialogConfirm && <Modal title="Подтвердите действие в диалоге" onClose={() => !actionDialogBusy && setActionDialogConfirm(null)} closeDisabled={Boolean(actionDialogBusy)} footer={<><button className="button secondary" disabled={Boolean(actionDialogBusy)} onClick={() => setActionDialogConfirm(null)}>Назад</button><button className="button danger" disabled={Boolean(actionDialogBusy)} onClick={() => void runActionDialogButton(actionDialogConfirm.action, actionDialogConfirm.token)}>{actionDialogBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Подтвердить</button></>}><p>{actionDialogConfirm.text}</p></Modal>}

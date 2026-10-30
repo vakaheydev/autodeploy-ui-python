@@ -76,6 +76,26 @@ Every request-scoped form also receives the selected environment as the plain
 string `self.current_environment`; use it instead of
 `self.screen.app.current_environment.get()`.
 
+### Field-owned actions
+
+`FieldDefinition.actions` declares web `FieldAction` buttons below a field.
+`forms.field_actions` provides `FieldActionContext`, `FieldActionDialog` and
+`FieldDialogAction`. Python callbacks receive the exact owning field path,
+normalized form/dialog values, HTTP client, installed services, reference loading
+and selected-item access. `context.set_value(...)` changes that field while
+preserving siblings, including nested/repeated instances. A direct callback or
+a declarative dialog with confirmation callbacks uses the existing action runtime.
+Dialog definitions remain read-only; I/O belongs in callbacks/reference handlers.
+
+Existing action/dialog endpoints accept optional `owner_field_path`. It is
+validated against server field definitions and current visibility/instances,
+included in confirmation fingerprints, and carried through dialog state/options
+and button requests. New actions participate in form versioning; forms without
+field actions retain their versions. Staged `set_value` updates are applied only
+after successful callbacks and Python normalization. Legacy footer/Tkinter action
+contracts remain unchanged. See the self-contained
+[field action contract and example](corp/ACTION_DIALOGS.md#кнопки-непосредственно-под-полем).
+
 ### Operation results
 
 After submit or a server action, the web client smoothly scrolls to and focuses

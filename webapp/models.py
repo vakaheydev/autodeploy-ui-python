@@ -37,9 +37,11 @@ class SubmitRequest(ValuesRequest):
 
 class ActionRequest(ValuesRequest):
     confirmation_token: str = Field(default="", max_length=300)
+    owner_field_path: str = Field(default="", max_length=500)
 
 
 class ActionDialogOpenRequest(StrictModel):
+    owner_field_path: str = Field(default="", max_length=500)
     environment: str = Field(min_length=1, max_length=80)
     form_values: Dict[str, Any] = Field(default_factory=dict)
     form_version: str = Field(default="", max_length=128)
