@@ -78,7 +78,17 @@ description_field = FieldDefinition(
 Это двухэтапное взаимодействие через HTTP, не блокирующий вызов Tkinter/modal.
 
 Для кнопки без окна задайте `FieldAction(handler=callback)`. Callback получает
-один `FieldActionContext` и может вернуть `ServerActionResult` или `None`:
+один `FieldActionContext` и может вернуть значение поля, `ServerActionResult` или `None`.
+Этот же контракт работает в Tkinter: объявления и обработчики можно копировать
+между `master` и `web-platform` без изменений. Используйте `FieldActionDialog`
+для выбора из справочников, без прямых вызовов Tkinter внутри обработчиков.
+Обычное возвращаемое значение подставляется в поле; `None` не меняет его,
+а `False`, `0`, `""` и `[]` применяются. Типизированные результаты и старые
+словари с метаданными ответа сохраняют прежнее поведение. Для значения BLOCK
+с ключами `message`, `status`, `values` и другими метаданными результата
+используйте `ctx.set_value(...)`, чтобы избежать неоднозначности.
+
+Пример:
 
 ```python
 def fill_from_reference(ctx: FieldActionContext):

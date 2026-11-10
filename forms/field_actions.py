@@ -1,4 +1,4 @@
-"""Python-owned buttons attached to individual form fields (web client)."""
+"""Portable Python-owned field buttons for desktop and web clients."""
 from __future__ import annotations
 
 import copy
@@ -54,6 +54,24 @@ class FieldDialogAction:
     require_valid_dialog: bool = True
     confirmation_text: str = ""
     close_on_success: bool = True
+
+
+def apply_field_return(context: FieldActionContext, result: Any) -> Any:
+    """Stage a plain return value; preserve typed and legacy action responses.
+
+    None leaves the field unchanged. Explicit set_value calls are also staged.
+    Mappings containing response metadata retain the legacy response meaning;
+    use set_value for a BLOCK value whose keys overlap those names.
+    """
+    from forms.base_form import ServerActionResult, ServerDialogActionResult
+
+    if result is None or isinstance(result, (ServerActionResult, ServerDialogActionResult)):
+        return result
+    metadata = {"message", "status", "title", "values", "form_values", "dialog_values", "data", "close_dialog"}
+    if isinstance(result, Mapping) and metadata.intersection(result):
+        return result
+    context.set_value(result)
+    return None
 
 
 @dataclass(frozen=True)

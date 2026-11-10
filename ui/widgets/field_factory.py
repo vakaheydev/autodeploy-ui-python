@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ui.theme as theme
 from forms.fields import FieldDefinition, FieldType
+from forms.field_actions import FieldAction
 
 
 class _ToggleRow:
@@ -293,6 +294,7 @@ class _BlockWidget:
         self._fac = factory
         self._ref_loader = ref_loader
         self._on_refresh_cb = on_refresh
+        ref_loader = self._load_sub_reference
 
         self._sub_inner_frames: Dict[str, tk.Frame] = {}
 
@@ -374,12 +376,31 @@ class _BlockWidget:
         self._setup_conditions()
         self._setup_internal_dependencies()
 
+    def _load_sub_reference(self, field, extra_params=None):
+        params = dict(extra_params or {})
+        for dependency in field.reference_dependencies:
+            if dependency.scope != "current":
+                continue
+            widget = self._sub_widgets.get(dependency.field)
+            if widget is None:
+                return []
+            value = widget.get_extra(dependency.item_field) if dependency.item_field else widget.get()
+            if value in (None, "", []):
+                return []
+            params[dependency.parameter or dependency.field] = value
+        if params:
+            return self._ref_loader(field, params)
+        return self._ref_loader(field)
+
     def _setup_internal_dependencies(self) -> None:
         """Подписывает родительские sub-виджеты на перезагрузку зависимых sub-виджетов.
         Обрабатывает только зависимости внутри одного BLOCK (родитель — sub-поле того же блока)."""
         from collections import defaultdict
         dep_map: Dict[str, List[FieldDefinition]] = defaultdict(list)
         for sf in self._sub_fields:
+            for dependency in sf.reference_dependencies:
+                if dependency.scope == "current" and dependency.field in {s.key for s in self._sub_fields}:
+                    dep_map[dependency.field].append(sf)
             if sf.depends_on and sf.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
                 if sf.depends_on in {s.key for s in self._sub_fields}:
                     dep_map[sf.depends_on].append(sf)
@@ -399,8 +420,8 @@ class _BlockWidget:
                     for child in clist:
                         val = (pfw.get_extra(child.depends_on_field)
                                if child.depends_on_field else pfw.get())
-                        ep: Optional[Dict[str, Any]] = {pk: val} if val else None
-                        new_items = self._ref_loader(child, ep)  # type: ignore[call-arg]
+                        ep: Optional[Dict[str, Any]] = {pk: val} if val and child.depends_on == pk else None
+                        new_items = self._load_sub_reference(child, ep)
                         self.refresh_sub_ref(child.key, new_items)
                 return _on_change
 
@@ -574,7 +595,7 @@ class _BlockWidget:
         if inner is None:
             return
         new_fw = self._fac.create(inner, sub_def, new_items,
-                                   ref_loader=self._ref_loader,
+                                   ref_loader=self._load_sub_reference,
                                    on_refresh=self._on_refresh_cb)
         new_fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
         self._sub_widgets[sub_key] = new_fw
@@ -619,7 +640,10 @@ class FieldWidget:
         get_item_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
         get_items_fn: Optional[Callable[[], List[Dict[str, Any]]]] = None,
     ) -> None:
+        self._change_callbacks: List[Callable[[], None]] = []
+        self._setting_and_notifying = False
         self.widget = widget
+        self.children: Dict[str, "FieldWidget"] = {}
         self._get_fn = get_fn
         self._bind_change_fn = bind_change_fn
         self._set_fn = set_fn
@@ -661,8 +685,19 @@ class FieldWidget:
 
     def bind_change(self, callback: Callable[[], None]) -> None:
         """Подписывается на изменение значения. Работает для SELECT с поиском."""
+        self._change_callbacks.append(callback)
         if self._bind_change_fn is not None:
-            self._bind_change_fn(callback)
+            self._bind_change_fn(lambda: callback() if not self._setting_and_notifying else None)
+
+    def set_and_notify(self, value: Any) -> None:
+        """Применяет результат кнопки и обновляет условия/зависимые справочники."""
+        self._setting_and_notifying = True
+        try:
+            self.set(value)
+        finally:
+            self._setting_and_notifying = False
+        for callback in list(self._change_callbacks):
+            callback()
 
 
 # Общие параметры для tk.Entry / tk.Text
@@ -681,7 +716,37 @@ _ENTRY_KWARGS = dict(
 class FieldFactory:
     """Фабрика: FieldDefinition → FieldWidget."""
 
+    def __init__(self, on_field_button: Optional[Callable[[FieldAction, FieldDefinition, FieldWidget], None]] = None) -> None:
+        self._on_field_button = on_field_button
+
     def create(
+        self,
+        parent: tk.Widget,
+        field_def: FieldDefinition,
+        reference_items: List[Dict[str, Any]] | None = None,
+        ref_loader: Optional[Callable[[FieldDefinition], List[Dict[str, Any]]]] = None,
+        on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
+    ) -> FieldWidget:
+        if not field_def.actions:
+            return self._create_input(parent, field_def, reference_items, ref_loader, on_refresh)
+        container = tk.Frame(parent, bg=theme.C["surface"])
+        fw = self._create_input(container, field_def, reference_items, ref_loader, on_refresh)
+        fw.widget.pack(fill=tk.X)
+        actions = tk.Frame(container, bg=theme.C["surface"])
+        actions.pack(fill=tk.X, pady=(6, 0))
+        action_ids = [action.action_id for action in field_def.actions]
+        if len(set(action_ids)) != len(action_ids):
+            raise ValueError("FieldAction.action_id должны быть уникальными")
+        for button in field_def.actions:
+            ttk.Button(
+                actions, text=button.label, style=f"{button.style}.TButton",
+                command=lambda b=button: self._on_field_button(b, field_def, fw),
+                state="normal" if self._on_field_button else "disabled",
+            ).pack(side=tk.LEFT, padx=(0, 6))
+        fw.widget = container
+        return fw
+
+    def _create_input(
         self,
         parent: tk.Widget,
         field_def: FieldDefinition,
@@ -767,6 +832,7 @@ class FieldFactory:
             return FieldWidget(
                 combo,
                 var.get,
+                bind_change_fn=lambda callback: combo.bind("<<ComboboxSelected>>", lambda _: callback(), add="+"),
                 set_fn=lambda value: var.set(
                     "" if value is None else str(value)
                 ),
@@ -1062,8 +1128,31 @@ class FieldFactory:
         return FieldWidget(btn, var.get, bind_change_fn=_bind, set_fn=_set)
 
     def _create_number(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
+        import math
+
+        def number(value):
+            result = float(value)
+            if not math.isfinite(result):
+                raise ValueError("Число должно быть конечным")
+            return int(result) if result.is_integer() else result
+
+        def valid(value):
+            if value in ("", "-", "+", ".", "-.", "+."):
+                return True
+            try:
+                number(value)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+        def get():
+            try:
+                return number(var.get())
+            except ValueError:
+                return 0
+
         var = tk.StringVar(value=str(field.default) if field.default is not None else "")
-        vcmd = (parent.register(lambda v: v == "" or v.isdigit()), "%P")
+        vcmd = (parent.register(valid), "%P")
         entry = tk.Entry(
             parent, textvariable=var,
             validate="key", validatecommand=vcmd,
@@ -1075,9 +1164,9 @@ class FieldFactory:
 
         return FieldWidget(
             entry,
-            lambda: int(var.get()) if var.get().isdigit() else 0,
+            get,
             bind_change_fn=_bind,
-            set_fn=lambda v: var.set(str(int(v)) if v is not None and str(v).isdigit() else ""),
+            set_fn=lambda v: var.set(str(number(v)) if v is not None and v != "" else ""),
         )
 
     def _create_block(
@@ -1088,8 +1177,10 @@ class FieldFactory:
         on_refresh: Optional[Callable[["FieldDefinition", tk.Button], None]] = None,
     ) -> FieldWidget:
         block = _BlockWidget(parent, field.block_fields, self, ref_loader, on_refresh)
-        return FieldWidget(block.frame, block.get, set_fn=block.set,
-                           refresh_sub_ref_fn=block.refresh_sub_ref)
+        widget = FieldWidget(block.frame, block.get, set_fn=block.set,
+                             refresh_sub_ref_fn=block.refresh_sub_ref)
+        widget.children = block._sub_widgets
+        return widget
 
     def _create_file(self, parent: tk.Widget, field: FieldDefinition) -> FieldWidget:
         """

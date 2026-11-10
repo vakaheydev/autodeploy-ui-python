@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Mapping
 
 from forms.base_form import ServerAction, ServerActionDialog, ServerDialogAction
-from forms.field_actions import FieldAction, FieldActionContext, FieldActionDialog, FieldDialogAction
+from forms.field_actions import FieldAction, FieldActionContext, FieldActionDialog, FieldDialogAction, apply_field_return
 from forms.fields import FieldType
 from forms.result_config import ResultStatus
 
@@ -74,7 +74,7 @@ def adapt(runtime, form, path, declaration):
 
     def run(environment, values):
         ctx, patch = context(environment, values, writable=True)
-        result = runtime._server_action_result(declaration.handler(ctx))
+        result = runtime._server_action_result(apply_field_return(ctx, declaration.handler(ctx)))
         if result.status is not ResultStatus.ERROR:
             result = replace(result, values={**dict(result.values), **patch})
         return result
@@ -103,7 +103,7 @@ def adapt(runtime, form, path, declaration):
 
             def run_button(environment, values, dialog_values):
                 ctx, patch = context(environment, values, dialog_values, writable=True)
-                result = runtime._dialog_action_result(button.handler(ctx))
+                result = runtime._dialog_action_result(apply_field_return(ctx, button.handler(ctx)))
                 if result.status is not ResultStatus.ERROR:
                     result = replace(result, form_values={**dict(result.form_values), **patch})
                 return result

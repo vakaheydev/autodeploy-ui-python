@@ -78,7 +78,9 @@ string `self.current_environment`; use it instead of
 
 ### Field-owned actions
 
-`FieldDefinition.actions` declares web `FieldAction` buttons below a field.
+`FieldDefinition.actions` declares portable `FieldAction` buttons below a field
+in both Tkinter and web clients. The imports, declarations and callback context
+are identical; portable handlers must not call Tkinter or browser APIs.
 `forms.field_actions` provides `FieldActionContext`, `FieldActionDialog` and
 `FieldDialogAction`. Python callbacks receive the exact owning field path,
 normalized form/dialog values, HTTP client, installed services, reference loading
@@ -86,6 +88,11 @@ and selected-item access. `context.set_value(...)` changes that field while
 preserving siblings, including nested/repeated instances. A direct callback or
 a declarative dialog with confirmation callbacks uses the existing action runtime.
 Dialog definitions remain read-only; I/O belongs in callbacks/reference handlers.
+Plain callback return values are assigned to the owning field, including false,
+zero, empty strings and lists. None does not stage a value. Typed action results
+and legacy mappings with response metadata keep their existing semantics;
+use `context.set_value` for a block mapping containing metadata keys such as
+`message`, `status` or `values`. Exceptions/error results discard staged changes.
 
 Existing action/dialog endpoints accept optional `owner_field_path`. It is
 validated against server field definitions and current visibility/instances,

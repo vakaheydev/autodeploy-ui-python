@@ -203,3 +203,33 @@ def test_invalid_value_and_duplicate_buttons_are_rejected(runtime, monkeypatch):
     fields[0] = replace(fields[0], actions=(action, action))
     with pytest.raises(ValueError, match='уникальные'):
         api.describe(form.form_id, 'test_int')
+
+
+@pytest.mark.parametrize('kind,value', [
+    (FieldType.TEXT, ''), (FieldType.TEXTAREA, 'text'), (FieldType.FILE, 'file'),
+    (FieldType.NUMBER, 0), (FieldType.NUMBER, -1.5), (FieldType.CHECKBOX, False),
+    (FieldType.MULTISELECT, []), (FieldType.BLOCK, {'child': 'yes'}),
+])
+def test_plain_return_matches_desktop_contract(runtime, monkeypatch, kind, value):
+    api, form, _ = runtime
+    fields = [FieldDefinition('target', 'Target', kind, required=False,
+        block_fields=[FieldDefinition('child', 'Child', FieldType.TEXT)],
+        actions=(FieldAction('fill', 'Fill', handler=lambda ctx: value),))]
+    monkeypatch.setattr(ActionForm, 'fields', property(lambda self: fields))
+    result = api.run_action(form.form_id, 'fill', 'test_int', {}, form_version(form), '', owner_field_path='target')
+    assert result['values'] == {'target': value}
+
+
+def test_plain_dialog_return_and_none_match_desktop(runtime, monkeypatch):
+    api, form, _ = runtime
+    dialog = FieldActionDialog('Choose', [], [
+        FieldDialogAction('apply', 'Apply', lambda ctx: 'chosen'),
+        FieldDialogAction('noop', 'No change', lambda ctx: None),
+    ])
+    fields = [FieldDefinition('target', 'Target', FieldType.TEXT,
+        actions=(FieldAction('choose', 'Choose', dialog=dialog),))]
+    monkeypatch.setattr(ActionForm, 'fields', property(lambda self: fields))
+    for button, expected in [('apply', {'target': 'chosen'}), ('noop', {})]:
+        result = api.run_action_dialog_button(form.form_id, 'choose', button, 'test_int',
+            {'target': 'keep'}, {}, form_version(form), '', owner_field_path='target')
+        assert result['form_values'] == expected

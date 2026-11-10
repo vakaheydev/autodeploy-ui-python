@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import ui.theme as theme
 from forms.base_form import BaseForm, ITSMFetchMode, ITSMFetchResult
 from forms.fields import FieldDefinition, FieldType
+from forms.field_actions import FieldAction
 from forms.registry import FormRegistry
 from config.environments import (
     OPENCODE_ALLOWED_MCP_KEY,
@@ -114,7 +115,7 @@ class FormScreen(BaseScreen):
         self._plural_add_btns: Dict[str, tk.Button] = {}
         # Plural: последний созданный контейнер в группе (для pack after=)
         self._plural_last_containers: Dict[str, tk.Frame] = {}
-        self._factory = FieldFactory()
+        self._factory = FieldFactory(on_field_button=self._on_field_button)
         # parent_key → [child_field_defs] для зависимых справочников (верхний уровень)
         self._dependent_fields: Dict[str, List[FieldDefinition]] = {}
         # parent_key → [(block_field_def, sub_field_def)] для зависимых sub-полей BLOCK
@@ -657,7 +658,7 @@ class FormScreen(BaseScreen):
                     val = pfw.get_extra(child.depends_on_field)
                 else:
                     val = pfw.get()
-                ep = {parent_key: val} if val else None
+                ep = {parent_key: val} if val and child.depends_on == parent_key else None
                 self._rebuild_reference_widget(child, ep)
             # Sub-поля BLOCK с зависимым справочником
             for block_def, sub_def in block_children:
@@ -689,6 +690,8 @@ class FormScreen(BaseScreen):
         block_dep_map: Dict[str, List] = defaultdict(list)
 
         for f in self._form.fields:
+            for dependency in f.reference_dependencies:
+                dep_map[dependency.field].append(f)
             if f.depends_on and f.field_type in (FieldType.SELECT, FieldType.MULTISELECT):
                 dep_map[f.depends_on].append(f)
             if f.field_type == FieldType.BLOCK:
@@ -737,6 +740,18 @@ class FormScreen(BaseScreen):
             return []
         if field_def.reference is None:
             return []
+        extra_params = dict(extra_params or {})
+        for dependency in field_def.reference_dependencies:
+            parameter = dependency.parameter or dependency.field
+            if parameter in extra_params:
+                continue
+            parent = self._field_widgets.get(dependency.field)
+            if parent is None:
+                return []
+            value = parent.get_extra(dependency.item_field) if dependency.item_field else parent.get()
+            if value in (None, "", []):
+                return []
+            extra_params[parameter] = value
         # Зависимый справочник без значения родителя — возвращаем пустой список,
         # не делаем запрос с незаполненным URL-шаблоном
         if field_def.depends_on and not extra_params:
@@ -881,6 +896,13 @@ class FormScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Кнопки
     # ------------------------------------------------------------------
+
+    def _on_field_button(self, button: FieldAction, field: FieldDefinition, widget: FieldWidget) -> None:
+        try:
+            from ui.field_actions import DesktopFieldActions
+            DesktopFieldActions(self, field, widget).run(button)
+        except Exception as exc:
+            show_error(self, f"Ошибка: {button.label}", str(exc))
 
     def _on_submit(self) -> None:
         if self._ai_inline_review is not None:
