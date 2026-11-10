@@ -9,7 +9,7 @@ BaseForm — абстрактный базовый класс для всех ф
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as _dc_field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
 
 if TYPE_CHECKING:
     from services.gravitee_service import GraviteeService
@@ -35,6 +35,42 @@ class CustomButton:
     handler: Callable[[str], None]
     style: str = "Secondary"
 
+
+
+
+@dataclass(frozen=True)
+class ServerActionResult:
+    """Typed result of a direct :class:`ServerAction` handler.
+
+    ``status`` controls how the message is presented to the operator; it does
+    not describe HTTP transport success.  Existing mapping results remain
+    supported and may use the same ``message``, ``status``, ``title``,
+    ``values`` and ``data`` keys.
+    """
+
+    message: str = "Действие выполнено"
+    status: ResultStatus = ResultStatus.SUCCESS
+    title: str = ""
+    values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    data: Any = None
+
+
+@dataclass(frozen=True)
+class ServerDialogActionResult:
+    """Result of a button inside a server-rendered action dialog.
+
+    ``form_values`` is a patch for the owning form. ``dialog_values`` is a
+    patch for the still-open dialog. ``close_dialog=None`` uses the button's
+    ``close_on_success`` declaration.
+    """
+
+    message: str = "Действие выполнено"
+    form_values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    dialog_values: Mapping[str, Any] = _dc_field(default_factory=dict)
+    data: Any = None
+    close_dialog: Optional[bool] = None
+    status: ResultStatus = ResultStatus.SUCCESS
+    title: str = ""
 
 class BaseForm(ABC):
     """

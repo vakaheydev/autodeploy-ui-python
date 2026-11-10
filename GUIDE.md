@@ -2549,3 +2549,57 @@ autodeploy-ui-python/
         ├── result_screen.py       # ← экран результата: контент + автоопрос
         └── settings_screen.py     # токены и креды (.env)
 ```
+
+## Кнопки под отдельными полями
+
+Контракт одинаков для desktop (`master`) и web (`web-platform`):
+`FieldDefinition.actions`, `FieldAction`, `FieldActionContext`,
+`FieldActionDialog` и `FieldDialogAction` из `forms.field_actions`.
+Определения и обработчики копируются между версиями без изменений.
+
+```python
+from forms.fields import FieldDefinition, FieldType, ReferenceConfig
+from forms.field_actions import FieldAction, FieldActionDialog, FieldDialogAction
+
+def choose(ctx):
+    # Снимки: ctx.form_values, ctx.dialog_values; текущее поле: ctx.value.
+    # Сервисы: ctx.services.itsm/tfs/gravitee; HTTP: ctx.http.
+    # Полный путь экземпляра: ctx.field_path, например block_2.value.
+    return ctx.dialog_values["application"]
+
+field = FieldDefinition(
+    "application", "Приложение", FieldType.TEXT,
+    actions=(FieldAction("choose", "Выбрать из справочника",
+        dialog=FieldActionDialog(
+            title="Выберите приложение",
+            fields=[FieldDefinition("application", "Приложение", FieldType.SELECT,
+                reference=ReferenceConfig("local", "applications.json"))],
+            actions=[FieldDialogAction("apply", "Применить", choose)],
+        )),),
+)
+```
+
+Кнопка без диалога: `FieldAction("fill", "Заполнить", handler=callback)`.
+Обработчик может вернуть значение или вызвать `ctx.set_value(value)`.
+`None` не подставляется; `False`, `0`, `""` и `[]` применяются.
+Для SELECT используйте ID, для MULTISELECT — список ID, для BLOCK — словарь.
+Изменение относится только к экземпляру нажатой кнопки, включая plural и BLOCK.
+
+`ctx.load_reference(reference, extra_params=...)` загружает справочник через
+штатный resolver; `ctx.get_selected_items(key)` возвращает полные выбранные
+объекты, причём поля диалога имеют приоритет над полями формы.
+Для интерфейса выбора используйте декларативный `FieldActionDialog`, а не
+прямые вызовы Tkinter: только такой обработчик переносим в веб.
+
+`ServerActionResult` и `ServerDialogActionResult` из `forms.base_form`
+позволяют вернуть сообщение, статус и патчи. При исключении или статусе ERROR
+отложенное изменение поля не применяется. Старые словари с метаданными
+результата сохраняют прежний смысл; если значение BLOCK содержит ключи
+`message`, `status`, `values` и другие метаданные ответа, используйте
+`ctx.set_value(...)` вместо возврата такого словаря.
+Обработчики desktop работают в UI-потоке.
+
+`FieldAction` поддерживает `style`, `require_valid_form` и
+`confirmation_text`. Диалог поддерживает `initial_values(ctx)`, `validate(ctx)`,
+условные и повторяющиеся поля; его кнопки — `require_valid_dialog`,
+`confirmation_text`, `close_on_success`. Отмена оставляет поле без изменений.

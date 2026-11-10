@@ -7,7 +7,10 @@
 """
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forms.field_actions import FieldAction
 
 
 class FieldType(Enum):
@@ -48,6 +51,29 @@ class ReferenceConfig:
 Condition = Callable[[Dict[str, Any]], bool]
 
 
+@dataclass(frozen=True)
+class ReferenceDependency:
+    """One explicitly allowed input for a dependent reference.
+
+    ``field`` is a field key. With the default ``scope="current"`` it refers
+    to a sibling field in the object that owns the dependent reference. Inside
+    a :class:`ServerActionDialog`, ``scope="form"`` explicitly reads the field
+    from the owning form instead. ``parameter`` is the key passed to the
+    private :class:`BaseReferenceHandler` in ``extra_params`` and defaults to
+    ``field``. ``item_field`` optionally resolves a property from the selected
+    reference item instead of passing its stored identifier.
+
+    Keeping this allowlist on the field contract is deliberate: a reference
+    handler receives only the values it declared, never the complete form or
+    dialog state.
+    """
+
+    field: str
+    parameter: str = ""
+    item_field: str = ""
+    scope: str = "current"
+
+
 @dataclass
 class FieldDefinition:
     """
@@ -72,3 +98,7 @@ class FieldDefinition:
     block_fields: List['FieldDefinition']  = dc_field(default_factory=list)  # вложенные поля для BLOCK
     depends_on:       str                   = ""    # ключ поля-родителя для зависимого справочника
     depends_on_field: str                   = ""    # поле из item родителя (по умолч. — value_key)
+    reference_dependencies: tuple[ReferenceDependency, ...] = ()
+    actions: tuple['FieldAction', ...] = ()
+    # Несколько явных sibling-зависимостей. Старые depends_on/depends_on_field
+    # остаются полностью совместимыми и могут использоваться одновременно.
