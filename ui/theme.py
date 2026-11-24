@@ -65,9 +65,9 @@ F = {
 PAD = {"xs": 3, "sm": 6, "md": 10, "lg": 16, "xl": 24}
 
 
-def plural_add_button(parent, command):
+def plural_add_button(parent, command, *, text):
     return tk.Button(
-        parent, text="＋ Добавить", font=F["h3"],
+        parent, text=text, font=F["h3"],
         bg=C["primary"], fg=C["primary_fg"],
         activebackground=C["primary_h"], activeforeground=C["primary_fg"],
         disabledforeground=C["border"], relief="flat", bd=0,

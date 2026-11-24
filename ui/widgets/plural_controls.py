@@ -27,7 +27,9 @@ class PluralControls:
             relief="flat", bd=0, padx=10, pady=6, cursor="hand2",
             command=lambda: self._remove(self._key_for(outer), outer),
         )
-        bottom = theme.plural_add_button(inner, self._add)
+        bottom = theme.plural_add_button(
+            inner, self._add, text=f"＋ Добавить блок «{self.field.label}»",
+        )
         self._rows[key] = (outer, remove, bottom)
         self.refresh()
 

@@ -61,6 +61,7 @@ class PluralControlsTests(unittest.TestCase):
         self.assertEqual(group.keys, ["service", "service_2", "service_3", "service_4"])
         self.assertEqual(screen._field_order, group.keys)
         for index, row in enumerate(group._rows.values()):
+            self.assertEqual(row[2].cget("text"), "＋ Добавить блок «Сервис»")
             self.assertEqual(bool(row[2].winfo_manager()), index == 3)
             header_buttons = [child.cget("text") for child in row[1].master.winfo_children()
                               if isinstance(child, tk.Button)]
@@ -71,6 +72,7 @@ class PluralControlsTests(unittest.TestCase):
             block_fields=[FieldDefinition("value", "Значение", FieldType.TEXT)])
         block = _BlockWidget(self.root, [field], FieldFactory(), lambda field: [])
         group = block._sub_plural_groups["item"]
+        self.assertEqual(group._rows["item"][2].cget("text"), "＋ Добавить блок «Элемент»")
         for value in ("two", "three"):
             block._add_sub_plural("item")
             block._sub_widgets[group.keys[-1]].set({"value": value})
