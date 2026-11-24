@@ -63,6 +63,7 @@ from ui.dialogs import (
 from ui.inline_ai_review import ACCEPTED, REJECTED, InlineReviewState
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.field_factory import FieldFactory, FieldWidget
+from ui.widgets.plural_controls import PluralControls, remap_plural_keys
 
 
 _log = logging.getLogger("opencode.form_ui")
@@ -112,7 +113,7 @@ class FormScreen(BaseScreen):
         self._field_order: List[str] = []
         # Plural: кол-во экземпляров и кнопка "+" для каждого базового ключа
         self._plural_counts: Dict[str, int] = {}
-        self._plural_add_btns: Dict[str, tk.Button] = {}
+        self._plural_groups: Dict[str, PluralControls] = {}
         # Plural: последний созданный контейнер в группе (для pack after=)
         self._plural_last_containers: Dict[str, tk.Frame] = {}
         self._factory = FieldFactory(on_field_button=self._on_field_button)
@@ -363,23 +364,11 @@ class FormScreen(BaseScreen):
 
             if field_def.plural:
                 self._plural_counts[field_def.key] = 1
-                plus_btn = tk.Button(
-                    label_row,
-                    text=" + ",
-                    font=theme.F["body"],
-                    bg=theme.C["surface"],
-                    fg=theme.C["primary"],
-                    activebackground=theme.C["ghost_h"],
-                    activeforeground=theme.C["primary"],
-                    relief="flat", bd=0,
-                    cursor="hand2",
-                    padx=4,
+                self._plural_groups[field_def.key] = PluralControls(
+                    field_def,
+                    lambda k=field_def.key: self._add_plural_field(k),
+                    lambda key, outer, bk=field_def.key: self._remove_plural_field(bk, key, outer),
                 )
-                plus_btn.config(
-                    command=lambda k=field_def.key: self._add_plural_field(k)
-                )
-                plus_btn.pack(side=tk.RIGHT, padx=(0, 4))
-                self._plural_add_btns[field_def.key] = plus_btn
                 self._plural_last_containers[field_def.key] = outer
 
             # Виджет ввода
@@ -387,6 +376,8 @@ class FormScreen(BaseScreen):
             fw = self._factory.create(inner, field_def, ref_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
             fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
             self._field_widgets[field_def.key] = fw
+            if field_def.plural:
+                self._plural_groups[field_def.key].attach(field_def.key, outer, inner, label_row)
 
         # Восстановление сохранённых данных (до расчёта условий)
         if self._initial_data:
@@ -506,6 +497,11 @@ class FormScreen(BaseScreen):
             visibility[field_def.key] = should_show
             if outer and should_show != bool(outer.winfo_manager()):
                 changed = True
+            if field_def.plural:
+                for key in self._plural_groups[field_def.key].keys:
+                    visibility[key] = should_show
+                    if should_show != bool(self._field_containers[key].winfo_manager()):
+                        changed = True
 
         if not changed:
             return
@@ -628,6 +624,8 @@ class FormScreen(BaseScreen):
         fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
+        if key in self._plural_groups:
+            self._plural_groups[key].refresh()
         has_conditional = any(f.condition for f in self._form.fields)
         if has_conditional:
             widget = fw.widget
@@ -836,6 +834,8 @@ class FormScreen(BaseScreen):
                     )
                     new_block_fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
                     self._field_widgets[bkey] = new_block_fw
+                    if bkey in self._plural_groups:
+                        self._plural_groups[bkey].refresh()
                     if saved:
                         new_block_fw.set(saved)
             _restore_btn()
@@ -856,6 +856,9 @@ class FormScreen(BaseScreen):
         fw = self._factory.create(inner, field_def, new_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[key] = fw
+
+        if key in self._plural_groups:
+            self._plural_groups[key].refresh()
 
         # Восстанавливаем подписку если в форме есть условные поля
         has_conditional = any(f.condition for f in self._form.fields)
@@ -1048,6 +1051,9 @@ class FormScreen(BaseScreen):
     def _add_plural_field(self, base_key: str) -> None:
         """Добавляет ещё один экземпляр plural-поля с ключом {base_key}_{N}."""
         base_def = next(f for f in self._form.fields if f.key == base_key)
+        group = self._plural_groups[base_key]
+        if not group.can_add():
+            return
         new_count = self._plural_counts[base_key] + 1
         self._plural_counts[base_key] = new_count
         new_key = f"{base_key}_{new_count}"
@@ -1055,7 +1061,7 @@ class FormScreen(BaseScreen):
         # Вставить в field_order сразу после последнего элемента группы
         last_pos = max(
             i for i, k in enumerate(self._field_order)
-            if k == base_key or k.startswith(f"{base_key}_")
+            if k in group.keys
         )
         self._field_order.insert(last_pos + 1, new_key)
 
@@ -1081,24 +1087,14 @@ class FormScreen(BaseScreen):
             fg=theme.C["text_label"] if base_def.required else theme.C["text_muted"],
         ).pack(side=tk.LEFT)
 
-        # Кнопка удаления этого экземпляра
-        tk.Button(
-            label_row,
-            text="  ×  ",
-            font=theme.F["small"],
-            bg=theme.C["surface"],
-            fg=theme.C["error"],
-            activebackground=theme.C["ghost_h"],
-            activeforeground=theme.C["error"],
-            relief="flat", bd=0, cursor="hand2",
-            command=lambda k=new_key, bk=base_key, o=outer: self._remove_plural_field(bk, k, o),
-        ).pack(side=tk.RIGHT, padx=(0, 4))
-
         # Виджет
         ref_items = self._load_reference(base_def)
         fw = self._factory.create(inner, base_def, ref_items, ref_loader=self._load_reference, on_refresh=self._reload_reference_field)
         fw.widget.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._field_widgets[new_key] = fw
+        group.attach(new_key, outer, inner, label_row)
+        if any(f.condition for f in self._form.fields):
+            fw.bind_change(self._refresh_conditional_fields)
 
         # Разместить после последнего контейнера группы
         prev = self._plural_last_containers.get(base_key)
@@ -1108,14 +1104,15 @@ class FormScreen(BaseScreen):
             outer.pack(fill=tk.X, pady=3, padx=2)
         self._plural_last_containers[base_key] = outer
 
-        # Скрыть "+" если достигнут лимит
-        if base_def.plural_max is not None and new_count >= base_def.plural_max:
-            btn = self._plural_add_btns.get(base_key)
-            if btn:
-                btn.pack_forget()
-
     def _remove_plural_field(self, base_key: str, key: str, outer: tk.Frame) -> None:
-        """Удаляет экземпляр plural-поля и возвращает кнопку '+' если она была скрыта."""
+        """Remove any instance, retaining at least one and the required base key."""
+        group = self._plural_groups[base_key]
+        if key not in group.keys or len(group.keys) <= 1:
+            return
+        if self._ai_inline_review is not None:
+            show_warning(self, "Проверьте AI-предложения",
+                         "Перед удалением блока подтвердите или отклоните предложенные значения.")
+            return
         outer.pack_forget()
         outer.destroy()
         self._field_widgets.pop(key, None)
@@ -1125,30 +1122,17 @@ class FormScreen(BaseScreen):
         if key in self._field_order:
             self._field_order.remove(key)
 
-        # Обновить _plural_last_containers на предыдущий живой контейнер группы
-        last = None
-        for k in self._field_order:
-            if k == base_key or k.startswith(f"{base_key}_"):
-                c = self._field_containers.get(k)
-                if c:
-                    last = c
-        if last is not None:
-            self._plural_last_containers[base_key] = last
-
-        # Вернуть "+" если лимит больше не достигнут
-        base_def = next((f for f in self._form.fields if f.key == base_key), None)
-        if base_def and base_def.plural_max is not None:
-            current = self._plural_counts[base_key]
-            # Считаем реально живые экземпляры (base + copies в field_order)
-            alive = sum(
-                1 for k in self._field_order
-                if k == base_key or k.startswith(f"{base_key}_")
-            )
-            if alive < base_def.plural_max:
-                btn = self._plural_add_btns.get(base_key)
-                if btn:
-                    btn.pack(side=tk.RIGHT, padx=(0, 4))
-                    _ = current  # подавить предупреждение
+        renamed = group.detach(key)
+        for mapping in (self._field_widgets, self._field_containers,
+                        self._field_inner_frames, self._field_label_rows):
+            remap_plural_keys(mapping, renamed)
+        self._field_order[:] = [renamed.get(k, k) for k in self._field_order]
+        self._plural_counts[base_key] = len(group.keys)
+        if key == base_key:
+            self._subscribe_dependent_children(base_key, self._field_widgets[base_key])
+        self._plural_last_containers[base_key] = self._field_containers[group.keys[-1]]
+        if any(f.condition for f in self._form.fields):
+            self._refresh_conditional_fields()
 
     # ------------------------------------------------------------------
     # AI ITSM + Azure DevOps интеграция
@@ -2200,6 +2184,8 @@ class FormScreen(BaseScreen):
         for base_key, indices in needed.items():
             for n in sorted(indices):
                 while self._plural_counts.get(base_key, 1) < n:
+                    if not self._plural_groups[base_key].can_add():
+                        break
                     self._add_plural_field(base_key)
 
         filled: List[str] = []

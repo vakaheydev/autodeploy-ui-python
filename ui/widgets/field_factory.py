@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import ui.theme as theme
 from forms.fields import FieldDefinition, FieldType
 from forms.field_actions import FieldAction
+from ui.widgets.plural_controls import PluralControls, remap_plural_keys
 
 
 class _ToggleRow:
@@ -289,7 +290,7 @@ class _BlockWidget:
         self._sub_widgets: Dict[str, "FieldWidget"] = {}
         self._sub_containers: Dict[str, tk.Frame] = {}
         self._sub_plural_counts: Dict[str, int] = {}
-        self._sub_plural_add_btns: Dict[str, tk.Button] = {}
+        self._sub_plural_groups: Dict[str, PluralControls] = {}
         self._sub_plural_last: Dict[str, tk.Frame] = {}
         self._fac = factory
         self._ref_loader = ref_loader
@@ -345,20 +346,11 @@ class _BlockWidget:
 
             if sub_field.plural:
                 self._sub_plural_counts[sub_field.key] = 1
-                plus_btn = tk.Button(
-                    label_row,
-                    text=" + ",
-                    font=theme.F["body"],
-                    bg=theme.C["surface"],
-                    fg=theme.C["primary"],
-                    activebackground=theme.C["ghost_h"],
-                    activeforeground=theme.C["primary"],
-                    relief="flat", bd=0, cursor="hand2",
-                    padx=4,
+                self._sub_plural_groups[sub_field.key] = PluralControls(
+                    sub_field,
+                    lambda k=sub_field.key: self._add_sub_plural(k),
+                    lambda key, outer, bk=sub_field.key: self._remove_sub_plural(bk, key, outer),
                 )
-                plus_btn.config(command=lambda k=sub_field.key: self._add_sub_plural(k))
-                plus_btn.pack(side=tk.RIGHT, padx=(0, 4))
-                self._sub_plural_add_btns[sub_field.key] = plus_btn
 
             ref_items = ref_loader(sub_field)
             fw = factory.create(inner, sub_field, ref_items, ref_loader=ref_loader, on_refresh=on_refresh)
@@ -372,6 +364,7 @@ class _BlockWidget:
 
             if sub_field.plural:
                 self._sub_plural_last[sub_field.key] = outer
+                self._sub_plural_groups[sub_field.key].attach(sub_field.key, outer, inner, label_row)
 
         self._setup_conditions()
         self._setup_internal_dependencies()
@@ -429,6 +422,9 @@ class _BlockWidget:
 
     def _add_sub_plural(self, base_key: str) -> None:
         base_def = next(f for f in self._sub_fields if f.key == base_key)
+        group = self._sub_plural_groups[base_key]
+        if not group.can_add():
+            return
         count = self._sub_plural_counts[base_key] + 1
         self._sub_plural_counts[base_key] = count
         new_key = f"{base_key}_{count}"
@@ -437,6 +433,7 @@ class _BlockWidget:
         inner = tk.Frame(outer, bg=theme.C["surface"])
         inner.pack(fill=tk.BOTH, padx=1, pady=1)
         self._sub_containers[new_key] = outer
+        self._sub_inner_frames[new_key] = inner
 
         label_row = tk.Frame(inner, bg=theme.C["surface"])
         label_row.pack(fill=tk.X, padx=10, pady=(6, 2))
@@ -449,22 +446,13 @@ class _BlockWidget:
             fg=theme.C["text_label"] if base_def.required else theme.C["text_muted"],
         ).pack(side=tk.LEFT)
 
-        tk.Button(
-            label_row,
-            text="  ×  ",
-            font=theme.F["small"],
-            bg=theme.C["surface"],
-            fg=theme.C["error"],
-            activebackground=theme.C["ghost_h"],
-            activeforeground=theme.C["error"],
-            relief="flat", bd=0, cursor="hand2",
-            command=lambda k=new_key, bk=base_key, o=outer: self._remove_sub_plural(bk, k, o),
-        ).pack(side=tk.RIGHT, padx=(0, 4))
-
-        ref_items = self._ref_loader(base_def)
-        fw = self._fac.create(inner, base_def, ref_items, ref_loader=self._ref_loader, on_refresh=self._on_refresh_cb)
+        ref_items = self._load_sub_reference(base_def)
+        fw = self._fac.create(inner, base_def, ref_items, ref_loader=self._load_sub_reference, on_refresh=self._on_refresh_cb)
         fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
         self._sub_widgets[new_key] = fw
+        group.attach(new_key, outer, inner, label_row)
+        if any(f.condition for f in self._sub_fields):
+            fw.bind_change(self._refresh_conditions)
 
         prev = self._sub_plural_last.get(base_key)
         if prev and prev.winfo_manager():
@@ -473,38 +461,24 @@ class _BlockWidget:
             outer.pack(fill=tk.X, pady=2, padx=4)
         self._sub_plural_last[base_key] = outer
 
-        if base_def.plural_max is not None and count >= base_def.plural_max:
-            btn = self._sub_plural_add_btns.get(base_key)
-            if btn:
-                btn.pack_forget()
-
     def _remove_sub_plural(self, base_key: str, key: str, outer: tk.Frame) -> None:
+        group = self._sub_plural_groups[base_key]
+        if key not in group.keys or len(group.keys) <= 1:
+            return
         outer.pack_forget()
         outer.destroy()
         self._sub_widgets.pop(key, None)
         self._sub_containers.pop(key, None)
-
-        # Обновляем last container для группы
-        last = self._sub_containers.get(base_key)
-        for k in list(self._sub_widgets.keys()):
-            if k.startswith(f"{base_key}_"):
-                c = self._sub_containers.get(k)
-                if c:
-                    last = c
-        if last:
-            self._sub_plural_last[base_key] = last
-
-        # Возвращаем + если лимит не достигнут
-        base_def = next((f for f in self._sub_fields if f.key == base_key), None)
-        if base_def and base_def.plural_max is not None:
-            alive = sum(
-                1 for k in self._sub_widgets
-                if k == base_key or k.startswith(f"{base_key}_")
-            )
-            if alive < base_def.plural_max:
-                btn = self._sub_plural_add_btns.get(base_key)
-                if btn:
-                    btn.pack(side=tk.RIGHT, padx=(0, 4))
+        self._sub_inner_frames.pop(key, None)
+        renamed = group.detach(key)
+        for mapping in (self._sub_widgets, self._sub_containers, self._sub_inner_frames):
+            remap_plural_keys(mapping, renamed)
+        self._sub_plural_counts[base_key] = len(group.keys)
+        if key == base_key:
+            self._setup_internal_dependencies()
+        self._sub_plural_last[base_key] = self._sub_containers[group.keys[-1]]
+        if any(f.condition for f in self._sub_fields):
+            self._refresh_conditions()
 
     def _setup_conditions(self) -> None:
         has_conditional = any(f.condition for f in self._sub_fields)
@@ -551,7 +525,12 @@ class _BlockWidget:
 
         # Перепакуем в порядке вставки (_sub_containers — ordered dict).
         # Plural-копии наследуют условие базового поля.
-        for key, outer in self._sub_containers.items():
+        ordered_keys = [
+            key for field in self._sub_fields
+            for key in (self._sub_plural_groups[field.key].keys if field.plural else [field.key])
+        ]
+        for key in ordered_keys:
+            outer = self._sub_containers[key]
             outer.pack_forget()
             base_key = next(
                 (sf.key for sf in self._sub_fields
@@ -599,6 +578,8 @@ class _BlockWidget:
                                    on_refresh=self._on_refresh_cb)
         new_fw.widget.pack(fill=tk.X, padx=10, pady=(0, 8))
         self._sub_widgets[sub_key] = new_fw
+        if sub_key in self._sub_plural_groups:
+            self._sub_plural_groups[sub_key].refresh()
         # Переподписываем новый виджет на пересчёт условий (если в BLOCK есть условные поля)
         if any(f.condition for f in self._sub_fields):
             if isinstance(new_fw.widget, ttk.Combobox):
